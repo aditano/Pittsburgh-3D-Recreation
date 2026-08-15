@@ -26,9 +26,11 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const labelRenderer = new CSS2DRenderer();
+labelRenderer.domElement.className = 'label-layer';
 labelRenderer.domElement.style.position = 'absolute';
 labelRenderer.domElement.style.inset = '0';
 labelRenderer.domElement.style.pointerEvents = 'none';
+labelRenderer.domElement.style.zIndex = '1';
 document.getElementById('app').appendChild(labelRenderer.domElement);
 
 const controls = new OrbitControls(camera, canvas);
@@ -143,22 +145,20 @@ function terrainHeight(x, z, peaks) {
   return h;
 }
 
-function shapeFromFootprint(footprint, yFn) {
+function footprintShape(footprint) {
+  // Shape is XY; after rotateX(-π/2), shapeY maps to -worldZ, so feed -z
+  // to keep +Z south aligned with street/landmark coordinates.
   const shape = new THREE.Shape();
   const first = footprint[0];
-  const y0 = yFn ? yFn(first[0], first[1]) : 0;
-  // project footprint onto local XZ; Shape uses x,y -> we map to x,z
-  shape.moveTo(first[0], first[1]);
+  shape.moveTo(first[0], -first[1]);
   for (let i = 1; i < footprint.length - 1; i++) {
-    shape.lineTo(footprint[i][0], footprint[i][1]);
+    shape.lineTo(footprint[i][0], -footprint[i][1]);
   }
   shape.closePath();
-  return { shape, baseY: y0 };
+  return shape;
 }
 
-function extrudeBuilding(footprint, height, yFn) {
-  const { shape, baseY } = shapeFromFootprint(footprint, yFn);
-  // sample base height from centroid so building sits on terrain
+function footprintCentroid(footprint) {
   let cx = 0;
   let cz = 0;
   const n = footprint.length - 1;
@@ -166,9 +166,13 @@ function extrudeBuilding(footprint, height, yFn) {
     cx += footprint[i][0];
     cz += footprint[i][1];
   }
-  cx /= n;
-  cz /= n;
-  const base = yFn ? yFn(cx, cz) : baseY;
+  return [cx / n, cz / n];
+}
+
+function extrudeBuilding(footprint, height, yFn) {
+  const shape = footprintShape(footprint);
+  const [cx, cz] = footprintCentroid(footprint);
+  const base = yFn ? yFn(cx, cz) : 0;
 
   const geom = new THREE.ExtrudeGeometry(shape, {
     depth: height,
@@ -181,25 +185,13 @@ function extrudeBuilding(footprint, height, yFn) {
 }
 
 function flatPolygon(footprint, y, yFn) {
-  const shape = new THREE.Shape();
-  shape.moveTo(footprint[0][0], footprint[0][1]);
-  for (let i = 1; i < footprint.length - 1; i++) {
-    shape.lineTo(footprint[i][0], footprint[i][1]);
-  }
-  shape.closePath();
+  const shape = footprintShape(footprint);
   const geom = new THREE.ShapeGeometry(shape);
   geom.rotateX(-Math.PI / 2);
-  // lift to average terrain / fixed y
   let lift = y;
   if (yFn) {
-    let cx = 0;
-    let cz = 0;
-    const n = footprint.length - 1;
-    for (let i = 0; i < n; i++) {
-      cx += footprint[i][0];
-      cz += footprint[i][1];
-    }
-    lift = yFn(cx / n, cz / n) + y;
+    const [cx, cz] = footprintCentroid(footprint);
+    lift = yFn(cx, cz) + y;
   }
   geom.translate(0, lift, 0);
   return geom;
@@ -244,6 +236,7 @@ function addLabel(text, position) {
     white-space: nowrap;
     text-shadow: 0 0 12px rgba(0,0,0,0.85);
     user-select: none;
+    pointer-events: none;
   `;
   const obj = new CSS2DObject(el);
   obj.position.copy(position);
@@ -251,7 +244,7 @@ function addLabel(text, position) {
 
   // stem line
   const stem = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(position.x, 0, position.z),
+    new THREE.Vector3(position.x, Math.max(0, position.y - (position.y * 0.55)), position.z),
     position.clone(),
   ]);
   const line = new THREE.Line(
@@ -266,36 +259,40 @@ function buildBridges(bridges, yFn) {
   const group = new THREE.Group();
   for (const b of bridges) {
     const [a, c] = b.pts;
-    const y1 = (yFn ? yFn(a[0], a[1]) : 0) + 18;
-    const y2 = (yFn ? yFn(c[0], c[1]) : 0) + 18;
-    const mid = new THREE.Vector3((a[0] + c[0]) / 2, Math.max(y1, y2) + 12, (a[1] + c[1]) / 2);
+    const y1 = (yFn ? yFn(a[0], a[1]) : 0) + 22;
+    const y2 = (yFn ? yFn(c[0], c[1]) : 0) + 22;
     const p0 = new THREE.Vector3(a[0], y1, a[1]);
     const p1 = new THREE.Vector3(c[0], y2, c[1]);
+    const mid = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
+    mid.y += 18;
 
-    const curve = new THREE.QuadraticBezierCurve3(p0, mid, p1);
-    const tube = new THREE.TubeGeometry(curve, 24, 3.2, 6, false);
     const color = new THREE.Color(b.color || '#e8c84a');
     const mat = new THREE.MeshStandardMaterial({
       color,
       emissive: color,
-      emissiveIntensity: 0.35,
-      roughness: 0.4,
-      metalness: 0.3,
+      emissiveIntensity: 0.55,
+      roughness: 0.35,
+      metalness: 0.25,
     });
-    const mesh = new THREE.Mesh(tube, mat);
-    group.add(mesh);
 
-    // towers
+    // Deck span (horizontal) — SF-style minimal bar
+    const spanLen = p0.distanceTo(p1);
+    const span = new THREE.Mesh(new THREE.BoxGeometry(spanLen, 4, 8), mat);
+    const deckY = (y1 + y2) / 2 + 4;
+    span.position.set(mid.x, deckY, mid.z);
+    const dir = new THREE.Vector3().subVectors(p1, p0).normalize();
+    span.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+    group.add(span);
+
+    // Towers at each bank
     for (const p of [p0, p1]) {
-      const tower = new THREE.Mesh(
-        new THREE.BoxGeometry(5, 42, 5),
-        mat,
-      );
-      tower.position.set(p.x, p.y + 12, p.z);
+      const towerH = 48;
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(6, towerH, 6), mat);
+      tower.position.set(p.x, p.y + towerH * 0.35, p.z);
       group.add(tower);
     }
 
-    addLabel(b.n, mid.clone().add(new THREE.Vector3(0, 28, 0)));
+    addLabel(b.n, mid.clone().setY(mid.y + 36));
   }
   scene.add(group);
 }
@@ -446,29 +443,45 @@ function animateCamera(toView, duration = 2200) {
   const toPos = toView.position.clone();
   const toTarget = toView.target.clone();
   const start = performance.now();
-  anim = { start, duration, fromPos, fromTarget, toPos, toTarget };
+  controls.enabled = false;
+  anim = {
+    start,
+    duration,
+    fromPos,
+    fromTarget,
+    toPos,
+    toTarget,
+  };
 }
 
 function setView(name) {
-  for (const btn of navEl.querySelectorAll('button')) {
-    btn.classList.toggle('active', btn.dataset.view === name || (name === 'rotate' && btn.dataset.view === 'rotate'));
-  }
   if (name === 'rotate') {
     rotateMode = !rotateMode;
+    for (const btn of navEl.querySelectorAll('button')) {
+      btn.classList.toggle('active', btn.dataset.view === 'rotate' ? rotateMode : false);
+    }
     if (rotateMode) {
       animateCamera(views.downtown, 1600);
+    } else {
+      controls.enabled = true;
     }
     return;
   }
   rotateMode = false;
+  controls.enabled = true;
+  for (const btn of navEl.querySelectorAll('button')) {
+    btn.classList.toggle('active', btn.dataset.view === name);
+  }
   if (views[name]) animateCamera(views[name]);
 }
 
-navEl.addEventListener('click', (e) => {
-  const btn = e.target.closest('button[data-view]');
-  if (!btn) return;
-  setView(btn.dataset.view);
-});
+for (const btn of navEl.querySelectorAll('button[data-view]')) {
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setView(btn.dataset.view);
+  });
+}
 
 function onResize() {
   const w = window.innerWidth;
@@ -489,7 +502,10 @@ function tick(now) {
     const e = easeInOut(t);
     camera.position.lerpVectors(anim.fromPos, anim.toPos, e);
     controls.target.lerpVectors(anim.fromTarget, anim.toTarget, e);
-    if (t >= 1) anim = null;
+    if (t >= 1) {
+      anim = null;
+      controls.enabled = !rotateMode;
+    }
   } else if (rotateMode) {
     const t = now * 0.00012;
     const r = 980;
