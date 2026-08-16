@@ -2,6 +2,20 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import {
+  surfaceHeight,
+  makeWaterIndex,
+  footprintCentroid,
+  hash01,
+} from './geo.js';
+import {
+  createCityMaterials,
+  buildingFamily,
+  applyFacadeUVs,
+  tintGeometry,
+  applyXZUvs,
+} from './textures.js';
+import { buildBridges } from './bridges.js';
 
 const canvas = document.getElementById('c');
 const layersEl = document.getElementById('layers');
@@ -10,7 +24,7 @@ const navEl = document.getElementById('nav');
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05070c);
-scene.fog = new THREE.FogExp2(0x05070c, 0.00028);
+scene.fog = new THREE.FogExp2(0x05070c, 0.00026);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
 camera.position.set(900, 650, 1100);
@@ -41,10 +55,10 @@ controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.target.set(0, 40, 0);
 
-const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a1e28, 0.55);
+const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.5);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xffffff, 1.35);
+const sun = new THREE.DirectionalLight(0xffffff, 1.15);
 sun.position.set(600, 900, 200);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -57,55 +71,21 @@ sun.shadow.camera.bottom = -1500;
 sun.shadow.bias = -0.0002;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(0x6a7a9a, 0.35);
+const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
 fill.position.set(-400, 300, -600);
 scene.add(fill);
 
-const groundMat = new THREE.MeshStandardMaterial({
-  color: 0x0b1220,
-  roughness: 0.92,
-  metalness: 0.05,
-});
+const materials = createCityMaterials();
+scene.environment = materials.envMap;
+scene.environmentIntensity = 0.42;
 
-const buildingMat = new THREE.MeshStandardMaterial({
-  color: 0xe8ecf2,
-  roughness: 0.72,
-  metalness: 0.08,
-});
-
-const landmarkMat = new THREE.MeshStandardMaterial({
-  color: 0xffffff,
-  roughness: 0.55,
-  metalness: 0.12,
-  emissive: 0x22262e,
-  emissiveIntensity: 0.15,
-});
-
-const parkMat = new THREE.MeshStandardMaterial({
-  color: 0x132018,
-  roughness: 1,
-  metalness: 0,
-});
-
-const waterMat = new THREE.MeshStandardMaterial({
-  color: 0x071018,
-  roughness: 0.28,
-  metalness: 0.35,
-  transparent: true,
-  opacity: 0.95,
-});
-
-const roadMats = {
-  0: new THREE.LineBasicMaterial({ color: 0x3a4254 }),
-  1: new THREE.LineBasicMaterial({ color: 0x6a7388 }),
-  2: new THREE.LineBasicMaterial({ color: 0x9aa3b5 }),
-  3: new THREE.LineBasicMaterial({ color: 0xc8cfdb }),
-  4: new THREE.LineBasicMaterial({ color: 0xe8ecf2 }),
-  5: new THREE.LineBasicMaterial({ color: 0xffffff }),
+const roadLineMats = {
+  0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),
+  1: new THREE.LineBasicMaterial({ color: 0x4a5260, transparent: true, opacity: 0.7 }),
+  2: new THREE.LineBasicMaterial({ color: 0x6a7384, transparent: true, opacity: 0.8 }),
 };
 
-/** Soft spotlight disc on the ground that follows the focus */
-const focusLight = new THREE.SpotLight(0xffffff, 28, 2200, Math.PI / 5, 0.72, 1.15);
+const focusLight = new THREE.SpotLight(0xffffff, 22, 2200, Math.PI / 5, 0.72, 1.15);
 focusLight.position.set(0, 700, 0);
 focusLight.target.position.set(0, 0, 0);
 focusLight.castShadow = false;
@@ -117,7 +97,7 @@ const focusGlow = new THREE.Mesh(
   new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
-    opacity: 0.045,
+    opacity: 0.04,
     depthWrite: false,
   }),
 );
@@ -125,29 +105,7 @@ focusGlow.rotation.x = -Math.PI / 2;
 focusGlow.position.y = 0.6;
 scene.add(focusGlow);
 
-function terrainHeight(x, z, peaks) {
-  let h = 0;
-  for (const peak of peaks) {
-    const dx = x - peak.p[0];
-    const dz = z - peak.p[1];
-    const d = Math.hypot(dx, dz);
-    if (d < peak.r) {
-      const t = 1 - d / peak.r;
-      h += peak.h * t * t;
-    }
-  }
-  // flatten downtown / river confluence
-  const flat = Math.hypot(x, z);
-  if (flat < 900) {
-    const k = Math.min(1, (900 - flat) / 900);
-    h *= 1 - k * 0.92;
-  }
-  return h;
-}
-
 function footprintShape(footprint) {
-  // Shape is XY; after rotateX(-π/2), shapeY maps to -worldZ, so feed -z
-  // to keep +Z south aligned with street/landmark coordinates.
   const shape = new THREE.Shape();
   const first = footprint[0];
   shape.moveTo(first[0], -first[1]);
@@ -158,30 +116,17 @@ function footprintShape(footprint) {
   return shape;
 }
 
-function footprintCentroid(footprint) {
-  let cx = 0;
-  let cz = 0;
-  const n = footprint.length - 1;
-  for (let i = 0; i < n; i++) {
-    cx += footprint[i][0];
-    cz += footprint[i][1];
-  }
-  return [cx / n, cz / n];
-}
-
 function extrudeBuilding(footprint, height, yFn) {
   const shape = footprintShape(footprint);
   const [cx, cz] = footprintCentroid(footprint);
   const base = yFn ? yFn(cx, cz) : 0;
-
   const geom = new THREE.ExtrudeGeometry(shape, {
     depth: height,
     bevelEnabled: false,
   });
-  // ExtrudeGeometry extrudes in +Z of shape space; rotate to Y-up
   geom.rotateX(-Math.PI / 2);
   geom.translate(0, base, 0);
-  return geom;
+  return { geom, base, cx, cz };
 }
 
 function flatPolygon(footprint, y, yFn) {
@@ -197,20 +142,50 @@ function flatPolygon(footprint, y, yFn) {
   return geom;
 }
 
-function makeGround(peaks) {
+function groundColor(x, y, z, waterIndex) {
+  if (waterIndex.inside(x, z)) return [0.035, 0.055, 0.07];
+  const bank = waterIndex.bankStrength(x, z);
+  if (bank > 0.15) {
+    return [0.14 + bank * 0.04, 0.11, 0.07];
+  }
+
+  const dist = Math.hypot(x, z);
+  const southHills = z > 680 && y > 10;
+  const northSide = z < -720 && x < 900;
+  const oakland = x > 2200 && x < 5400 && z > -1400 && z < 900;
+  const downtown = dist < 1150 && y < 10 && z > -880 && z < 560 && x > -1300 && x < 1500;
+
+  if (southHills) {
+    const t = Math.min(1, y / 90);
+    return [0.1 - t * 0.03, 0.13 - t * 0.02, 0.06];
+  }
+  if (oakland) return [0.11, 0.14, 0.09];
+  if (northSide) return [0.1, 0.11, 0.09];
+  if (downtown) return [0.1, 0.105, 0.125];
+  return [0.08, 0.09, 0.07];
+}
+
+function makeGround(peaks, waterIndex) {
   const size = 7000;
-  const segs = 140;
+  const segs = 160;
   const geom = new THREE.PlaneGeometry(size, size, segs, segs);
   geom.rotateX(-Math.PI / 2);
   const pos = geom.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    pos.setY(i, terrainHeight(x, z, peaks));
+    const y = surfaceHeight(x, z, peaks, waterIndex);
+    pos.setY(i, y);
+    const c = groundColor(x, y, z, waterIndex);
+    colors[i * 3] = c[0];
+    colors[i * 3 + 1] = c[1];
+    colors[i * 3 + 2] = c[2];
   }
   pos.needsUpdate = true;
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geom.computeVertexNormals();
-  const mesh = new THREE.Mesh(geom, groundMat);
+  const mesh = new THREE.Mesh(geom, materials.groundMat);
   mesh.receiveShadow = true;
   return mesh;
 }
@@ -219,7 +194,7 @@ function makeGrid() {
   const helper = new THREE.GridHelper(5000, 100, 0x1c2436, 0x121826);
   helper.position.y = 0.4;
   helper.material.transparent = true;
-  helper.material.opacity = 0.35;
+  helper.material.opacity = 0.16;
   return helper;
 }
 
@@ -242,9 +217,8 @@ function addLabel(text, position) {
   obj.position.copy(position);
   scene.add(obj);
 
-  // stem line
   const stem = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(position.x, Math.max(0, position.y - (position.y * 0.55)), position.z),
+    new THREE.Vector3(position.x, Math.max(0, position.y - position.y * 0.55), position.z),
     position.clone(),
   ]);
   const line = new THREE.Line(
@@ -255,100 +229,243 @@ function addLabel(text, position) {
   return obj;
 }
 
-function buildBridges(bridges, yFn) {
-  const group = new THREE.Group();
-  for (const b of bridges) {
-    const [a, c] = b.pts;
-    const y1 = (yFn ? yFn(a[0], a[1]) : 0) + 22;
-    const y2 = (yFn ? yFn(c[0], c[1]) : 0) + 22;
-    const p0 = new THREE.Vector3(a[0], y1, a[1]);
-    const p1 = new THREE.Vector3(c[0], y2, c[1]);
-    const mid = new THREE.Vector3().addVectors(p0, p1).multiplyScalar(0.5);
-    mid.y += 18;
-
-    const color = new THREE.Color(b.color || '#e8c84a');
-    const mat = new THREE.MeshStandardMaterial({
-      color,
-      emissive: color,
-      emissiveIntensity: 0.55,
-      roughness: 0.35,
-      metalness: 0.25,
-    });
-
-    // Deck span (horizontal) — SF-style minimal bar
-    const spanLen = p0.distanceTo(p1);
-    const span = new THREE.Mesh(new THREE.BoxGeometry(spanLen, 4, 8), mat);
-    const deckY = (y1 + y2) / 2 + 4;
-    span.position.set(mid.x, deckY, mid.z);
-    const dir = new THREE.Vector3().subVectors(p1, p0).normalize();
-    span.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
-    group.add(span);
-
-    // Towers at each bank
-    for (const p of [p0, p1]) {
-      const towerH = 48;
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(6, towerH, 6), mat);
-      tower.position.set(p.x, p.y + towerH * 0.35, p.z);
-      group.add(tower);
-    }
-
-    addLabel(b.n, mid.clone().setY(mid.y + 36));
+function outlineRibbon(poly, width, y) {
+  if (!poly || poly.length < 3) return null;
+  const n = poly.length;
+  const closed = Math.hypot(poly[0][0] - poly[n - 1][0], poly[0][1] - poly[n - 1][1]) < 0.05;
+  const count = closed ? n - 1 : n;
+  let cx = 0;
+  let cz = 0;
+  for (let i = 0; i < count; i++) {
+    cx += poly[i][0];
+    cz += poly[i][1];
   }
-  scene.add(group);
+  cx /= count;
+  cz /= count;
+
+  const positions = [];
+  const half = width * 0.5;
+  for (let i = 0; i < count; i++) {
+    const a = poly[i];
+    const b = poly[(i + 1) % n];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz) || 1;
+    let nx = -dz / len;
+    let nz = dx / len;
+    const mx = (a[0] + b[0]) * 0.5;
+    const mz = (a[1] + b[1]) * 0.5;
+    if ((mx - cx) * nx + (mz - cz) * nz < 0) {
+      nx = -nx;
+      nz = -nz;
+    }
+    const a0 = [a[0] - nx * half, a[1] - nz * half];
+    const a1 = [a[0] + nx * half, a[1] + nz * half];
+    const b0 = [b[0] - nx * half, b[1] - nz * half];
+    const b1 = [b[0] + nx * half, b[1] + nz * half];
+    positions.push(a0[0], y, a0[1], a1[0], y, a1[1], b1[0], y, b1[1]);
+    positions.push(a0[0], y, a0[1], b1[0], y, b1[1], b0[0], y, b0[1]);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geom.computeVertexNormals();
+  return geom;
+}
+
+function buildWaterEdges(water) {
+  const geoms = [];
+  for (const w of water) {
+    if (!w.f || w.f.length < 4 || w.f.length > 200) continue;
+    const ribbon = outlineRibbon(w.f, 7, 0.45);
+    if (ribbon) geoms.push(ribbon);
+  }
+  if (!geoms.length) return null;
+  const merged = mergeGeometries(geoms, false);
+  for (const g of geoms) g.dispose();
+  if (!merged) return null;
+  const mesh = new THREE.Mesh(merged, materials.foamMat);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildRoadRibbons(streets, yFn, waterIndex) {
+  const widths = { 3: 7.5, 4: 10.5, 5: 14 };
+  const colors = {
+    3: [0.42, 0.44, 0.48],
+    4: [0.52, 0.54, 0.58],
+    5: [0.62, 0.64, 0.68],
+  };
+  const byRank = { 3: { pos: [], col: [] }, 4: { pos: [], col: [] }, 5: { pos: [], col: [] } };
+
+  for (const s of streets) {
+    const r = s.r ?? 1;
+    if (r < 3 || !byRank[r]) continue;
+    const half = widths[r] * 0.5;
+    const rgb = colors[r];
+    const bucket = byRank[r];
+    for (let i = 0; i < s.c.length - 1; i++) {
+      const a = s.c[i];
+      const b = s.c[i + 1];
+      const mx = (a[0] + b[0]) * 0.5;
+      const mz = (a[1] + b[1]) * 0.5;
+      if (waterIndex.inside(mx, mz)) continue;
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const len = Math.hypot(dx, dz);
+      if (len < 1) continue;
+      const rx = (-dz / len) * half;
+      const rz = (dx / len) * half;
+      const ya = yFn(a[0], a[1]) + 1.15;
+      const yb = yFn(b[0], b[1]) + 1.15;
+      const a0 = [a[0] + rx, ya, a[1] + rz];
+      const a1 = [a[0] - rx, ya, a[1] - rz];
+      const b0 = [b[0] + rx, yb, b[1] + rz];
+      const b1 = [b[0] - rx, yb, b[1] - rz];
+      bucket.pos.push(...a0, ...a1, ...b1, ...a0, ...b1, ...b0);
+      for (let k = 0; k < 6; k++) bucket.col.push(...rgb);
+    }
+  }
+
+  const group = new THREE.Group();
+  for (const r of [3, 4, 5]) {
+    const { pos, col } = byRank[r];
+    if (pos.length < 9) continue;
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geom.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    applyXZUvs(geom, 0.08);
+    geom.computeVertexNormals();
+    const mesh = new THREE.Mesh(geom, materials.roadMat);
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
+function plantTrees(peaks, waterIndex, yFn) {
+  const dummy = new THREE.Object3D();
+  const positions = [];
+  const tryPlant = (x, z, minH) => {
+    if (waterIndex.inside(x, z) || waterIndex.nearBank(x, z)) return;
+    const y = yFn(x, z);
+    if (y < minH) return;
+    positions.push(x, y, z, 0.65 + hash01(x, z) * 0.7);
+  };
+
+  for (let x = -2000; x <= 900; x += 30) {
+    for (let z = 520; z <= 2200; z += 30) {
+      const jx = x + (hash01(x, z) - 0.5) * 22;
+      const jz = z + (hash01(z, x) - 0.5) * 22;
+      tryPlant(jx, jz, 16);
+    }
+  }
+  for (let x = 2400; x <= 5200; x += 42) {
+    for (let z = -1600; z <= 400; z += 42) {
+      const jx = x + (hash01(x, z) - 0.5) * 28;
+      const jz = z + (hash01(z, x) - 0.5) * 28;
+      tryPlant(jx, jz, 18);
+    }
+  }
+  for (let x = -800; x <= 1600; x += 40) {
+    for (let z = -2400; z <= -1400; z += 40) {
+      const jx = x + (hash01(x, z) - 0.5) * 24;
+      const jz = z + (hash01(z, x) - 0.5) * 24;
+      tryPlant(jx, jz, 14);
+    }
+  }
+
+  if (!positions.length) return null;
+  const count = positions.length / 4;
+  const geo = new THREE.ConeGeometry(4.2, 13, 5);
+  const mesh = new THREE.InstancedMesh(geo, materials.treeMat, count);
+  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+  for (let i = 0; i < count; i++) {
+    dummy.position.set(positions[i * 4], positions[i * 4 + 1] + 6.2, positions[i * 4 + 2]);
+    dummy.scale.setScalar(positions[i * 4 + 3]);
+    dummy.rotation.y = hash01(positions[i * 4], positions[i * 4 + 2]) * Math.PI * 2;
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+  }
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function buildingTint(b, cx, cz) {
+  const n = (b.n || '').toLowerCase();
+  if (/u\.?s\.? steel|us steel/.test(n)) return new THREE.Color(0x6a4a3a);
+  if (/ppg/.test(n)) return new THREE.Color(0xd8ece6);
+  const h = hash01(cx, cz);
+  const height = b.h || 10;
+  const cool = height > 70 ? 0.62 : 0.08;
+  return new THREE.Color().setHSL(cool + h * 0.05, 0.06 + h * 0.04, 0.9 + h * 0.08);
 }
 
 async function buildCity(data) {
   const peaks = data.terrainPeaks || [];
-  const yFn = (x, z) => terrainHeight(x, z, peaks);
+  const waterIndex = makeWaterIndex((data.water || []).map((w) => w.f));
+  const yFn = (x, z) => surfaceHeight(x, z, peaks, waterIndex);
 
-  scene.add(makeGround(peaks));
+  scene.add(makeGround(peaks, waterIndex));
   scene.add(makeGrid());
 
-  // Parks
   const parkGeoms = [];
   for (const p of data.parks) {
     if (p.f.length < 4) continue;
     try {
-      parkGeoms.push(flatPolygon(p.f, 0.8, yFn));
+      const g = flatPolygon(p.f, 0.85, yFn);
+      applyXZUvs(g, 0.05);
+      parkGeoms.push(g);
     } catch {
       /* skip bad poly */
     }
   }
   if (parkGeoms.length) {
-    const parkMesh = new THREE.Mesh(mergeGeometries(parkGeoms, false), parkMat);
+    const parkMesh = new THREE.Mesh(mergeGeometries(parkGeoms, false), materials.parkMat);
     parkMesh.receiveShadow = true;
     scene.add(parkMesh);
   }
 
-  // Water
   const waterGeoms = [];
   for (const w of data.water) {
     if (w.f.length < 4) continue;
     try {
-      waterGeoms.push(flatPolygon(w.f, 0.2, null));
+      const g = flatPolygon(w.f, 0.15, null);
+      applyXZUvs(g, 0.012);
+      waterGeoms.push(g);
     } catch {
       /* skip */
     }
   }
   if (waterGeoms.length) {
-    const waterMesh = new THREE.Mesh(mergeGeometries(waterGeoms, false), waterMat);
+    const waterMesh = new THREE.Mesh(mergeGeometries(waterGeoms, false), materials.waterMat);
+    waterMesh.receiveShadow = true;
     scene.add(waterMesh);
   }
+  const foam = buildWaterEdges(data.water);
+  if (foam) scene.add(foam);
 
-  // Buildings — batch merge in chunks
-  const normalGeoms = [];
-  const landmarkGeoms = [];
+  const buckets = {
+    lowrise: [],
+    brick: [],
+    limestone: [],
+    steel: [],
+    glass: [],
+    ppg: [],
+    gothic: [],
+    stadium: [],
+  };
   let buildingCount = 0;
 
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
     try {
-      const geom = extrudeBuilding(b.f, Math.max(3, b.h || 10), yFn);
-      if (b.landmark || (b.n && b.h > 100)) {
-        landmarkGeoms.push(geom);
-      } else {
-        normalGeoms.push(geom);
-      }
+      const family = buildingFamily(b);
+      const spec = materials.families[family];
+      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), yFn);
+      applyFacadeUVs(geom, spec.floorH, spec.windowW, base);
+      tintGeometry(geom, buildingTint(b, cx, cz));
+      buckets[family].push(geom);
       buildingCount += 1;
     } catch {
       /* skip degenerate */
@@ -369,13 +486,14 @@ async function buildCity(data) {
     }
   }
 
-  addChunks(normalGeoms, buildingMat);
-  addChunks(landmarkGeoms, landmarkMat);
+  for (const [name, geoms] of Object.entries(buckets)) {
+    addChunks(geoms, materials.families[name].mat);
+  }
 
-  // Streets as line segments grouped by rank
   const byRank = new Map();
   for (const s of data.streets) {
     const r = s.r ?? 1;
+    if (r >= 3) continue;
     if (!byRank.has(r)) byRank.set(r, []);
     const pts = byRank.get(r);
     for (let i = 0; i < s.c.length - 1; i++) {
@@ -389,13 +507,16 @@ async function buildCity(data) {
   for (const [r, arr] of byRank) {
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
-    const lines = new THREE.LineSegments(geom, roadMats[r] || roadMats[1]);
-    scene.add(lines);
+    scene.add(new THREE.LineSegments(geom, roadLineMats[r] || roadLineMats[1]));
   }
+  scene.add(buildRoadRibbons(data.streets || [], yFn, waterIndex));
 
-  buildBridges(data.bridges || [], yFn);
+  const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel });
+  scene.add(bridgeGroup);
 
-  // Landmark labels
+  const trees = plantTrees(peaks, waterIndex, yFn);
+  if (trees) scene.add(trees);
+
   for (const lm of data.landmarks || []) {
     const [x, z] = lm.p;
     const y = yFn(x, z) + (lm.h || 40) + 30;
@@ -406,7 +527,6 @@ async function buildCity(data) {
   return buildingCount;
 }
 
-/* ---------- Camera presets ---------- */
 const views = {
   aerial: {
     position: new THREE.Vector3(0, 2800, 0.01),
@@ -444,14 +564,7 @@ function animateCamera(toView, duration = 2200) {
   const toTarget = toView.target.clone();
   const start = performance.now();
   controls.enabled = false;
-  anim = {
-    start,
-    duration,
-    fromPos,
-    fromTarget,
-    toPos,
-    toTarget,
-  };
+  anim = { start, duration, fromPos, fromTarget, toPos, toTarget };
 }
 
 function setView(name) {
@@ -460,11 +573,8 @@ function setView(name) {
     for (const btn of navEl.querySelectorAll('button')) {
       btn.classList.toggle('active', btn.dataset.view === 'rotate' ? rotateMode : false);
     }
-    if (rotateMode) {
-      animateCamera(views.downtown, 1600);
-    } else {
-      controls.enabled = true;
-    }
+    if (rotateMode) animateCamera(views.downtown, 1600);
+    else controls.enabled = true;
     return;
   }
   rotateMode = false;
@@ -515,7 +625,7 @@ function tick(now) {
     controls.target.set(20, 50, -20);
   }
 
-  // focus spotlight follows orbit target
+  materials.waterUniforms.uTime.value = now * 0.001;
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
   focusGlow.position.x = controls.target.x;
@@ -527,7 +637,6 @@ function tick(now) {
 }
 requestAnimationFrame(tick);
 
-/* ---------- Boot ---------- */
 (async () => {
   try {
     const res = await fetch('./data/pittsburgh.json');
