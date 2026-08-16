@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pittsburgh — Architecture · Meters</title>
+    <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="c"></canvas>
+      <div class="crosshair" aria-hidden="true"></div>
+      <div class="loader" id="loader">
+        <div class="loader-bar"><span></span></div>
+        <div class="loader-text">Generating Pittsburgh…</div>
+      </div>
+    </div>
+
+    <header class="hud-tl">
+      <div class="eyebrow">Architecture · Meters</div>
+      <h1>Pittsburgh</h1>
+      <p class="meta">
+        OSM rivers, streets, parks, downtown footprints. +X east · +Y up · +Z south.
+        Confluence = 0.
+      </p>
+    </header>
+
+    <aside class="hud-tr">
+      <div class="eyebrow">Layers</div>
+      <div class="layers" id="layers">buildings — · loading</div>
+    </aside>
+
+    <nav class="hud-nav" id="nav">
+      <button type="button" data-view="aerial">Aerial</button>
+      <button type="button" data-view="downtown" class="active">Downtown</button>
+      <button type="button" data-view="point">The Point</button>
+      <button type="button" data-view="bridges">Bridges</button>
+      <button type="button" data-view="oakland">Oakland</button>
+      <button type="button" data-view="rotate">Rotate</button>
+    </nav>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
