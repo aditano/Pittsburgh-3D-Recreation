@@ -149,6 +149,8 @@ const sky = createSkyDome({ sunPosition: sun.position, radius: 16000 });
 scene.add(sky);
 
 const materials = createCityMaterials();
+// Keep the water sun-glint lobe aligned with the actual key light.
+materials.waterUniforms.uSunDir.value.copy(sun.position).normalize();
 // PMREM night environment probe regenerated directly from the sky dome
 // so glass/steel facades and river reflections are physically coherent.
 scene.environment = createNightEnvironment(renderer, { sunPosition: sun.position });

@@ -704,7 +704,29 @@ export function createCityMaterials() {
     emissiveIntensity: 0.2,
   });
 
-  const waterUniforms = { uTime: { value: 0 } };
+  /**
+   * Cinematic weather-reactive water uniforms (Pass 8).
+   *
+   * `uTime` is advanced every frame by main.js; the rest are eased each frame
+   * by the WeatherController so the surface transitions with the atmosphere:
+   * - uSunDir       world-space sun direction for the specular glint lobe
+   * - uChoppiness   ripple frequency/amplitude multiplier (rain>1, snow<<1)
+   * - uRainDrops    0..1 raindrop impact-ring + broken-surface disturbance
+   * - uSunGlint     strength of the sun-reflection sparkle
+   * - uReflectivity Fresnel/mirror boost (rain dulls it, snow goes glassy)
+   * - uWetTint/uTintMix  weather tint target + blend amount (grey rain chop,
+   *   pale steely near-freezing sheen; 0 mix on sunny keeps the base color)
+   */
+  const waterUniforms = {
+    uTime: { value: 0 },
+    uSunDir: { value: new THREE.Vector3(600, 900, 200).normalize() },
+    uChoppiness: { value: 1 },
+    uRainDrops: { value: 0 },
+    uSunGlint: { value: 1 },
+    uReflectivity: { value: 1 },
+    uTintMix: { value: 0 },
+    uWetTint: { value: new THREE.Color(0x0a2834) },
+  };
   const waterMat = new THREE.MeshStandardMaterial({
     color: 0x0a2834,
     map: water.map,
@@ -717,6 +739,13 @@ export function createCityMaterials() {
   });
   waterMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterUniforms.uTime;
+    shader.uniforms.uSunDir = waterUniforms.uSunDir;
+    shader.uniforms.uChoppiness = waterUniforms.uChoppiness;
+    shader.uniforms.uRainDrops = waterUniforms.uRainDrops;
+    shader.uniforms.uSunGlint = waterUniforms.uSunGlint;
+    shader.uniforms.uReflectivity = waterUniforms.uReflectivity;
+    shader.uniforms.uTintMix = waterUniforms.uTintMix;
+    shader.uniforms.uWetTint = waterUniforms.uWetTint;
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -733,15 +762,102 @@ export function createCityMaterials() {
         '#include <common>',
         `#include <common>
          uniform float uTime;
-         varying vec3 vWorldPos;`,
+         uniform vec3 uSunDir;
+         uniform float uChoppiness;
+         uniform float uRainDrops;
+         uniform float uSunGlint;
+         uniform float uReflectivity;
+         uniform float uTintMix;
+         uniform vec3 uWetTint;
+         varying vec3 vWorldPos;
+
+         // Analytic gradient of a 4-octave directional sine wave field over
+         // world XZ (meters). Returning the gradient (not the height) means a
+         // single evaluation yields the perturbed surface normal directly.
+         vec2 waterGrad(vec2 p, float t, float chop) {
+           vec2 g = vec2(0.0);
+           // broad swell
+           g += (0.50 * chop) * 0.045 * vec2(0.80, 0.60)
+                * cos(dot(p, vec2(0.80, 0.60)) * 0.045 + t * 0.90);
+           // cross swell
+           g += (0.35 * chop) * 0.085 * vec2(-0.62, 0.79)
+                * cos(dot(p, vec2(-0.62, 0.79)) * 0.085 - t * 1.30);
+           // detail chop (grows super-linearly with choppiness for storms)
+           g += (0.20 * chop * min(chop, 2.0)) * 0.190 * vec2(0.35, -0.94)
+                * cos(dot(p, vec2(0.35, -0.94)) * 0.190 + t * 2.60);
+           // counter-detail
+           g += (0.16 * chop) * 0.240 * vec2(-0.92, -0.39)
+                * cos(dot(p, vec2(-0.92, -0.39)) * 0.240 - t * 3.10);
+           return g;
+         }
+
+         // Expanding raindrop impact rings on a hashed grid (no textures).
+         vec2 rainRippleGrad(vec2 p, float t) {
+           vec2 rp = p * 0.30;
+           vec2 cell = floor(rp);
+           vec2 fc = fract(rp) - 0.5;
+           float rnd = fract(sin(dot(cell, vec2(127.1, 311.7))) * 43758.5453);
+           float ph = fract(t * 0.75 + rnd);
+           float d = length(fc) + 1e-4;
+           float ring = cos(d * 30.0 - ph * 9.0) * exp(-d * 4.0) * (1.0 - ph);
+           return (fc / d) * ring;
+         }`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-         float n = sin(vWorldPos.x * 0.018 + uTime * 0.35) * sin(vWorldPos.z * 0.014 + uTime * 0.28);
-         float edge = smoothstep(0.0, 18.0, abs(vWorldPos.y));
-         diffuseColor.rgb += n * 0.035 * vec3(0.45, 0.7, 0.8);
-         diffuseColor.rgb *= 0.88 + edge * 0.08;`,
+         vec2 wGrad = waterGrad(vWorldPos.xz, uTime, uChoppiness);
+         wGrad += rainRippleGrad(vWorldPos.xz, uTime) * (0.12 * uRainDrops);
+         // High-frequency broken-surface jitter while rain is falling.
+         wGrad += (0.05 * uRainDrops) * vec2(
+           sin(vWorldPos.x * 1.7 + vWorldPos.z * 2.3 + uTime * 9.0),
+           sin(vWorldPos.z * 1.9 - vWorldPos.x * 2.1 + uTime * 11.0));
+         vec3 wNormal = normalize(vec3(-wGrad.x * 5.5, 1.0, -wGrad.y * 5.5));
+         vec3 wView = normalize(cameraPosition - vWorldPos);
+         float wFacing = clamp(dot(wNormal, wView), 0.0, 1.0);
+         float wFresnel = pow(1.0 - wFacing, 5.0);
+         // Deep-water absorption looking straight down; the surface stays
+         // brighter/mirror-like at grazing angles via the Fresnel terms below.
+         diffuseColor.rgb *= mix(1.0, 0.42, wFacing * 0.85);
+         // Weather tint: grey rain chop or pale steely near-freezing sheen.
+         diffuseColor.rgb = mix(diffuseColor.rgb, uWetTint, uTintMix);
+         // Subtle moving shimmer so the sheet never reads as flat.
+         float wShimmer = sin(vWorldPos.x * 0.018 + uTime * 0.35)
+                        * sin(vWorldPos.z * 0.014 + uTime * 0.28);
+         diffuseColor.rgb += wShimmer * 0.03 * (0.5 + 0.5 * uChoppiness) * vec3(0.45, 0.7, 0.8);`,
+      )
+      .replace(
+        '#include <roughnessmap_fragment>',
+        `#include <roughnessmap_fragment>
+         // Choppy/rain-broken water scatters; grazing angles tighten toward a
+         // mirror so the skyline/sky reflection sharpens near the horizon.
+         roughnessFactor = clamp(
+           roughnessFactor + (uChoppiness - 1.0) * 0.06 + uRainDrops * 0.14, 0.03, 1.0);
+         roughnessFactor = mix(
+           roughnessFactor, 0.03, wFresnel * clamp(uReflectivity, 0.0, 1.0) * 0.85);`,
+      )
+      .replace(
+        '#include <metalnessmap_fragment>',
+        `#include <metalnessmap_fragment>
+         // Fresnel reflectivity boost: mirror-like at grazing angles.
+         metalnessFactor = clamp(metalnessFactor + wFresnel * 0.38 * uReflectivity, 0.0, 1.0);`,
+      )
+      .replace(
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+         // Procedural rippled normal (world -> view space) feeds the standard
+         // PBR pipeline, so IBL/sky reflections wobble with the waves.
+         normal = normalize((viewMatrix * vec4(wNormal, 0.0)).xyz);`,
+      )
+      .replace(
+        '#include <emissivemap_fragment>',
+        `#include <emissivemap_fragment>
+         // Sun glint: sharp lobe along the sun reflection, emissive so bloom
+         // picks it up as sparkle. A faint wide lobe adds a warm sheen path.
+         vec3 wReflect = reflect(-wView, wNormal);
+         float wSunDot = max(dot(wReflect, uSunDir), 0.0);
+         float wGlint = pow(wSunDot, 260.0) * 2.4 + pow(wSunDot, 36.0) * 0.08;
+         totalEmissiveRadiance += vec3(1.0, 0.82, 0.58) * wGlint * uSunGlint;`,
       );
   };
 

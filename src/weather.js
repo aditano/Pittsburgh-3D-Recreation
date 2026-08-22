@@ -34,6 +34,12 @@ const DEFAULT_TRANSITION = 1.25;
  * (only one is non-zero on a settled preset) so rain and snow can cross-fade
  * without sharing a channel. `wetness` drives glossy asphalt; `snowCover`
  * drives flake opacity/count and the revertible frost/accumulation look.
+ *
+ * Water (Pass 8): `waterChoppiness` scales ripple frequency/amplitude,
+ * `waterRainDrops` adds impact rings + broken-surface jitter, `waterGlint`
+ * scales the sun-reflection sparkle, `waterReflectivity` scales the Fresnel
+ * mirror/IBL response, and `waterTint`/`waterTintMix` blend the river toward
+ * a weather color (grey chop in rain, pale steel near freezing).
  */
 export const WEATHER_PRESETS = {
   // Clear golden-hour dusk: the brightest, cleanest, most saturated option.
@@ -65,6 +71,13 @@ export const WEATHER_PRESETS = {
     wetness: 0,
     rainFall: 0,
     snowCover: 0,
+    // Calm river: crisp sky reflection and warm sun glints.
+    waterChoppiness: 1,
+    waterRainDrops: 0,
+    waterGlint: 1,
+    waterReflectivity: 1,
+    waterTint: 0x0a2834,
+    waterTintMix: 0,
   },
 
   // Overcast downpour: desaturated, cool blue-gray, dim sun, heavy haze.
@@ -100,6 +113,13 @@ export const WEATHER_PRESETS = {
     wetness: 1,
     rainFall: 1,
     snowCover: 0,
+    // Choppy, broken, grey: raindrop rings kill the clean mirror reflection.
+    waterChoppiness: 2.4,
+    waterRainDrops: 1,
+    waterGlint: 0.05,
+    waterReflectivity: 0.4,
+    waterTint: 0x333c44,
+    waterTintMix: 0.55,
   },
 
   // Cold snowfall: bright and hazy but blue-white, with very soft shading.
@@ -136,6 +156,13 @@ export const WEATHER_PRESETS = {
     wetness: 0.35,
     rainFall: 0,
     snowCover: 1,
+    // Near-freezing glass: very calm, extra reflective, steely pale sheen.
+    waterChoppiness: 0.28,
+    waterRainDrops: 0,
+    waterGlint: 0.3,
+    waterReflectivity: 1.25,
+    waterTint: 0x7e93a6,
+    waterTintMix: 0.32,
   },
 };
 
@@ -153,6 +180,7 @@ const COLOR_KEYS = [
   'hemiGroundColor',
   'fillColor',
   'focusColor',
+  'waterTint',
 ];
 
 const SCALAR_KEYS = [
@@ -170,6 +198,11 @@ const SCALAR_KEYS = [
   'wetness',
   'rainFall',
   'snowCover',
+  'waterChoppiness',
+  'waterRainDrops',
+  'waterGlint',
+  'waterReflectivity',
+  'waterTintMix',
 ];
 
 /** Allocate a blendable state object mirroring the preset schema. */
@@ -298,6 +331,14 @@ export class WeatherController {
         snowEnvironment: 0.32,
       }),
     ].filter(Boolean);
+
+    // Water shader hookup (Pass 8): the controller writes the eased water
+    // state into these uniforms every apply(), so the river transitions in
+    // lockstep with fog/lights. envMapIntensity is snapshotted so Sunny
+    // always restores the exact base reflection strength.
+    this._waterUniforms = materials?.waterUniforms ?? null;
+    this._waterMat = materials?.waterMat ?? null;
+    this._waterBaseEnv = this._waterMat ? this._waterMat.envMapIntensity : 1;
 
     this.presets = WEATHER_PRESETS;
 
@@ -460,8 +501,33 @@ export class WeatherController {
     this.renderer.toneMappingExposure = s.exposure;
     this.setEnvironmentIntensity?.(s.environmentIntensity);
     this._applySurfaceLooks(s.wetness, s.snowCover);
+    this._applyWaterLook(s);
 
     this._dirty = false;
+  }
+
+  /**
+   * Push the eased water state into the river shader uniforms (Pass 8).
+   *
+   * All values come from the same blended `_current` state as everything
+   * else, so choppiness/tint/glint cross-fade with the atmosphere and revert
+   * exactly when switching back to Sunny. No allocations: colors are copied
+   * into the preallocated uniform Color, scalars are plain writes.
+   */
+  _applyWaterLook(s) {
+    const wu = this._waterUniforms;
+    if (wu && wu.uChoppiness) {
+      wu.uChoppiness.value = s.waterChoppiness;
+      wu.uRainDrops.value = s.waterRainDrops;
+      wu.uSunGlint.value = s.waterGlint;
+      wu.uReflectivity.value = s.waterReflectivity;
+      wu.uTintMix.value = s.waterTintMix;
+      wu.uWetTint.value.copy(s.waterTint);
+    }
+    if (this._waterMat) {
+      // Overcast rain mutes the IBL mirror; near-freezing snow sharpens it.
+      this._waterMat.envMapIntensity = this._waterBaseEnv * s.waterReflectivity;
+    }
   }
 
   /**
