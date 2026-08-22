@@ -93,9 +93,9 @@ composer.addPass(gtaoPass);
 
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
-  0.72,
-  0.65,
-  0.78,
+  0.66,
+  0.64,
+  0.76,
 );
 composer.addPass(bloomPass);
 composer.addPass(new OutputPass());
@@ -142,6 +142,12 @@ scene.add(sun);
 const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
 fill.position.set(-400, 300, -600);
 scene.add(fill);
+
+// Subtle downtown street-level warm fill — complements window emissive without
+// extra draw calls; a single point light keeps performance high.
+const streetAmbience = new THREE.PointLight(0xff9048, 7, 380, 2);
+streetAmbience.position.set(100, 16, -60);
+scene.add(streetAmbience);
 
 // Atmospheric dusk sky dome with deep indigo zenith, sunset horizon glow
 // tied to sun direction, forward Mie scattering, and seamless dark nadir.

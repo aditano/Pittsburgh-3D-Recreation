@@ -74,6 +74,33 @@ function bakeNormalFromHeight(srcCanvas, strength = 1.6) {
   return canvasTexture(out, { color: false });
 }
 
+/** Per-window light palette — warm tungsten, cool office, rare accent hues. */
+function pickWindowLight(rand, { glass = false, cool = false, accent = false } = {}) {
+  const roll = rand();
+  if (accent) {
+    // PPG-style teal curtain wall with occasional jewel-tone accents.
+    if (roll < 0.55) return { lit: '#88c8b8', em: '#98e8d0', core: '#d8fff4', dim: '#3a6860' };
+    if (roll < 0.78) return { lit: '#a8d8c8', em: '#c0f0e0', core: '#e8fff8', dim: '#4a7870' };
+    if (roll < 0.90) return { lit: '#e8d8a8', em: '#f8e8b8', core: '#fff8e0', dim: '#8a7850' };
+    if (roll < 0.97) return { lit: '#c8a8e8', em: '#e0c0ff', core: '#f8e8ff', dim: '#685080' };
+    return { lit: '#a8c8f0', em: '#c8e0ff', core: '#f0f8ff', dim: '#486888' };
+  }
+  if (glass || cool) {
+    if (roll < 0.42) return { lit: '#d8e4f0', em: '#e8f4ff', core: '#ffffff', dim: '#6a7890' };
+    if (roll < 0.68) return { lit: '#c8d8e8', em: '#d8ecff', core: '#f4faff', dim: '#5a6878' };
+    if (roll < 0.84) return { lit: '#e8c890', em: '#f0d8a0', core: '#fff0c8', dim: '#8a6840' };
+    if (roll < 0.95) return { lit: '#a8c8e8', em: '#b8d8f8', core: '#e0f0ff', dim: '#486878' };
+    return { lit: '#b8e0c8', em: '#c8f0d8', core: '#e8fff0', dim: '#487860' };
+  }
+  // Masonry / brick — mostly warm residential/office tungsten.
+  if (roll < 0.48) return { lit: '#e8b868', em: '#ffc878', core: '#fff4d8', dim: '#8a6230' };
+  if (roll < 0.72) return { lit: '#f0d080', em: '#ffe090', core: '#fff8e0', dim: '#9a7038' };
+  if (roll < 0.86) return { lit: '#e8ece8', em: '#f8fcff', core: '#ffffff', dim: '#7a8078' };
+  if (roll < 0.94) return { lit: '#d0d8e8', em: '#e0ecff', core: '#f0f8ff', dim: '#606878' };
+  if (roll < 0.98) return { lit: '#ffb860', em: '#ffc870', core: '#ffe8b0', dim: '#a06028' };
+  return { lit: '#c8e0a8', em: '#d8f0b8', core: '#f0ffe0', dim: '#608048' };
+}
+
 function paintFacade(opts) {
   const {
     seed = 1,
@@ -91,6 +118,9 @@ function paintFacade(opts) {
     glass = false,
     panels = false,
     tallWindows = false,
+    cool = false,
+    accent = false,
+    floodlit = false,
   } = opts;
 
   const rand = rng(seed);
@@ -158,17 +188,33 @@ function paintFacade(opts) {
       c.fillStyle = frame;
       c.fillRect(x - 1, y - 1, w + 2, h + 2);
       if (lit) {
+        const light = pickWindowLight(rand, { glass, cool, accent });
         const glow = c.createLinearGradient(x, y, x, y + h);
-        glow.addColorStop(0, windowLit);
-        glow.addColorStop(1, '#8a6230');
+        glow.addColorStop(0, light.lit);
+        glow.addColorStop(1, light.dim);
         c.fillStyle = glow;
-        e.fillStyle = windowLit;
+        c.fillRect(x, y, w, h);
+        // Emissive map: saturated base + hot core so bloom threshold catches windows only.
+        e.fillStyle = light.em;
+        e.fillRect(x, y, w, h);
+        e.fillStyle = light.core;
+        const cw = Math.max(2, w * (0.32 + rand() * 0.28));
+        const ch = Math.max(2, h * (0.24 + rand() * 0.24));
+        e.fillRect(x + (w - cw) * 0.5, y + h * 0.06, cw, ch);
+        if (rand() < 0.24) {
+          e.fillStyle = 'rgba(255,255,255,0.9)';
+          e.fillRect(x + w * 0.1, y + h * 0.52, w * 0.3, h * 0.22);
+        }
+        if (rand() < 0.38) {
+          c.fillStyle = 'rgba(255,255,255,0.18)';
+          c.fillRect(x + 1, y + 1, w * 0.42, h * 0.32);
+        }
       } else {
         c.fillStyle = windowDark;
+        c.fillRect(x, y, w, h);
         e.fillStyle = '#000';
+        e.fillRect(x, y, w, h);
       }
-      c.fillRect(x, y, w, h);
-      e.fillRect(x, y, w, h);
       // Windows are smoother (esp. glass curtain walls); frames stay rougher.
       if (glass) {
         r.fillStyle = lit ? '#1a1a1a' : '#222222';
@@ -176,9 +222,12 @@ function paintFacade(opts) {
         r.fillStyle = lit ? '#2a2a2a' : '#3a3a3a';
       }
       r.fillRect(x, y, w, h);
-      if (lit && rand() < 0.45) {
-        c.fillStyle = 'rgba(255,230,180,0.25)';
-        c.fillRect(x + 1, y + 1, w * 0.4, h * 0.35);
+      // Stadium / arena floodlight panels — extra-bright emissive bands.
+      if (floodlit && panels && rand() < 0.14) {
+        e.fillStyle = '#fff8e0';
+        e.fillRect(x - 1, y - 1, w + 2, h + 2);
+        c.fillStyle = '#f0e8c0';
+        c.fillRect(x, y, w, h);
       }
     }
   }
@@ -509,7 +558,8 @@ export function createCityMaterials() {
         {
           roughness: 0.92,
           metalness: 0.02,
-          emissiveIntensity: 0.55,
+          emissive: 0xffc888,
+          emissiveIntensity: 0.68,
           envMapIntensity: 0.28,
           normalScale: 0.7,
         },
@@ -531,7 +581,8 @@ export function createCityMaterials() {
         {
           roughness: 0.9,
           metalness: 0.02,
-          emissiveIntensity: 0.7,
+          emissive: 0xffcc88,
+          emissiveIntensity: 0.88,
           envMapIntensity: 0.3,
           normalScale: 0.75,
         },
@@ -553,7 +604,8 @@ export function createCityMaterials() {
         {
           roughness: 0.82,
           metalness: 0.04,
-          emissiveIntensity: 0.72,
+          emissive: 0xffd090,
+          emissiveIntensity: 0.92,
           envMapIntensity: 0.4,
           normalScale: 0.45,
         },
@@ -572,13 +624,15 @@ export function createCityMaterials() {
           windowLit: '#d8c090',
           cols: 8,
           rows: 10,
-          litChance: 0.38,
+          litChance: 0.42,
           glass: true,
+          cool: true,
         }),
         {
           roughness: 0.28,
           metalness: 0.55,
-          emissiveIntensity: 0.8,
+          emissive: 0xffc890,
+          emissiveIntensity: 1.02,
           envMapIntensity: 0.95,
           normalScale: 0.35,
         },
@@ -598,14 +652,15 @@ export function createCityMaterials() {
           frame: '#0a1014',
           cols: 8,
           rows: 10,
-          litChance: 0.42,
+          litChance: 0.46,
           glass: true,
+          cool: true,
         }),
         {
           roughness: 0.08,
           metalness: 0.82,
-          emissive: 0xa8c4d8,
-          emissiveIntensity: 0.85,
+          emissive: 0xb8d4e8,
+          emissiveIntensity: 1.08,
           envMapIntensity: 1.35,
           normalScale: 0.22,
         },
@@ -624,14 +679,15 @@ export function createCityMaterials() {
           frame: '#081212',
           cols: 8,
           rows: 12,
-          litChance: 0.34,
+          litChance: 0.38,
           glass: true,
+          accent: true,
         }),
         {
           roughness: 0.06,
           metalness: 0.88,
-          emissive: 0x6aa898,
-          emissiveIntensity: 0.75,
+          emissive: 0x88e0c8,
+          emissiveIntensity: 1.0,
           envMapIntensity: 1.45,
           normalScale: 0.18,
         },
@@ -655,7 +711,8 @@ export function createCityMaterials() {
         {
           roughness: 0.86,
           metalness: 0.03,
-          emissiveIntensity: 0.6,
+          emissive: 0xffd888,
+          emissiveIntensity: 0.78,
           envMapIntensity: 0.32,
           normalScale: 0.55,
         },
@@ -673,13 +730,15 @@ export function createCityMaterials() {
           windowLit: '#d0c080',
           cols: 4,
           rows: 4,
-          litChance: 0.2,
+          litChance: 0.36,
           panels: true,
+          floodlit: true,
         }),
         {
           roughness: 0.62,
           metalness: 0.22,
-          emissiveIntensity: 0.45,
+          emissive: 0xffe090,
+          emissiveIntensity: 0.78,
           envMapIntensity: 0.55,
           normalScale: 0.4,
         },
