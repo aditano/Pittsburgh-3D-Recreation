@@ -856,7 +856,7 @@ export function createCityMaterials() {
          // picks it up as sparkle. A faint wide lobe adds a warm sheen path.
          vec3 wReflect = reflect(-wView, wNormal);
          float wSunDot = max(dot(wReflect, uSunDir), 0.0);
-         float wGlint = pow(wSunDot, 260.0) * 2.4 + pow(wSunDot, 36.0) * 0.08;
+         float wGlint = pow(wSunDot, 260.0) * 1.5 + pow(wSunDot, 36.0) * 0.045;
          totalEmissiveRadiance += vec3(1.0, 0.82, 0.58) * wGlint * uSunGlint;`,
       );
   };
