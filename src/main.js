@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
@@ -34,10 +38,25 @@ const renderer = new THREE.WebGLRenderer({
   antialias: true,
   powerPreference: 'high-performance',
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const pixelRatio = Math.min(window.devicePixelRatio, 2);
+renderer.setPixelRatio(pixelRatio);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(pixelRatio);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.72,
+  0.65,
+  0.78,
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
 
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.domElement.className = 'label-layer';
@@ -602,6 +621,7 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
+  composer.setSize(w, h);
   labelRenderer.setSize(w, h);
 }
 window.addEventListener('resize', onResize);
@@ -635,7 +655,7 @@ function tick(now) {
   focusGlow.position.z = controls.target.z;
 
   controls.update();
-  renderer.render(scene, camera);
+  composer.render();
   labelRenderer.render(scene, camera);
 }
 requestAnimationFrame(tick);
