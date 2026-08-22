@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createRainSystem } from './rain.js';
 
 /**
  * Dynamic weather system.
@@ -192,6 +193,21 @@ function smoothstep(t) {
   return t * t * (3 - 2 * t);
 }
 
+function wetSurface(material, wetRoughness, wetMetalness, wetEnvironment, darken) {
+  if (!material) return null;
+  return {
+    material,
+    baseColor: material.color.clone(),
+    baseRoughness: material.roughness,
+    baseMetalness: material.metalness,
+    baseEnvironment: material.envMapIntensity,
+    wetRoughness,
+    wetMetalness,
+    wetEnvironment,
+    darken,
+  };
+}
+
 export class WeatherController {
   /**
    * @param {object} refs
@@ -234,6 +250,10 @@ export class WeatherController {
     this.setEnvironmentIntensity = setEnvironmentIntensity;
     this.materials = materials;
     this.transitionDuration = transitionDuration;
+    this._wetSurfaces = [
+      wetSurface(materials?.groundMat, 0.3, 0.13, 1.2, 0.14),
+      wetSurface(materials?.roadMat, 0.16, 0.18, 1.7, 0.22),
+    ].filter(Boolean);
 
     this.presets = WEATHER_PRESETS;
 
@@ -385,8 +405,27 @@ export class WeatherController {
 
     this.renderer.toneMappingExposure = s.exposure;
     this.setEnvironmentIntensity?.(s.environmentIntensity);
+    this._applyWetness(s.wetness);
 
     this._dirty = false;
+  }
+
+  /**
+   * Blend asphalt/ground material parameters from their original dry values.
+   * The snapshots make returning to Sunny exact, including custom base colors.
+   */
+  _applyWetness(wetness) {
+    const amount = THREE.MathUtils.clamp(wetness, 0, 1);
+    for (const surface of this._wetSurfaces) {
+      const { material } = surface;
+      material.color.copy(surface.baseColor).multiplyScalar(1 - surface.darken * amount);
+      material.roughness =
+        surface.baseRoughness + (surface.wetRoughness - surface.baseRoughness) * amount;
+      material.metalness =
+        surface.baseMetalness + (surface.wetMetalness - surface.baseMetalness) * amount;
+      material.envMapIntensity =
+        surface.baseEnvironment + (surface.wetEnvironment - surface.baseEnvironment) * amount;
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -405,7 +444,10 @@ export class WeatherController {
    * whatever accumulation material tweaks it needs from `this.materials`.
    */
   _syncPrecipitation() {
-    // Pass 6: if (this.target === 'rain' && !this.rainSystem) this.rainSystem = createRainSystem(...)
+    if (this.target === 'rain' && !this.rainSystem) {
+      this.rainSystem = createRainSystem();
+      this.scene.add(this.rainSystem.object3D);
+    }
     // Pass 7: if (this.target === 'snow' && !this.snowSystem) this.snowSystem = createSnowSystem(...)
     this.rainSystem?.setIntensity?.(this.target === 'rain' ? 1 : 0);
     this.snowSystem?.setIntensity?.(this.target === 'snow' ? 1 : 0);
@@ -419,8 +461,13 @@ export class WeatherController {
    * in step with the atmospheric cross-fade instead of popping them on.
    */
   _updatePrecipitation(dt, elapsed, camera) {
-    // Pass 6 adds rain particles here (advance streak positions, scroll UVs,
-    // recycle drops above the camera, drive splash/ripple uniforms).
+    // Keep rain visible while Rain is fading in. When fading to Sunny, the
+    // blended precipitation signal provides a smooth fade-out; Snow owns its
+    // separate precipitation layer in Pass 7.
+    const fadingToSunny =
+      this.target !== 'rain' && this._to.precipitation === 0 && this._from.precipitation > 0;
+    const rainIntensity = this.target === 'rain' || fadingToSunny ? this.precipitation : 0;
+    this.rainSystem?.setIntensity?.(rainIntensity);
     this.rainSystem?.update?.(dt, elapsed, camera, this._current);
 
     // Pass 7 adds snow particles here (drifting flakes with wind sway plus
