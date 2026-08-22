@@ -199,6 +199,7 @@ const weather = new WeatherController({
   materials,
   initial: 'sunny',
 });
+window.__weather = weather;
 
 if (weatherEl) {
   for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {

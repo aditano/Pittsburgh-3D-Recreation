@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { createRainSystem } from './rain.js';
+import { createSnowSystem } from './snow.js';
 
 /**
  * Dynamic weather system.
@@ -28,9 +29,11 @@ const DEFAULT_TRANSITION = 1.25;
  * Per-preset target parameters.
  *
  * Colors are hex ints, everything else is a plain number so presets stay
- * serializable/diffable. `precipitation` and `wetness` carry no visual effect
- * on their own yet — they are the normalized 0..1 signals Pass 6 (rain) and
- * Pass 7 (snow) read to fade particles and surface wetness in/out.
+ * serializable/diffable. `precipitation` is the shared 0..1 "something is
+ * falling" signal. `rainFall` / `snowCover` are mutually exclusive amounts
+ * (only one is non-zero on a settled preset) so rain and snow can cross-fade
+ * without sharing a channel. `wetness` drives glossy asphalt; `snowCover`
+ * drives flake opacity/count and the revertible frost/accumulation look.
  */
 export const WEATHER_PRESETS = {
   // Clear golden-hour dusk: the brightest, cleanest, most saturated option.
@@ -60,6 +63,8 @@ export const WEATHER_PRESETS = {
     environmentIntensity: 0.9,
     precipitation: 0,
     wetness: 0,
+    rainFall: 0,
+    snowCover: 0,
   },
 
   // Overcast downpour: desaturated, cool blue-gray, dim sun, heavy haze.
@@ -93,6 +98,8 @@ export const WEATHER_PRESETS = {
     environmentIntensity: 0.55,
     precipitation: 1,
     wetness: 1,
+    rainFall: 1,
+    snowCover: 0,
   },
 
   // Cold snowfall: bright and hazy but blue-white, with very soft shading.
@@ -127,6 +134,8 @@ export const WEATHER_PRESETS = {
     environmentIntensity: 0.85,
     precipitation: 1,
     wetness: 0.35,
+    rainFall: 0,
+    snowCover: 1,
   },
 };
 
@@ -159,6 +168,8 @@ const SCALAR_KEYS = [
   'environmentIntensity',
   'precipitation',
   'wetness',
+  'rainFall',
+  'snowCover',
 ];
 
 /** Allocate a blendable state object mirroring the preset schema. */
@@ -193,7 +204,12 @@ function smoothstep(t) {
   return t * t * (3 - 2 * t);
 }
 
-function wetSurface(material, wetRoughness, wetMetalness, wetEnvironment, darken) {
+/**
+ * Snapshot a city material so rain wetness and snow cover can both lerp from
+ * the same dry base and fully revert. Omitting a wet/snow field skips that
+ * layer for the surface (parks get frost but not a wet-asphalt treatment).
+ */
+function surfaceLook(material, extras = {}) {
   if (!material) return null;
   return {
     material,
@@ -201,10 +217,14 @@ function wetSurface(material, wetRoughness, wetMetalness, wetEnvironment, darken
     baseRoughness: material.roughness,
     baseMetalness: material.metalness,
     baseEnvironment: material.envMapIntensity,
-    wetRoughness,
-    wetMetalness,
-    wetEnvironment,
-    darken,
+    wetRoughness: extras.wetRoughness,
+    wetMetalness: extras.wetMetalness,
+    wetEnvironment: extras.wetEnvironment,
+    darken: extras.darken ?? 0,
+    snowColor: extras.snowColor ? extras.snowColor.clone() : null,
+    snowRoughness: extras.snowRoughness,
+    snowMetalness: extras.snowMetalness,
+    snowEnvironment: extras.snowEnvironment,
   };
 }
 
@@ -250,9 +270,33 @@ export class WeatherController {
     this.setEnvironmentIntensity = setEnvironmentIntensity;
     this.materials = materials;
     this.transitionDuration = transitionDuration;
-    this._wetSurfaces = [
-      wetSurface(materials?.groundMat, 0.3, 0.13, 1.2, 0.14),
-      wetSurface(materials?.roadMat, 0.16, 0.18, 1.7, 0.22),
+    this._surfaceLooks = [
+      surfaceLook(materials?.groundMat, {
+        wetRoughness: 0.3,
+        wetMetalness: 0.13,
+        wetEnvironment: 1.2,
+        darken: 0.14,
+        snowColor: new THREE.Color(3.15, 3.35, 3.65),
+        snowRoughness: 0.98,
+        snowMetalness: 0.02,
+        snowEnvironment: 0.42,
+      }),
+      surfaceLook(materials?.roadMat, {
+        wetRoughness: 0.16,
+        wetMetalness: 0.18,
+        wetEnvironment: 1.7,
+        darken: 0.22,
+        snowColor: new THREE.Color(1.48, 1.55, 1.68),
+        snowRoughness: 0.9,
+        snowMetalness: 0.04,
+        snowEnvironment: 0.55,
+      }),
+      surfaceLook(materials?.parkMat, {
+        snowColor: new THREE.Color(0xc4d4e4),
+        snowRoughness: 1,
+        snowMetalness: 0,
+        snowEnvironment: 0.32,
+      }),
     ].filter(Boolean);
 
     this.presets = WEATHER_PRESETS;
@@ -341,6 +385,16 @@ export class WeatherController {
     return this._current.wetness;
   }
 
+  /** Eased snow accumulation / flake amount, 0..1. Zero on Sunny and Rain. */
+  get snowCover() {
+    return this._current.snowCover;
+  }
+
+  /** Eased rain-only particle amount, 0..1. Zero on Sunny and Snow. */
+  get rainFall() {
+    return this._current.rainFall;
+  }
+
   /**
    * Per-frame tick. Advances the cross-fade, pushes the blended state into the
    * scene, then updates any precipitation systems.
@@ -405,73 +459,87 @@ export class WeatherController {
 
     this.renderer.toneMappingExposure = s.exposure;
     this.setEnvironmentIntensity?.(s.environmentIntensity);
-    this._applyWetness(s.wetness);
+    this._applySurfaceLooks(s.wetness, s.snowCover);
 
     this._dirty = false;
   }
 
   /**
-   * Blend asphalt/ground material parameters from their original dry values.
-   * The snapshots make returning to Sunny exact, including custom base colors.
+   * Blend ground/road/park materials from their dry snapshots.
+   *
+   * Wetness (Pass 6) and snow cover (Pass 7) both start from the same base
+   * and are applied in that order, so a settled Snow preset is 100% frost
+   * (snowCover = 1 overwrites the leftover 0.35 wetness) and Sunny restores
+   * the exact original color/roughness/metalness/IBL. No permanent bake.
    */
-  _applyWetness(wetness) {
-    const amount = THREE.MathUtils.clamp(wetness, 0, 1);
-    for (const surface of this._wetSurfaces) {
+  _applySurfaceLooks(wetness, snowCover) {
+    const wet = THREE.MathUtils.clamp(wetness, 0, 1);
+    const snow = THREE.MathUtils.clamp(snowCover, 0, 1);
+    for (const surface of this._surfaceLooks) {
       const { material } = surface;
-      material.color.copy(surface.baseColor).multiplyScalar(1 - surface.darken * amount);
-      material.roughness =
-        surface.baseRoughness + (surface.wetRoughness - surface.baseRoughness) * amount;
-      material.metalness =
-        surface.baseMetalness + (surface.wetMetalness - surface.baseMetalness) * amount;
-      material.envMapIntensity =
-        surface.baseEnvironment + (surface.wetEnvironment - surface.baseEnvironment) * amount;
+      material.color.copy(surface.baseColor);
+      let roughness = surface.baseRoughness;
+      let metalness = surface.baseMetalness;
+      let environment = surface.baseEnvironment;
+
+      if (wet > 0 && surface.wetRoughness != null) {
+        material.color.multiplyScalar(1 - surface.darken * wet);
+        roughness += (surface.wetRoughness - surface.baseRoughness) * wet;
+        metalness += (surface.wetMetalness - surface.baseMetalness) * wet;
+        environment += (surface.wetEnvironment - surface.baseEnvironment) * wet;
+      }
+
+      if (snow > 0 && surface.snowColor) {
+        material.color.lerp(surface.snowColor, snow);
+      }
+      if (snow > 0 && surface.snowRoughness != null) {
+        roughness += (surface.snowRoughness - roughness) * snow;
+        metalness += (surface.snowMetalness - metalness) * snow;
+        environment += (surface.snowEnvironment - environment) * snow;
+      }
+
+      material.roughness = roughness;
+      material.metalness = metalness;
+      material.envMapIntensity = environment;
     }
   }
 
   // ---------------------------------------------------------------------
-  // Precipitation hooks — intentionally inert in Pass 5.
+  // Precipitation hooks
   // ---------------------------------------------------------------------
 
   /**
    * Called when the target weather changes, before the cross-fade finishes.
    *
-   * Pass 6 adds rain particles here: lazily build the rain system (a
-   * THREE.Points / InstancedMesh of streaks parented to the camera rig), add
-   * it to `this.scene`, and toggle `object3D.visible` based on
-   * `this.target === 'rain'`.
-   *
-   * Pass 7 adds snow particles here: same shape, but for drifting flakes plus
-   * whatever accumulation material tweaks it needs from `this.materials`.
+   * Lazily builds rain/snow systems the first time that weather is selected,
+   * parents their `object3D` to the scene, and seeds intensity from the live
+   * blended `rainFall` / `snowCover` so a mid-transition re-aim does not pop.
    */
   _syncPrecipitation() {
     if (this.target === 'rain' && !this.rainSystem) {
       this.rainSystem = createRainSystem();
       this.scene.add(this.rainSystem.object3D);
     }
-    // Pass 7: if (this.target === 'snow' && !this.snowSystem) this.snowSystem = createSnowSystem(...)
-    this.rainSystem?.setIntensity?.(this.target === 'rain' ? 1 : 0);
-    this.snowSystem?.setIntensity?.(this.target === 'snow' ? 1 : 0);
+    if (this.target === 'snow' && !this.snowSystem) {
+      this.snowSystem = createSnowSystem();
+      this.scene.add(this.snowSystem.object3D);
+    }
+    this.rainSystem?.setIntensity?.(this._current.rainFall);
+    this.snowSystem?.setIntensity?.(this._current.snowCover);
   }
 
   /**
    * Per-frame particle tick, driven from `update()`.
    *
-   * Both calls are null-safe no-ops until Pass 6/7 populate the slots. Use the
-   * already-blended `this.precipitation` (0..1) to fade particle opacity/count
-   * in step with the atmospheric cross-fade instead of popping them on.
+   * Intensity comes from the independently eased `rainFall` / `snowCover`
+   * channels (not the shared `precipitation` signal), so only rain shows
+   * during Rain, only snow during Snow, and Sunny ends fully clear. A brief
+   * overlap is expected in the middle of a Rain↔Snow cross-fade.
    */
   _updatePrecipitation(dt, elapsed, camera) {
-    // Keep rain visible while Rain is fading in. When fading to Sunny, the
-    // blended precipitation signal provides a smooth fade-out; Snow owns its
-    // separate precipitation layer in Pass 7.
-    const fadingToSunny =
-      this.target !== 'rain' && this._to.precipitation === 0 && this._from.precipitation > 0;
-    const rainIntensity = this.target === 'rain' || fadingToSunny ? this.precipitation : 0;
-    this.rainSystem?.setIntensity?.(rainIntensity);
+    this.rainSystem?.setIntensity?.(this._current.rainFall);
     this.rainSystem?.update?.(dt, elapsed, camera, this._current);
-
-    // Pass 7 adds snow particles here (drifting flakes with wind sway plus
-    // accumulation blending on roofs/ground).
+    this.snowSystem?.setIntensity?.(this._current.snowCover);
     this.snowSystem?.update?.(dt, elapsed, camera, this._current);
   }
 
