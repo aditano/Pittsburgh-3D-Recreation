@@ -15,6 +15,7 @@ import {
 } from './geo.js';
 import {
   createCityMaterials,
+  createNightEnvironment,
   buildingFamily,
   applyFacadeUVs,
   tintGeometry,
@@ -139,8 +140,11 @@ fill.position.set(-400, 300, -600);
 scene.add(fill);
 
 const materials = createCityMaterials();
-scene.environment = materials.envMap;
-scene.environmentIntensity = 0.42;
+// PMREM night probe — glass/steel pick up soft dusk reflections.
+// Pass 4 (sky dome) may override scene.environment with a sky-derived map;
+// swap via createNightEnvironment() in textures.js.
+scene.environment = createNightEnvironment(renderer);
+scene.environmentIntensity = 0.72;
 
 const roadLineMats = {
   0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),

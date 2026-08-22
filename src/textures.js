@@ -40,6 +40,40 @@ function makeCanvases(w, h) {
   };
 }
 
+/** Derive a subtle tangent-space normal map from a height/luminance canvas. */
+function bakeNormalFromHeight(srcCanvas, strength = 1.6) {
+  const w = srcCanvas.width;
+  const h = srcCanvas.height;
+  const src = srcCanvas.getContext('2d').getImageData(0, 0, w, h).data;
+  const out = document.createElement('canvas');
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext('2d');
+  const img = ctx.createImageData(w, h);
+  const lum = (i) => {
+    const o = i * 4;
+    return (src[o] * 0.299 + src[o + 1] * 0.587 + src[o + 2] * 0.114) / 255;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const l = lum(i);
+      const lR = lum(y * w + ((x + 1) % w));
+      const lU = lum(((y + 1) % h) * w + x);
+      let dx = (l - lR) * strength;
+      let dy = (l - lU) * strength;
+      const invLen = 1 / Math.sqrt(dx * dx + dy * dy + 1);
+      const o = i * 4;
+      img.data[o] = (dx * invLen * 0.5 + 0.5) * 255;
+      img.data[o + 1] = (dy * invLen * 0.5 + 0.5) * 255;
+      img.data[o + 2] = (invLen * 0.5 + 0.5) * 255;
+      img.data[o + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvasTexture(out, { color: false });
+}
+
 function paintFacade(opts) {
   const {
     seed = 1,
@@ -66,7 +100,8 @@ function paintFacade(opts) {
   c.fillRect(0, 0, width, height);
   e.fillStyle = '#000';
   e.fillRect(0, 0, width, height);
-  r.fillStyle = glass ? '#6a6a6a' : '#c8c4be';
+  // Roughness base: glass/steel stay smoother; masonry stays diffuse.
+  r.fillStyle = glass ? '#3a3a3a' : panels ? '#a8a49e' : '#c8c4be';
   r.fillRect(0, 0, width, height);
 
   if (brick) {
@@ -134,7 +169,12 @@ function paintFacade(opts) {
       }
       c.fillRect(x, y, w, h);
       e.fillRect(x, y, w, h);
-      r.fillStyle = lit ? '#2a2a2a' : '#3a3a3a';
+      // Windows are smoother (esp. glass curtain walls); frames stay rougher.
+      if (glass) {
+        r.fillStyle = lit ? '#1a1a1a' : '#222222';
+      } else {
+        r.fillStyle = lit ? '#2a2a2a' : '#3a3a3a';
+      }
       r.fillRect(x, y, w, h);
       if (lit && rand() < 0.45) {
         c.fillStyle = 'rgba(255,230,180,0.25)';
@@ -151,10 +191,14 @@ function paintFacade(opts) {
   r.fillStyle = '#d0d0d0';
   r.fillRect(0, 0, 2, 2);
 
+  // Height cue for normals: darker mortar/frames = recessed, lit glass = flatter.
+  const normalStrength = glass ? 0.9 : brick ? 2.2 : panels ? 1.4 : 1.6;
+
   return {
     map: canvasTexture(color),
     emissiveMap: canvasTexture(emissive),
     roughnessMap: canvasTexture(rough, { color: false }),
+    normalMap: bakeNormalFromHeight(color, normalStrength),
   };
 }
 
@@ -260,35 +304,115 @@ function makeRoadMaps() {
   return { map: canvasTexture(color, { repeat: 1 }) };
 }
 
-function makeNightEnv() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 128;
-  const ctx = canvas.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 128);
-  g.addColorStop(0, '#05070c');
-  g.addColorStop(0.46, '#0a121c');
-  g.addColorStop(0.52, '#2a2218');
-  g.addColorStop(0.58, '#10141a');
-  g.addColorStop(1, '#07090e');
+/**
+ * Build a dusk/night gradient sky scene used as the PMREM source.
+ * Soft directional lights act as specular catch-lights on glass/steel without
+ * turning the probe into a bright daylight studio.
+ *
+ * Pass 4 may replace this with an env derived from a full sky dome — keep
+ * createNightEnvironment() as the single swap point.
+ */
+function buildNightEnvProbeScene() {
+  const envScene = new THREE.Scene();
+
+  // Equirectangular dusk gradient (canvas) — reliable across WebGL1/2 vs a custom shader.
+  const skyCanvas = document.createElement('canvas');
+  skyCanvas.width = 512;
+  skyCanvas.height = 256;
+  const ctx = skyCanvas.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, '#0a1424'); // zenith — deep night blue, not pure black
+  g.addColorStop(0.4, '#152536');
+  g.addColorStop(0.5, '#4a3220'); // warm dusk horizon (brighter for specular catch)
+  g.addColorStop(0.58, '#1a222c');
+  g.addColorStop(1, '#0c1016'); // nadir / ground
   ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 256, 128);
-  for (let i = 0; i < 80; i++) {
-    ctx.fillStyle = `rgba(255,220,160,${0.04 + Math.random() * 0.08})`;
-    ctx.fillRect(Math.random() * 256, 62 + Math.random() * 10, 3 + Math.random() * 8, 1);
+  ctx.fillRect(0, 0, 512, 256);
+  // Soft city-glow band for richer glass reflections.
+  for (let i = 0; i < 160; i++) {
+    const x = Math.random() * 512;
+    const y = 112 + Math.random() * 32;
+    ctx.fillStyle = `rgba(255,176,96,${0.06 + Math.random() * 0.14})`;
+    ctx.fillRect(x, y, 4 + Math.random() * 16, 1 + Math.random() * 2);
   }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.mapping = THREE.EquirectangularReflectionMapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.needsUpdate = true;
-  return tex;
+  for (let i = 0; i < 50; i++) {
+    ctx.fillStyle = `rgba(140,180,220,${0.05 + Math.random() * 0.08})`;
+    ctx.fillRect(Math.random() * 512, 95 + Math.random() * 22, 6 + Math.random() * 12, 1);
+  }
+  const skyTex = new THREE.CanvasTexture(skyCanvas);
+  skyTex.colorSpace = THREE.SRGBColorSpace;
+  skyTex.needsUpdate = true;
+
+  const skyGeo = new THREE.SphereGeometry(40, 48, 24);
+  const skyMat = new THREE.MeshBasicMaterial({
+    map: skyTex,
+    side: THREE.BackSide,
+    depthWrite: false,
+  });
+  envScene.add(new THREE.Mesh(skyGeo, skyMat));
+
+  // Warm low sun / dusk key — gives elongated speculars on curtain walls.
+  const key = new THREE.DirectionalLight(0xffc090, 3.2);
+  key.position.set(6, 2.2, -4);
+  envScene.add(key);
+
+  // Cool sky fill opposite the key.
+  const fill = new THREE.DirectionalLight(0x6a88b8, 1.15);
+  fill.position.set(-5, 4, 3);
+  envScene.add(fill);
+
+  // Soft ambient so recessed stone still picks up a little environment.
+  const hemi = new THREE.HemisphereLight(0x243848, 0x0c0a08, 0.7);
+  envScene.add(hemi);
+
+  // A few warm point accents (distant downtown glow) for localized highlights.
+  const glowA = new THREE.PointLight(0xffb070, 28, 60, 2);
+  glowA.position.set(8, 1.5, -6);
+  envScene.add(glowA);
+  const glowB = new THREE.PointLight(0x88aacc, 16, 50, 2);
+  glowB.position.set(-6, 3, 8);
+  envScene.add(glowB);
+
+  return envScene;
+}
+
+/**
+ * Prefiltered night environment for MeshStandardMaterial reflections.
+ * Call once at startup with the WebGLRenderer; do not rebuild per frame.
+ *
+ * Pass 4 (sky dome) may override scene.environment with a sky-derived probe —
+ * swap implementations here rather than scattering env setup through main.js.
+ */
+export function createNightEnvironment(renderer) {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+
+  const envScene = buildNightEnvProbeScene();
+  // Mild blur (sigma) softens the probe so reflections read cinematic, not mirror-sharp.
+  // Keep sigma ≤ ~0.04 so PMREM sample count stays within Three's max (avoids clip warning).
+  const envMap = pmrem.fromScene(envScene, 0.04).texture;
+
+  // Probe scene only needed for the one-shot bake.
+  envScene.traverse((obj) => {
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+      for (const m of mats) {
+        if (m.map) m.map.dispose();
+        m.dispose();
+      }
+    }
+  });
+  pmrem.dispose();
+  return envMap;
 }
 
 function stdMat(maps, extras = {}) {
-  return new THREE.MeshStandardMaterial({
+  const mat = new THREE.MeshStandardMaterial({
     map: maps.map,
     roughnessMap: maps.roughnessMap,
     emissiveMap: maps.emissiveMap,
+    normalMap: maps.normalMap ?? null,
     color: extras.color ?? 0xffffff,
     roughness: extras.roughness ?? 0.7,
     metalness: extras.metalness ?? 0.08,
@@ -297,10 +421,17 @@ function stdMat(maps, extras = {}) {
     vertexColors: extras.vertexColors ?? true,
     envMapIntensity: extras.envMapIntensity ?? 0.35,
   });
+  if (maps.normalMap && extras.normalScale != null) {
+    mat.normalScale.set(extras.normalScale, extras.normalScale);
+  } else if (maps.normalMap) {
+    mat.normalScale.set(0.55, 0.55);
+  }
+  return mat;
 }
 
 export function createCityMaterials() {
   const families = {
+    // Masonry / stone: high roughness, near-zero metal, soft normals for mortar depth.
     lowrise: {
       mat: stdMat(
         paintFacade({
@@ -312,7 +443,13 @@ export function createCityMaterials() {
           litChance: 0.18,
           brick: true,
         }),
-        { roughness: 0.88, metalness: 0.04, emissiveIntensity: 0.55 },
+        {
+          roughness: 0.92,
+          metalness: 0.02,
+          emissiveIntensity: 0.55,
+          envMapIntensity: 0.28,
+          normalScale: 0.7,
+        },
       ),
       floorH: 3.6,
       windowW: 3.8,
@@ -328,7 +465,13 @@ export function createCityMaterials() {
           litChance: 0.28,
           brick: true,
         }),
-        { roughness: 0.84, metalness: 0.05, emissiveIntensity: 0.7 },
+        {
+          roughness: 0.9,
+          metalness: 0.02,
+          emissiveIntensity: 0.7,
+          envMapIntensity: 0.3,
+          normalScale: 0.75,
+        },
       ),
       floorH: 3.7,
       windowW: 3.4,
@@ -344,11 +487,18 @@ export function createCityMaterials() {
           rows: 8,
           litChance: 0.3,
         }),
-        { roughness: 0.78, metalness: 0.08, emissiveIntensity: 0.72 },
+        {
+          roughness: 0.82,
+          metalness: 0.04,
+          emissiveIntensity: 0.72,
+          envMapIntensity: 0.4,
+          normalScale: 0.45,
+        },
       ),
       floorH: 3.8,
       windowW: 3.3,
     },
+    // Mid/high-rise cladding: mixed metal + smoother finish so PMREM reads.
     steel: {
       mat: stdMat(
         paintFacade({
@@ -362,11 +512,18 @@ export function createCityMaterials() {
           litChance: 0.38,
           glass: true,
         }),
-        { roughness: 0.42, metalness: 0.38, emissiveIntensity: 0.8, envMapIntensity: 0.7 },
+        {
+          roughness: 0.28,
+          metalness: 0.55,
+          emissiveIntensity: 0.8,
+          envMapIntensity: 0.95,
+          normalScale: 0.35,
+        },
       ),
       floorH: 3.5,
       windowW: 3.0,
     },
+    // Curtain-wall glass: low roughness, high metalness → soft night reflections.
     glass: {
       mat: stdMat(
         paintFacade({
@@ -382,11 +539,12 @@ export function createCityMaterials() {
           glass: true,
         }),
         {
-          roughness: 0.18,
-          metalness: 0.62,
+          roughness: 0.08,
+          metalness: 0.82,
           emissive: 0xa8c4d8,
           emissiveIntensity: 0.85,
-          envMapIntensity: 1.1,
+          envMapIntensity: 1.35,
+          normalScale: 0.22,
         },
       ),
       floorH: 3.45,
@@ -407,11 +565,12 @@ export function createCityMaterials() {
           glass: true,
         }),
         {
-          roughness: 0.14,
-          metalness: 0.7,
+          roughness: 0.06,
+          metalness: 0.88,
           emissive: 0x6aa898,
           emissiveIntensity: 0.75,
-          envMapIntensity: 1.2,
+          envMapIntensity: 1.45,
+          normalScale: 0.18,
         },
       ),
       floorH: 3.4,
@@ -430,7 +589,13 @@ export function createCityMaterials() {
           litChance: 0.22,
           tallWindows: true,
         }),
-        { roughness: 0.8, metalness: 0.06, emissiveIntensity: 0.6 },
+        {
+          roughness: 0.86,
+          metalness: 0.03,
+          emissiveIntensity: 0.6,
+          envMapIntensity: 0.32,
+          normalScale: 0.55,
+        },
       ),
       floorH: 5.4,
       windowW: 2.5,
@@ -448,7 +613,13 @@ export function createCityMaterials() {
           litChance: 0.2,
           panels: true,
         }),
-        { roughness: 0.7, metalness: 0.16, emissiveIntensity: 0.45 },
+        {
+          roughness: 0.62,
+          metalness: 0.22,
+          emissiveIntensity: 0.45,
+          envMapIntensity: 0.55,
+          normalScale: 0.4,
+        },
       ),
       floorH: 8.5,
       windowW: 10,
@@ -475,11 +646,11 @@ export function createCityMaterials() {
     color: 0x0a2834,
     map: water.map,
     roughnessMap: water.roughnessMap,
-    roughness: 0.22,
-    metalness: 0.42,
+    roughness: 0.18,
+    metalness: 0.48,
     transparent: true,
     opacity: 0.94,
-    envMapIntensity: 1.15,
+    envMapIntensity: 1.25,
   });
   waterMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterUniforms.uTime;
@@ -558,7 +729,6 @@ export function createCityMaterials() {
     foamMat,
     bankMat,
     treeMat,
-    envMap: makeNightEnv(),
   };
 }
 
