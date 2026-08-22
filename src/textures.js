@@ -305,92 +305,155 @@ function makeRoadMaps() {
 }
 
 /**
- * Build a dusk/night gradient sky scene used as the PMREM source.
- * Soft directional lights act as specular catch-lights on glass/steel without
- * turning the probe into a bright daylight studio.
+ * Atmospheric dusk/twilight sky dome shader.
  *
- * Pass 4 may replace this with an env derived from a full sky dome — keep
- * createNightEnvironment() as the single swap point.
+ * Produces a physical gradient:
+ * - Zenith: deep night indigo (cool twilight blue)
+ * - Mid-sky: dusky violet/slate transition
+ * - Horizon base: atmospheric haze
+ * - Sunward horizon: warm amber/rose sunset glow centered at the sun's azimuth
+ * - Sun forward Mie scattering halo around the sun vector
+ * - Nadir: dark ground tone below horizon for seamless reflections & aerial view
+ * - High-frequency dither to eliminate 8-bit banding in dark gradients
  */
-function buildNightEnvProbeScene() {
-  const envScene = new THREE.Scene();
+export function createSkyDome({
+  sunPosition = new THREE.Vector3(600, 900, 200),
+  radius = 16000,
+} = {}) {
+  const vertexShader = /* glsl */ `
+    varying vec3 vWorldDirection;
 
-  // Equirectangular dusk gradient (canvas) — reliable across WebGL1/2 vs a custom shader.
-  const skyCanvas = document.createElement('canvas');
-  skyCanvas.width = 512;
-  skyCanvas.height = 256;
-  const ctx = skyCanvas.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0, '#0a1424'); // zenith — deep night blue, not pure black
-  g.addColorStop(0.4, '#152536');
-  g.addColorStop(0.5, '#4a3220'); // warm dusk horizon (brighter for specular catch)
-  g.addColorStop(0.58, '#1a222c');
-  g.addColorStop(1, '#0c1016'); // nadir / ground
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 512, 256);
-  // Soft city-glow band for richer glass reflections.
-  for (let i = 0; i < 160; i++) {
-    const x = Math.random() * 512;
-    const y = 112 + Math.random() * 32;
-    ctx.fillStyle = `rgba(255,176,96,${0.06 + Math.random() * 0.14})`;
-    ctx.fillRect(x, y, 4 + Math.random() * 16, 1 + Math.random() * 2);
-  }
-  for (let i = 0; i < 50; i++) {
-    ctx.fillStyle = `rgba(140,180,220,${0.05 + Math.random() * 0.08})`;
-    ctx.fillRect(Math.random() * 512, 95 + Math.random() * 22, 6 + Math.random() * 12, 1);
-  }
-  const skyTex = new THREE.CanvasTexture(skyCanvas);
-  skyTex.colorSpace = THREE.SRGBColorSpace;
-  skyTex.needsUpdate = true;
+    void main() {
+      vWorldDirection = position;
+      vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mvPosition;
+      gl_Position.z = gl_Position.w; // Always project onto the far clipping plane
+    }
+  `;
 
-  const skyGeo = new THREE.SphereGeometry(40, 48, 24);
-  const skyMat = new THREE.MeshBasicMaterial({
-    map: skyTex,
+  const fragmentShader = /* glsl */ `
+    varying vec3 vWorldDirection;
+
+    uniform vec3 uSunPosition;
+    uniform vec3 uZenithColor;
+    uniform vec3 uMidColor;
+    uniform vec3 uHorizonColor;
+    uniform vec3 uSunsetGlowColor;
+    uniform vec3 uNadirColor;
+
+    void main() {
+      vec3 dir = normalize(vWorldDirection);
+      float y = dir.y;
+
+      vec3 sunDir = normalize(uSunPosition);
+      vec2 dirXZ = normalize(dir.xz + vec2(1e-6));
+      vec2 sunDirXZ = normalize(sunDir.xz + vec2(1e-6));
+
+      float sunDot = max(0.0, dot(dir, sunDir));
+      float azimuthDot = max(0.0, dot(dirXZ, sunDirXZ));
+
+      vec3 skyColor;
+      if (y >= 0.0) {
+        // Atmospheric elevation gradient: deep zenith to soft horizon
+        float tZenith = pow(y, 0.62);
+        float tMid = smoothstep(0.0, 0.35, y) * (1.0 - smoothstep(0.12, 0.65, y));
+        skyColor = mix(uHorizonColor, uZenithColor, tZenith);
+        skyColor = mix(skyColor, uMidColor, tMid * 0.42);
+      } else {
+        // Seamless ground/nadir transition below horizon
+        float tNadir = clamp(-y * 3.5, 0.0, 1.0);
+        skyColor = mix(uHorizonColor, uNadirColor, tNadir);
+      }
+
+      // Warm sunset horizon glow on the sunward side of the city
+      float horizonBand = smoothstep(0.38, 0.0, abs(y - 0.02));
+      float duskSpread = pow(azimuthDot, 2.4);
+      vec3 duskGlow = uSunsetGlowColor * duskSpread * horizonBand;
+      skyColor += duskGlow;
+
+      // Soft forward Mie scattering halo around the sun position
+      float mie1 = pow(sunDot, 14.0) * 0.38;
+      float mie2 = pow(sunDot, 48.0) * 0.65;
+      vec3 sunHalo = (uSunsetGlowColor * 1.1 + vec3(0.08, 0.06, 0.04)) * (mie1 + mie2);
+      skyColor += sunHalo * smoothstep(-0.06, 0.08, y);
+
+      // Subtle atmospheric haze variation along the horizon
+      float hazeWisp = sin(dir.x * 16.0 + dir.z * 12.0) * sin(dir.z * 20.0) * 0.012;
+      skyColor += vec3(hazeWisp * 0.4) * horizonBand;
+
+      // High-frequency dither to eliminate 8-bit banding on subtle dark gradients
+      float dither = (fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * (1.0 / 255.0);
+      skyColor += vec3(dither);
+
+      gl_FragColor = vec4(skyColor, 1.0);
+
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }
+  `;
+
+  const uniforms = {
+    uSunPosition: { value: sunPosition.clone() },
+    uZenithColor: { value: new THREE.Color(0x061022) },
+    uMidColor: { value: new THREE.Color(0x0e1828) },
+    uHorizonColor: { value: new THREE.Color(0x16202e) },
+    uSunsetGlowColor: { value: new THREE.Color(0x5c2c16) },
+    uNadirColor: { value: new THREE.Color(0x030508) },
+  };
+
+  const mat = new THREE.ShaderMaterial({
+    name: 'SkyDomeShader',
+    uniforms,
+    vertexShader,
+    fragmentShader,
     side: THREE.BackSide,
     depthWrite: false,
+    depthTest: true,
   });
-  envScene.add(new THREE.Mesh(skyGeo, skyMat));
 
-  // Warm low sun / dusk key — gives elongated speculars on curtain walls.
-  const key = new THREE.DirectionalLight(0xffc090, 3.2);
-  key.position.set(6, 2.2, -4);
-  envScene.add(key);
-
-  // Cool sky fill opposite the key.
-  const fill = new THREE.DirectionalLight(0x6a88b8, 1.15);
-  fill.position.set(-5, 4, 3);
-  envScene.add(fill);
-
-  // Soft ambient so recessed stone still picks up a little environment.
-  const hemi = new THREE.HemisphereLight(0x243848, 0x0c0a08, 0.7);
-  envScene.add(hemi);
-
-  // A few warm point accents (distant downtown glow) for localized highlights.
-  const glowA = new THREE.PointLight(0xffb070, 28, 60, 2);
-  glowA.position.set(8, 1.5, -6);
-  envScene.add(glowA);
-  const glowB = new THREE.PointLight(0x88aacc, 16, 50, 2);
-  glowB.position.set(-6, 3, 8);
-  envScene.add(glowB);
-
-  return envScene;
+  const geo = new THREE.SphereGeometry(radius, 64, 32);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = -100;
+  return mesh;
 }
 
 /**
- * Prefiltered night environment for MeshStandardMaterial reflections.
+ * Prefiltered night/dusk environment for MeshStandardMaterial reflections.
+ * Regenerated directly from the sky dome probe so glass/steel reflections and
+ * IBL diffuse lighting are physically coherent with the atmosphere.
  * Call once at startup with the WebGLRenderer; do not rebuild per frame.
- *
- * Pass 4 (sky dome) may override scene.environment with a sky-derived probe —
- * swap implementations here rather than scattering env setup through main.js.
  */
-export function createNightEnvironment(renderer) {
+export function createNightEnvironment(
+  renderer,
+  { sunPosition = new THREE.Vector3(600, 900, 200) } = {},
+) {
   const pmrem = new THREE.PMREMGenerator(renderer);
-  pmrem.compileEquirectangularShader();
+  pmrem.compileCubemapShader();
 
-  const envScene = buildNightEnvProbeScene();
+  const envScene = new THREE.Scene();
+
+  // Sky dome probe mesh (radius 100 fits comfortably in PMREM CubeCamera)
+  const skyMesh = createSkyDome({ sunPosition, radius: 100 });
+  envScene.add(skyMesh);
+
+  // Key specular catch-light aligned with the sun direction for crisp glass/metal reflections
+  const sunDir = sunPosition.clone().normalize();
+  const key = new THREE.DirectionalLight(0xffc090, 2.8);
+  key.position.copy(sunDir.clone().multiplyScalar(10));
+  envScene.add(key);
+
+  // Cool sky fill from upper hemisphere
+  const fill = new THREE.DirectionalLight(0x5a7ca8, 0.9);
+  fill.position.set(-sunDir.x * 8, 12, -sunDir.z * 8);
+  envScene.add(fill);
+
+  // Soft warm ambient/city glow accents in the downtown direction
+  const cityGlow = new THREE.PointLight(0xffb070, 20, 50, 2);
+  cityGlow.position.set(sunDir.x * 6, 1.5, sunDir.z * 6);
+  envScene.add(cityGlow);
+
   // Mild blur (sigma) softens the probe so reflections read cinematic, not mirror-sharp.
-  // Keep sigma ≤ ~0.04 so PMREM sample count stays within Three's max (avoids clip warning).
-  const envMap = pmrem.fromScene(envScene, 0.04).texture;
+  const envMap = pmrem.fromScene(envScene, 0.04, 0.1, 500).texture;
 
   // Probe scene only needed for the one-shot bake.
   envScene.traverse((obj) => {

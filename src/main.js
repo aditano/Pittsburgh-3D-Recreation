@@ -16,6 +16,7 @@ import {
 import {
   createCityMaterials,
   createNightEnvironment,
+  createSkyDome,
   buildingFamily,
   applyFacadeUVs,
   tintGeometry,
@@ -28,9 +29,10 @@ const layersEl = document.getElementById('layers');
 const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
 
+const HORIZON_COLOR = 0x16202e;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070c);
-scene.fog = new THREE.FogExp2(0x05070c, 0.00026);
+scene.background = new THREE.Color(HORIZON_COLOR);
+scene.fog = new THREE.FogExp2(HORIZON_COLOR, 0.00020);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
 camera.position.set(-560, 470, 1300);
@@ -139,12 +141,16 @@ const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
 fill.position.set(-400, 300, -600);
 scene.add(fill);
 
+// Atmospheric dusk sky dome with deep indigo zenith, sunset horizon glow
+// tied to sun direction, forward Mie scattering, and seamless dark nadir.
+const sky = createSkyDome({ sunPosition: sun.position, radius: 16000 });
+scene.add(sky);
+
 const materials = createCityMaterials();
-// PMREM night probe — glass/steel pick up soft dusk reflections.
-// Pass 4 (sky dome) may override scene.environment with a sky-derived map;
-// swap via createNightEnvironment() in textures.js.
-scene.environment = createNightEnvironment(renderer);
-scene.environmentIntensity = 0.72;
+// PMREM night environment probe regenerated directly from the sky dome
+// so glass/steel facades and river reflections are physically coherent.
+scene.environment = createNightEnvironment(renderer, { sunPosition: sun.position });
+scene.environmentIntensity = 0.76;
 
 const roadLineMats = {
   0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),
@@ -697,6 +703,7 @@ function tick(now) {
   }
 
   materials.waterUniforms.uTime.value = now * 0.001;
+  sky.position.copy(camera.position);
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
   focusGlow.position.x = controls.target.x;
