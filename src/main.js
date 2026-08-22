@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
@@ -49,6 +50,42 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 const composer = new EffectComposer(renderer);
 composer.setPixelRatio(pixelRatio);
 composer.addPass(new RenderPass(scene, camera));
+
+// Screen-space AO: darkens contact points/crevices between adjacent
+// buildings for real depth. Radius is kept small in world units (a few
+// meters) since the city spans thousands of meters — a large radius would
+// just wash the whole scene in a grey haze instead of reading as contact
+// shadow. GTAOPass (ground-truth AO w/ built-in Poisson denoise) looks
+// noticeably cleaner than classic SSAO and is available in this three
+// version, so it's preferred over SSAOPass.
+const gtaoPass = new GTAOPass(
+  scene,
+  camera,
+  window.innerWidth,
+  window.innerHeight,
+  undefined,
+  {
+    radius: 3.5,
+    distanceExponent: 1,
+    thickness: 2.5,
+    distanceFallOff: 1,
+    scale: 1.1,
+    samples: 16,
+    screenSpaceRadius: false,
+  },
+  {
+    lumaPhi: 10,
+    depthPhi: 2,
+    normalPhi: 3,
+    radius: 6,
+    rings: 4,
+    samples: 16,
+  },
+);
+gtaoPass.output = GTAOPass.OUTPUT.Default; // composited scene, not the raw AO debug view
+gtaoPass.blendIntensity = 0.85; // slightly under full strength to avoid a muddy/heavy look
+composer.addPass(gtaoPass);
+
 const bloomPass = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight),
   0.72,
@@ -74,20 +111,27 @@ controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.target.set(0, 40, 0);
 
-const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.5);
+// Slightly lifted from 0.5 so AO reads as gradation in the crevices rather
+// than crushing them to pure black; kept small to preserve the night mood.
+const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.55);
 scene.add(hemi);
 
 const sun = new THREE.DirectionalLight(0xffffff, 1.15);
 sun.position.set(600, 900, 200);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 100;
-sun.shadow.camera.far = 4000;
-sun.shadow.camera.left = -1500;
-sun.shadow.camera.right = 1500;
-sun.shadow.camera.top = 1500;
-sun.shadow.camera.bottom = -1500;
-sun.shadow.bias = -0.0002;
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.near = 200;
+sun.shadow.camera.far = 2600;
+// Tightened from the original +/-1500 square to a rectangle that hugs the
+// downtown core (buildings span roughly x:[-1030,1145] z:[-880,560]) so the
+// same 4096px shadow map covers far fewer world-meters per texel, giving
+// crisper building-edge shadows where the camera actually spends its time.
+sun.shadow.camera.left = -1250;
+sun.shadow.camera.right = 1250;
+sun.shadow.camera.top = 1100;
+sun.shadow.camera.bottom = -1100;
+sun.shadow.bias = -0.00012;
+sun.shadow.normalBias = 0.6;
 scene.add(sun);
 
 const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
