@@ -27,7 +27,7 @@ scene.background = new THREE.Color(0x05070c);
 scene.fog = new THREE.FogExp2(0x05070c, 0.00026);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
-camera.position.set(900, 650, 1100);
+camera.position.set(-560, 470, 1300);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
@@ -537,8 +537,11 @@ const views = {
     target: new THREE.Vector3(40, 60, -40),
   },
   point: {
-    position: new THREE.Vector3(-420, 280, 520),
-    target: new THREE.Vector3(-280, 20, 40),
+    // Classic Mount Washington / Point-side skyline view: camera sits
+    // southwest of downtown and elevated, framing the confluence and the
+    // three rivers in the foreground with the Golden Triangle behind.
+    position: new THREE.Vector3(-560, 470, 1300),
+    target: new THREE.Vector3(80, 190, -40),
   },
   bridges: {
     position: new THREE.Vector3(180, 220, 640),
@@ -643,7 +646,7 @@ requestAnimationFrame(tick);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
     await buildCity(data);
-    setView('downtown');
+    setView('point');
     loaderEl.classList.add('hide');
   } catch (err) {
     console.error(err);
