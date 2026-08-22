@@ -101,13 +101,16 @@ export class SnowSystem {
       blending: THREE.NormalBlending,
       fog: true,
     });
+    this.material.customProgramCacheKey = () => 'snow-flake-asize';
     this.material.onBeforeCompile = (shader) => {
-      shader.vertexShader = shader.vertexShader
-        .replace(
-          '#include <begin_vertex>',
-          'attribute float aSize;\n\t#include <begin_vertex>',
-        )
-        .replace('gl_PointSize = size;', 'gl_PointSize = size * aSize;');
+      // Three r170 compiles PointsMaterial as GLSL3 / WebGL2, so the
+      // per-flake scale must be an `in` (not a WebGL1 `attribute`).
+      shader.vertexShader =
+        'in float aSize;\n' +
+        shader.vertexShader.replace(
+          'gl_PointSize = size;',
+          'gl_PointSize = size * aSize;',
+        );
     };
 
     this.object3D = new THREE.Points(this.geometry, this.material);
