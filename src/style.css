@@ -150,7 +150,27 @@ body {
   isolation: isolate;
 }
 
-.hud-nav button {
+/* Secondary pill bar (weather selector) sharing the bottom nav's language.
+   Lives inside .hud-tr, which is pointer-events:none, so it opts back in. */
+.hud-group-label {
+  margin-top: 20px;
+}
+
+.hud-pills {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(8, 12, 20, 0.55);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 2px;
+  pointer-events: auto;
+  isolation: isolate;
+}
+
+.hud-nav button,
+.hud-pills button {
   appearance: none;
   border: 0;
   background: transparent;
@@ -166,9 +186,22 @@ body {
 }
 
 .hud-nav button:hover,
-.hud-nav button.active {
+.hud-nav button.active,
+.hud-pills button:hover {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.hud-pills button {
+  padding: 8px 12px;
+}
+
+/* Weather is a persistent mode rather than a camera jump, so the active pill
+   gets the accent treatment to read as state, not just hover. */
+.hud-pills button.active {
+  color: var(--accent);
+  background: rgba(232, 200, 74, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(232, 200, 74, 0.35);
 }
 
 .loader {
@@ -235,6 +268,15 @@ body {
 
   .meta {
     display: none;
+  }
+
+  .hud-group-label {
+    margin-top: 12px;
+  }
+
+  .hud-pills button {
+    padding: 7px 9px;
+    letter-spacing: 0.1em;
   }
 
   .hud-nav {

@@ -23,11 +23,13 @@ import {
   applyXZUvs,
 } from './textures.js';
 import { buildBridges } from './bridges.js';
+import { WeatherController } from './weather.js';
 
 const canvas = document.getElementById('c');
 const layersEl = document.getElementById('layers');
 const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
+const weatherEl = document.getElementById('weather');
 
 const HORIZON_COLOR = 0x16202e;
 const scene = new THREE.Scene();
@@ -177,6 +179,45 @@ const focusGlow = new THREE.Mesh(
 focusGlow.rotation.x = -Math.PI / 2;
 focusGlow.position.y = 0.6;
 scene.add(focusGlow);
+
+// Weather owns fog, sky tint, light colors/intensities, exposure, IBL strength
+// and bloom, blending between presets over ~1.25s. It is constructed after the
+// sky/lights/composer exist and applies its initial preset immediately, so the
+// first rendered frame is already in the right mood.
+const weather = new WeatherController({
+  scene,
+  renderer,
+  sun,
+  hemiLight: hemi,
+  fillLight: fill,
+  focusLight,
+  bloomPass,
+  sky,
+  setEnvironmentIntensity: (v) => {
+    scene.environmentIntensity = v;
+  },
+  materials,
+  initial: 'sunny',
+});
+
+if (weatherEl) {
+  for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setWeather(btn.dataset.weather);
+    });
+  }
+}
+
+function setWeather(name) {
+  weather.setWeather(name);
+  if (!weatherEl) return;
+  for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {
+    btn.classList.toggle('active', btn.dataset.weather === weather.target);
+  }
+}
+setWeather('sunny');
 
 function footprintShape(footprint) {
   const shape = new THREE.Shape();
@@ -681,8 +722,16 @@ function onResize() {
 window.addEventListener('resize', onResize);
 onResize();
 
+let prevSeconds = -1;
+
 function tick(now) {
   requestAnimationFrame(tick);
+
+  const elapsed = now * 0.001;
+  // Clamp dt so a backgrounded tab (or a long city build) can't teleport
+  // weather transitions or, later, precipitation particles.
+  const dt = prevSeconds < 0 ? 1 / 60 : Math.min(0.1, elapsed - prevSeconds);
+  prevSeconds = elapsed;
 
   if (anim) {
     const t = Math.min(1, (now - anim.start) / anim.duration);
@@ -702,7 +751,8 @@ function tick(now) {
     controls.target.set(20, 50, -20);
   }
 
-  materials.waterUniforms.uTime.value = now * 0.001;
+  materials.waterUniforms.uTime.value = elapsed;
+  weather.update(dt, elapsed, camera);
   sky.position.copy(camera.position);
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
