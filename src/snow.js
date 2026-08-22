@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const MAX_FLAKES = 16000;
+const MAX_FLAKES = 12000;
 const VOLUME_WIDTH = 1200;
 const VOLUME_DEPTH = 1200;
 const VOLUME_HEIGHT = 500;
@@ -132,6 +132,7 @@ export class SnowSystem {
 
   setIntensity(value) {
     const next = THREE.MathUtils.clamp(Number.isFinite(value) ? value : 0, 0, 1);
+    if (next === this.intensity) return;
     this.intensity = next;
     this.activeCount = Math.floor(this.maxFlakes * next);
     this.geometry.setDrawRange(0, this.activeCount);

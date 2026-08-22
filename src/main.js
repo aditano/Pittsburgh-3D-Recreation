@@ -4,6 +4,8 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -32,6 +34,62 @@ const navEl = document.getElementById('nav');
 const weatherEl = document.getElementById('weather');
 
 const HORIZON_COLOR = 0x16202e;
+const CINEMATIC_GRADE_SHADER = {
+  name: 'CinematicGradeShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    contrast: { value: 0.07 },
+    saturation: { value: 1.035 },
+    vignetteStrength: { value: 0.06 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float contrast;
+    uniform float saturation;
+    uniform float vignetteStrength;
+    varying vec2 vUv;
+
+    void main() {
+      vec4 source = texture2D(tDiffuse, vUv);
+      vec3 color = max(source.rgb, vec3(0.0));
+
+      // A luminance-preserving S-curve adds gentle midtone separation while
+      // leaving HDR highlights available for the final ACES tone map.
+      float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      float unitLuma = clamp(luma, 0.0, 1.0);
+      float curvedLuma = unitLuma * unitLuma * (3.0 - 2.0 * unitLuma);
+      float highlightGuard = 1.0 - smoothstep(0.75, 1.25, luma);
+      float gradedLuma = max(luma + (curvedLuma - unitLuma) * contrast * highlightGuard, 0.0);
+      color *= gradedLuma / max(luma, 1e-4);
+
+      // Restrained saturation and split toning: cooler shade, warmer light.
+      luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = mix(vec3(luma), color, saturation);
+      float shadowWeight = 1.0 - smoothstep(0.04, 0.38, luma);
+      float highlightWeight = smoothstep(0.42, 1.15, luma);
+      color *= vec3(1.0)
+        + shadowWeight * vec3(-0.010, -0.002, 0.012)
+        + highlightWeight * vec3(0.012, 0.004, -0.008);
+
+      // Six percent only at the corners; the center and most of the frame
+      // remain untouched so bright snow and the skyline never feel crushed.
+      vec2 centeredUv = (vUv - 0.5) * vec2(0.92, 1.0);
+      float vignette = smoothstep(0.78, 0.30, length(centeredUv));
+      color *= mix(1.0 - vignetteStrength, 1.0, vignette);
+
+      gl_FragColor = vec4(max(color, vec3(0.0)), source.a);
+    }
+  `,
+};
+
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(HORIZON_COLOR);
 scene.fog = new THREE.FogExp2(HORIZON_COLOR, 0.00020);
@@ -41,7 +99,10 @@ camera.position.set(-560, 470, 1300);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: true,
+  // The scene renders into the composer's non-MSAA targets. SMAA below
+  // handles final edge antialiasing without allocating an unused MSAA
+  // default framebuffer.
+  antialias: false,
   powerPreference: 'high-performance',
 });
 const pixelRatio = Math.min(window.devicePixelRatio, 2);
@@ -75,16 +136,16 @@ const gtaoPass = new GTAOPass(
     thickness: 2.5,
     distanceFallOff: 1,
     scale: 1.1,
-    samples: 16,
+    samples: 12,
     screenSpaceRadius: false,
   },
   {
     lumaPhi: 10,
     depthPhi: 2,
     normalPhi: 3,
-    radius: 6,
-    rings: 4,
-    samples: 16,
+    radius: 5,
+    rings: 3,
+    samples: 8,
   },
 );
 gtaoPass.output = GTAOPass.OUTPUT.Default; // composited scene, not the raw AO debug view
@@ -98,6 +159,17 @@ const bloomPass = new UnrealBloomPass(
   0.76,
 );
 composer.addPass(bloomPass);
+
+// Work in scene-linear HDR through bloom and grading. SMAA then resolves the
+// polished image before OutputPass performs the one and only ACES + sRGB
+// conversion. Keeping OutputPass last avoids double-gamma/double-tonemapping.
+const gradePass = new ShaderPass(CINEMATIC_GRADE_SHADER);
+composer.addPass(gradePass);
+const smaaPass = new SMAAPass(
+  window.innerWidth * pixelRatio,
+  window.innerHeight * pixelRatio,
+);
+composer.addPass(smaaPass);
 composer.addPass(new OutputPass());
 
 const labelRenderer = new CSS2DRenderer();
@@ -207,7 +279,6 @@ const weather = new WeatherController({
   materials,
   initial: 'sunny',
 });
-window.__weather = weather;
 
 if (weatherEl) {
   for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {
@@ -780,6 +851,11 @@ requestAnimationFrame(tick);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
     await buildCity(data);
+    // Geometry and the sun direction are static, so cache the expensive 4K
+    // city shadow after one complete post-build update instead of redrawing it
+    // for every camera/weather frame.
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
     setView('point');
     loaderEl.classList.add('hide');
   } catch (err) {

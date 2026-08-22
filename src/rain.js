@@ -92,6 +92,7 @@ export class RainSystem {
 
   setIntensity(value) {
     const next = THREE.MathUtils.clamp(Number.isFinite(value) ? value : 0, 0, 1);
+    if (next === this.intensity) return;
     this.intensity = next;
     this.activeCount = Math.floor(this.maxDrops * next);
     this.geometry.setDrawRange(0, this.activeCount * 2);
