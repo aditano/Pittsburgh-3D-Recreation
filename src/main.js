@@ -1,5 +1,12 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
@@ -10,34 +17,161 @@ import {
 } from './geo.js';
 import {
   createCityMaterials,
+  createNightEnvironment,
+  createSkyDome,
   buildingFamily,
   applyFacadeUVs,
   tintGeometry,
   applyXZUvs,
 } from './textures.js';
+import { buildingDetails } from './details.js';
 import { buildBridges } from './bridges.js';
+import { WeatherController } from './weather.js';
 
 const canvas = document.getElementById('c');
 const layersEl = document.getElementById('layers');
 const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
+const weatherEl = document.getElementById('weather');
+
+const HORIZON_COLOR = 0x16202e;
+const CINEMATIC_GRADE_SHADER = {
+  name: 'CinematicGradeShader',
+  uniforms: {
+    tDiffuse: { value: null },
+    contrast: { value: 0.07 },
+    saturation: { value: 1.035 },
+    vignetteStrength: { value: 0.06 },
+  },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    uniform float contrast;
+    uniform float saturation;
+    uniform float vignetteStrength;
+    varying vec2 vUv;
+
+    void main() {
+      vec4 source = texture2D(tDiffuse, vUv);
+      vec3 color = max(source.rgb, vec3(0.0));
+
+      // A luminance-preserving S-curve adds gentle midtone separation while
+      // leaving HDR highlights available for the final ACES tone map.
+      float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      float unitLuma = clamp(luma, 0.0, 1.0);
+      float curvedLuma = unitLuma * unitLuma * (3.0 - 2.0 * unitLuma);
+      float highlightGuard = 1.0 - smoothstep(0.75, 1.25, luma);
+      float gradedLuma = max(luma + (curvedLuma - unitLuma) * contrast * highlightGuard, 0.0);
+      color *= gradedLuma / max(luma, 1e-4);
+
+      // Restrained saturation and split toning: cooler shade, warmer light.
+      luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = mix(vec3(luma), color, saturation);
+      float shadowWeight = 1.0 - smoothstep(0.04, 0.38, luma);
+      float highlightWeight = smoothstep(0.42, 1.15, luma);
+      color *= vec3(1.0)
+        + shadowWeight * vec3(-0.010, -0.002, 0.012)
+        + highlightWeight * vec3(0.012, 0.004, -0.008);
+
+      // Six percent only at the corners; the center and most of the frame
+      // remain untouched so bright snow and the skyline never feel crushed.
+      vec2 centeredUv = (vUv - 0.5) * vec2(0.92, 1.0);
+      float vignette = smoothstep(0.78, 0.30, length(centeredUv));
+      color *= mix(1.0 - vignetteStrength, 1.0, vignette);
+
+      gl_FragColor = vec4(max(color, vec3(0.0)), source.a);
+    }
+  `,
+};
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070c);
-scene.fog = new THREE.FogExp2(0x05070c, 0.00026);
+scene.background = new THREE.Color(HORIZON_COLOR);
+scene.fog = new THREE.FogExp2(HORIZON_COLOR, 0.00020);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
 camera.position.set(-560, 470, 1300);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: true,
+  // The scene renders into the composer's non-MSAA targets. SMAA below
+  // handles final edge antialiasing without allocating an unused MSAA
+  // default framebuffer.
+  antialias: false,
   powerPreference: 'high-performance',
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+const pixelRatio = Math.min(window.devicePixelRatio, 2);
+renderer.setPixelRatio(pixelRatio);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(pixelRatio);
+composer.addPass(new RenderPass(scene, camera));
+
+// Screen-space AO: darkens contact points/crevices between adjacent
+// buildings for real depth. Radius is kept small in world units (a few
+// meters) since the city spans thousands of meters — a large radius would
+// just wash the whole scene in a grey haze instead of reading as contact
+// shadow. GTAOPass (ground-truth AO w/ built-in Poisson denoise) looks
+// noticeably cleaner than classic SSAO and is available in this three
+// version, so it's preferred over SSAOPass.
+const gtaoPass = new GTAOPass(
+  scene,
+  camera,
+  window.innerWidth,
+  window.innerHeight,
+  undefined,
+  {
+    radius: 3.5,
+    distanceExponent: 1,
+    thickness: 2.5,
+    distanceFallOff: 1,
+    scale: 1.1,
+    samples: 12,
+    screenSpaceRadius: false,
+  },
+  {
+    lumaPhi: 10,
+    depthPhi: 2,
+    normalPhi: 3,
+    radius: 5,
+    rings: 3,
+    samples: 8,
+  },
+);
+gtaoPass.output = GTAOPass.OUTPUT.Default; // composited scene, not the raw AO debug view
+gtaoPass.blendIntensity = 0.85; // slightly under full strength to avoid a muddy/heavy look
+composer.addPass(gtaoPass);
+
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.66,
+  0.64,
+  0.76,
+);
+composer.addPass(bloomPass);
+
+// Work in scene-linear HDR through bloom and grading. SMAA then resolves the
+// polished image before OutputPass performs the one and only ACES + sRGB
+// conversion. Keeping OutputPass last avoids double-gamma/double-tonemapping.
+const gradePass = new ShaderPass(CINEMATIC_GRADE_SHADER);
+composer.addPass(gradePass);
+const smaaPass = new SMAAPass(
+  window.innerWidth * pixelRatio,
+  window.innerHeight * pixelRatio,
+);
+composer.addPass(smaaPass);
+composer.addPass(new OutputPass());
 
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.domElement.className = 'label-layer';
@@ -55,29 +189,51 @@ controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.target.set(0, 40, 0);
 
-const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.5);
+// Slightly lifted from 0.5 so AO reads as gradation in the crevices rather
+// than crushing them to pure black; kept small to preserve the night mood.
+const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.55);
 scene.add(hemi);
 
 const sun = new THREE.DirectionalLight(0xffffff, 1.15);
 sun.position.set(600, 900, 200);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 100;
-sun.shadow.camera.far = 4000;
-sun.shadow.camera.left = -1500;
-sun.shadow.camera.right = 1500;
-sun.shadow.camera.top = 1500;
-sun.shadow.camera.bottom = -1500;
-sun.shadow.bias = -0.0002;
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.near = 200;
+sun.shadow.camera.far = 2600;
+// Tightened from the original +/-1500 square to a rectangle that hugs the
+// downtown core (buildings span roughly x:[-1030,1145] z:[-880,560]) so the
+// same 4096px shadow map covers far fewer world-meters per texel, giving
+// crisper building-edge shadows where the camera actually spends its time.
+sun.shadow.camera.left = -1250;
+sun.shadow.camera.right = 1250;
+sun.shadow.camera.top = 1100;
+sun.shadow.camera.bottom = -1100;
+sun.shadow.bias = -0.00012;
+sun.shadow.normalBias = 0.6;
 scene.add(sun);
 
 const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
 fill.position.set(-400, 300, -600);
 scene.add(fill);
 
+// Subtle downtown street-level warm fill — complements window emissive without
+// extra draw calls; a single point light keeps performance high.
+const streetAmbience = new THREE.PointLight(0xff9048, 7, 380, 2);
+streetAmbience.position.set(100, 16, -60);
+scene.add(streetAmbience);
+
+// Atmospheric dusk sky dome with deep indigo zenith, sunset horizon glow
+// tied to sun direction, forward Mie scattering, and seamless dark nadir.
+const sky = createSkyDome({ sunPosition: sun.position, radius: 16000 });
+scene.add(sky);
+
 const materials = createCityMaterials();
-scene.environment = materials.envMap;
-scene.environmentIntensity = 0.42;
+// Keep the water sun-glint lobe aligned with the actual key light.
+materials.waterUniforms.uSunDir.value.copy(sun.position).normalize();
+// PMREM night environment probe regenerated directly from the sky dome
+// so glass/steel facades and river reflections are physically coherent.
+scene.environment = createNightEnvironment(renderer, { sunPosition: sun.position });
+scene.environmentIntensity = 0.76;
 
 const roadLineMats = {
   0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),
@@ -104,6 +260,45 @@ const focusGlow = new THREE.Mesh(
 focusGlow.rotation.x = -Math.PI / 2;
 focusGlow.position.y = 0.6;
 scene.add(focusGlow);
+
+// Weather owns fog, sky tint, light colors/intensities, exposure, IBL strength
+// and bloom, blending between presets over ~1.25s. It is constructed after the
+// sky/lights/composer exist and applies its initial preset immediately, so the
+// first rendered frame is already in the right mood.
+const weather = new WeatherController({
+  scene,
+  renderer,
+  sun,
+  hemiLight: hemi,
+  fillLight: fill,
+  focusLight,
+  bloomPass,
+  sky,
+  setEnvironmentIntensity: (v) => {
+    scene.environmentIntensity = v;
+  },
+  materials,
+  initial: 'sunny',
+});
+
+if (weatherEl) {
+  for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setWeather(btn.dataset.weather);
+    });
+  }
+}
+
+function setWeather(name) {
+  weather.setWeather(name);
+  if (!weatherEl) return;
+  for (const btn of weatherEl.querySelectorAll('button[data-weather]')) {
+    btn.classList.toggle('active', btn.dataset.weather === weather.target);
+  }
+}
+setWeather('sunny');
 
 function footprintShape(footprint) {
   const shape = new THREE.Shape();
@@ -462,11 +657,34 @@ async function buildCity(data) {
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
-      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), yFn);
+      const height = Math.max(3, b.h || 10);
+      const { geom, base, cx, cz } = extrudeBuilding(b.f, height, yFn);
+      const tint = buildingTint(b, cx, cz);
       applyFacadeUVs(geom, spec.floorH, spec.windowW, base);
-      tintGeometry(geom, buildingTint(b, cx, cz));
+      tintGeometry(geom, tint);
       buckets[family].push(geom);
       buildingCount += 1;
+      // Rooflines, mechanicals, crowns and spires go into the same family
+      // bucket, so they merge into that family's existing meshes/material —
+      // architectural detail without extra draw calls. Detail is best-effort:
+      // a degenerate footprint must never cost us the building itself.
+      try {
+        for (const detail of buildingDetails({
+          footprint: b.f,
+          height,
+          base,
+          cx,
+          cz,
+          family,
+          spec,
+          tint,
+          landmark: !!b.landmark,
+        })) {
+          buckets[family].push(detail);
+        }
+      } catch {
+        /* keep the plain prism */
+      }
     } catch {
       /* skip degenerate */
     }
@@ -602,13 +820,22 @@ function onResize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
+  composer.setSize(w, h);
   labelRenderer.setSize(w, h);
 }
 window.addEventListener('resize', onResize);
 onResize();
 
+let prevSeconds = -1;
+
 function tick(now) {
   requestAnimationFrame(tick);
+
+  const elapsed = now * 0.001;
+  // Clamp dt so a backgrounded tab (or a long city build) can't teleport
+  // weather transitions or, later, precipitation particles.
+  const dt = prevSeconds < 0 ? 1 / 60 : Math.min(0.1, elapsed - prevSeconds);
+  prevSeconds = elapsed;
 
   if (anim) {
     const t = Math.min(1, (now - anim.start) / anim.duration);
@@ -628,14 +855,16 @@ function tick(now) {
     controls.target.set(20, 50, -20);
   }
 
-  materials.waterUniforms.uTime.value = now * 0.001;
+  materials.waterUniforms.uTime.value = elapsed;
+  weather.update(dt, elapsed, camera);
+  sky.position.copy(camera.position);
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
   focusGlow.position.x = controls.target.x;
   focusGlow.position.z = controls.target.z;
 
   controls.update();
-  renderer.render(scene, camera);
+  composer.render();
   labelRenderer.render(scene, camera);
 }
 requestAnimationFrame(tick);
@@ -646,6 +875,11 @@ requestAnimationFrame(tick);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
     await buildCity(data);
+    // Geometry and the sun direction are static, so cache the expensive 4K
+    // city shadow after one complete post-build update instead of redrawing it
+    // for every camera/weather frame.
+    renderer.shadowMap.autoUpdate = false;
+    renderer.shadowMap.needsUpdate = true;
     setView('point');
     loaderEl.classList.add('hide');
   } catch (err) {
