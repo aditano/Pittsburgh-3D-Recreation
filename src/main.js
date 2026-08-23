@@ -24,6 +24,7 @@ import {
   tintGeometry,
   applyXZUvs,
 } from './textures.js';
+import { buildingDetails } from './details.js';
 import { buildBridges } from './bridges.js';
 import { WeatherController } from './weather.js';
 
@@ -656,11 +657,34 @@ async function buildCity(data) {
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
-      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), yFn);
+      const height = Math.max(3, b.h || 10);
+      const { geom, base, cx, cz } = extrudeBuilding(b.f, height, yFn);
+      const tint = buildingTint(b, cx, cz);
       applyFacadeUVs(geom, spec.floorH, spec.windowW, base);
-      tintGeometry(geom, buildingTint(b, cx, cz));
+      tintGeometry(geom, tint);
       buckets[family].push(geom);
       buildingCount += 1;
+      // Rooflines, mechanicals, crowns and spires go into the same family
+      // bucket, so they merge into that family's existing meshes/material —
+      // architectural detail without extra draw calls. Detail is best-effort:
+      // a degenerate footprint must never cost us the building itself.
+      try {
+        for (const detail of buildingDetails({
+          footprint: b.f,
+          height,
+          base,
+          cx,
+          cz,
+          family,
+          spec,
+          tint,
+          landmark: !!b.landmark,
+        })) {
+          buckets[family].push(detail);
+        }
+      } catch {
+        /* keep the plain prism */
+      }
     } catch {
       /* skip degenerate */
     }

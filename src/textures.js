@@ -101,6 +101,25 @@ function pickWindowLight(rand, { glass = false, cool = false, accent = false } =
   return { lit: '#c8e0a8', em: '#d8f0b8', core: '#f0ffe0', dim: '#608048' };
 }
 
+/**
+ * Facade atlas sampling constants.
+ *
+ * Every family texture is FACADE_TEX px square and reserves two solid patches
+ * in its top-left corner. Geometry that should not show windows points all of
+ * its UVs at one of these texels; because the UV derivative is then zero the
+ * GPU samples mip 0 exactly, so the surface reads as one flat color.
+ * - ROOF_UV: near-black roof/underside color (extrude caps already use it)
+ * - TRIM_UV: windowless cladding in the family's own wall color (detail geometry)
+ */
+const FACADE_TEX = 256;
+const TRIM_PX = 4;
+const TRIM_PATCH = 4;
+export const ROOF_UV = [0.003, 0.003];
+export const TRIM_UV = [
+  (TRIM_PX + TRIM_PATCH * 0.5) / FACADE_TEX,
+  (TRIM_PATCH * 0.5) / FACADE_TEX,
+];
+
 function paintFacade(opts) {
   const {
     seed = 1,
@@ -239,6 +258,19 @@ function paintFacade(opts) {
   e.fillRect(0, 0, 2, 2);
   r.fillStyle = '#d0d0d0';
   r.fillRect(0, 0, 2, 2);
+
+  // Solid "trim" patch (TRIM_UV) for architectural detail geometry: parapets,
+  // cornices and rooftop mechanicals sample this instead of the window grid so
+  // they read as windowless cladding in the wall's own color, one shade darker.
+  // 4x4 px so the derived normal map stays flat at the sampled texel.
+  c.fillStyle = base;
+  c.fillRect(TRIM_PX, 0, TRIM_PATCH, TRIM_PATCH);
+  c.fillStyle = 'rgba(0,0,0,0.14)';
+  c.fillRect(TRIM_PX, 0, TRIM_PATCH, TRIM_PATCH);
+  e.fillStyle = '#000';
+  e.fillRect(TRIM_PX, 0, TRIM_PATCH, TRIM_PATCH);
+  r.fillStyle = glass ? '#8a8a8a' : '#c0bcb6';
+  r.fillRect(TRIM_PX, 0, TRIM_PATCH, TRIM_PATCH);
 
   // Height cue for normals: darker mortar/frames = recessed, lit glass = flatter.
   const normalStrength = glass ? 0.9 : brick ? 2.2 : panels ? 1.4 : 1.6;
@@ -1009,6 +1041,22 @@ export function applyFacadeUVs(geom, floorH, windowW, baseY) {
     uv[i * 2 + 1] = (pos.getY(i) - baseY) / floorH;
   }
   geom.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+/**
+ * Point every vertex at a single atlas texel (ROOF_UV / TRIM_UV) so the whole
+ * geometry renders as one flat material color with no window pattern. Normals
+ * are (re)computed so merged detail geometry lights and shadows correctly.
+ */
+export function applyUniformUVs(geom, uv = TRIM_UV) {
+  geom.computeVertexNormals();
+  const count = geom.attributes.position.count;
+  const arr = new Float32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    arr[i * 2] = uv[0];
+    arr[i * 2 + 1] = uv[1];
+  }
+  geom.setAttribute('uv', new THREE.BufferAttribute(arr, 2));
 }
 
 export function tintGeometry(geom, color) {
