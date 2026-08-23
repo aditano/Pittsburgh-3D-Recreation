@@ -127,7 +127,7 @@ export const WEATHER_PRESETS = {
   snow: {
     label: 'Snow',
     fogColor: 0x7c8ea6,
-    fogDensity: 0.00046,
+    fogDensity: 0.00036,
     backgroundColor: 0x8496aa,
     skyZenith: 0x46586e,
     skyMid: 0x5a6c82,

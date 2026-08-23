@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 
-const MAX_FLAKES = 12000;
+const MAX_FLAKES = 8500;
 const VOLUME_WIDTH = 1200;
 const VOLUME_DEPTH = 1200;
 const VOLUME_HEIGHT = 500;
 const VOLUME_BOTTOM = -250;
 const WIND_X = -7;
 const WIND_Z = 3.5;
-const BASE_SIZE = 20;
+const BASE_SIZE = 16;
 
 function rng(seed) {
   let value = seed >>> 0;
@@ -136,7 +136,7 @@ export class SnowSystem {
     this.intensity = next;
     this.activeCount = Math.floor(this.maxFlakes * next);
     this.geometry.setDrawRange(0, this.activeCount);
-    this.material.opacity = 0.78 * Math.min(1, next * 1.3);
+    this.material.opacity = 0.6 * Math.min(1, next * 1.15);
     this.object3D.visible = next > 0.001 && this.activeCount > 0;
   }
 
