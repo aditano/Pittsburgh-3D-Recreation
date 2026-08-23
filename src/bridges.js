@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { snapBridgeToBanks } from './geo.js';
 
 const YELLOW = 0xe8c84a;
+const SISTERS_YELLOW = 0xf0d050;
 const STEEL = 0x8d939c;
 const DECK = 0x2a2c30;
 const WALK = 0xb8b0a0;
@@ -260,16 +261,26 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel }) {
     else if (type === 'cantilever') addTruss(steel, frame, deckY, width, 22, 'cantilever');
     else addTruss(steel, frame, deckY, width, 14, 'warren');
 
+    if (type === 'sisters') {
+      const lightN = Math.max(6, Math.round(frame.len / 35));
+      for (let i = 0; i <= lightN; i++) {
+        const t = i / lightN;
+        const lp = at(frame, t, deckY + 2.8);
+        addBox(yellowGeoms, lp, new THREE.Vector3(0.5, 0.5, 0.5), frame.quat);
+      }
+    }
+
     const mid = at(frame, 0.5, deckY + (type === 'sisters' ? 48 : 36));
     addLabel(b.n, mid);
   }
 
   const yellowMat = new THREE.MeshStandardMaterial({
-    color: YELLOW,
-    emissive: YELLOW,
-    emissiveIntensity: 0.38,
-    roughness: 0.38,
-    metalness: 0.42,
+    color: SISTERS_YELLOW,
+    emissive: SISTERS_YELLOW,
+    emissiveIntensity: 0.48,
+    roughness: 0.32,
+    metalness: 0.48,
+    envMapIntensity: 0.8,
   });
   const steelMat = new THREE.MeshStandardMaterial({
     color: STEEL,
@@ -316,7 +327,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel }) {
       ),
     );
   }
-  addLines(yellowLines, YELLOW);
+  addLines(yellowLines, SISTERS_YELLOW);
   addLines(steelLines, 0xb0b6be);
 
   return group;

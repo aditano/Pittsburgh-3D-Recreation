@@ -37,12 +37,26 @@ export function terrainHeight(x, z, peaks) {
   }
 
   // Mount Washington / Duquesne Heights escarpment south of the Mon
-  if (z > 320) {
+  if (z > 280) {
     const dRidge = distToSeg(x, z, -1900, 420, 720, 1760);
-    if (dRidge < 300) {
-      const t = 1 - dRidge / 300;
-      h += 62 * t * t;
+    if (dRidge < 340) {
+      const t = 1 - dRidge / 340;
+      h += 72 * t * t;
     }
+  }
+
+  // North Side slope above Allegheny
+  if (z < -600 && x > -1200 && x < 1200) {
+    const dNorth = Math.abs(z + 900);
+    if (dNorth < 500) {
+      const t = 1 - dNorth / 500;
+      h += 28 * t;
+    }
+  }
+
+  // Oakland plateau
+  if (x > 2800 && x < 5200 && z > -1200 && z < 600) {
+    h += 18;
   }
 
   const downtown = Math.hypot(x, z);

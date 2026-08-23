@@ -43,8 +43,8 @@ function makeCanvases(w, h) {
 function paintFacade(opts) {
   const {
     seed = 1,
-    width = 256,
-    height = 256,
+    width = 512,
+    height = 512,
     base = '#3d322c',
     mortar = '#2a2420',
     windowDark = '#07090d',
@@ -453,6 +453,112 @@ export function createCityMaterials() {
       floorH: 8.5,
       windowW: 10,
     },
+    artdeco: {
+      mat: stdMat(
+        paintFacade({
+          seed: 91,
+          base: '#6a6458',
+          mortar: '#4a4438',
+          windowDark: '#0c0e10',
+          windowLit: '#e8d090',
+          cols: 5,
+          rows: 9,
+          litChance: 0.26,
+          tallWindows: true,
+        }),
+        { roughness: 0.74, metalness: 0.1, emissiveIntensity: 0.65 },
+      ),
+      floorH: 4.2,
+      windowW: 2.8,
+    },
+    chapel: {
+      mat: stdMat(
+        paintFacade({
+          seed: 92,
+          base: '#6e6860',
+          mortar: '#3e3a34',
+          windowDark: '#080a0c',
+          windowLit: '#d8c878',
+          cols: 4,
+          rows: 5,
+          litChance: 0.18,
+          tallWindows: true,
+        }),
+        { roughness: 0.86, metalness: 0.03, emissiveIntensity: 0.5 },
+      ),
+      floorH: 5.8,
+      windowW: 2.2,
+    },
+    sandstone: {
+      mat: stdMat(
+        paintFacade({
+          seed: 93,
+          base: '#7a7060',
+          mortar: '#4a4438',
+          windowDark: '#0a0c0e',
+          windowLit: '#e0c070',
+          cols: 6,
+          rows: 7,
+          litChance: 0.2,
+        }),
+        { roughness: 0.9, metalness: 0.02, emissiveIntensity: 0.45 },
+      ),
+      floorH: 4.5,
+      windowW: 3.6,
+    },
+    copper: {
+      mat: stdMat(
+        paintFacade({
+          seed: 94,
+          base: '#4a6a58',
+          mortar: '#2a4038',
+          windowDark: '#0a1010',
+          windowLit: '#c8d8a0',
+          cols: 5,
+          rows: 8,
+          litChance: 0.22,
+        }),
+        { roughness: 0.68, metalness: 0.22, emissiveIntensity: 0.55 },
+      ),
+      floorH: 3.9,
+      windowW: 3.2,
+    },
+    convention: {
+      mat: stdMat(
+        paintFacade({
+          seed: 95,
+          base: '#c8ccc8',
+          mortar: '#a0a4a0',
+          windowDark: '#101418',
+          windowLit: '#e8ece8',
+          cols: 10,
+          rows: 4,
+          litChance: 0.35,
+          glass: true,
+        }),
+        { roughness: 0.35, metalness: 0.28, emissiveIntensity: 0.6, envMapIntensity: 0.9 },
+      ),
+      floorH: 6.0,
+      windowW: 5.0,
+    },
+    steelTower: {
+      mat: stdMat(
+        paintFacade({
+          seed: 96,
+          base: '#5a4030',
+          mortar: '#3a2818',
+          windowDark: '#080808',
+          windowLit: '#d0a870',
+          cols: 7,
+          rows: 11,
+          litChance: 0.3,
+          glass: true,
+        }),
+        { roughness: 0.55, metalness: 0.42, emissiveIntensity: 0.65, envMapIntensity: 0.8 },
+      ),
+      floorH: 3.6,
+      windowW: 3.0,
+    },
   };
 
   const grass = makeGrassMaps();
@@ -506,8 +612,9 @@ export function createCityMaterials() {
         `#include <color_fragment>
          float n = sin(vWorldPos.x * 0.018 + uTime * 0.35) * sin(vWorldPos.z * 0.014 + uTime * 0.28);
          float edge = smoothstep(0.0, 18.0, abs(vWorldPos.y));
-         diffuseColor.rgb += n * 0.035 * vec3(0.45, 0.7, 0.8);
-         diffuseColor.rgb *= 0.88 + edge * 0.08;`,
+         diffuseColor.rgb += n * 0.045 * vec3(0.45, 0.7, 0.85);
+         diffuseColor.rgb += vec3(0.04, 0.06, 0.08) * (1.0 - edge);
+         diffuseColor.rgb *= 0.86 + edge * 0.1;`,
       );
   };
 
@@ -562,19 +669,38 @@ export function createCityMaterials() {
   };
 }
 
+const STYLE_FAMILY = {
+  ppg: 'ppg',
+  gothic: 'gothic',
+  chapel: 'chapel',
+  artdeco: 'artdeco',
+  copper: 'copper',
+  sandstone: 'sandstone',
+  convention: 'convention',
+  steelTower: 'steelTower',
+  glass: 'glass',
+  stadium: 'stadium',
+  brick: 'brick',
+};
+
 export function buildingFamily(b) {
+  if (b.style && STYLE_FAMILY[b.style]) return STYLE_FAMILY[b.style];
   const n = (b.n || '').toLowerCase();
   const h = b.h || 10;
   if (/ppg/.test(n)) return 'ppg';
   if (/cathedral of learning/.test(n)) return 'gothic';
+  if (/chapel|church|cathedral/.test(n)) return 'chapel';
+  if (/gulf tower|grant building/.test(n)) return 'artdeco';
+  if (/koppers/.test(n)) return 'copper';
+  if (/carnegie|soldiers and sailors/.test(n)) return 'sandstone';
   if (/pnc park|acrisure|stadium|heinz field/.test(n)) return 'stadium';
   if (b.f && b.f.length >= 3 && h < 60) {
     const [cx, cz] = footprintCentroid(b.f);
     if (Math.hypot(cx + 415, cz + 657) < 140) return 'stadium';
     if (Math.hypot(cx + 1169, cz + 635) < 180) return 'stadium';
   }
-  if (/u\.?s\.? steel|us steel/.test(n)) return 'steel';
-  if (/convention/.test(n)) return 'steel';
+  if (/u\.?s\.? steel|us steel/.test(n)) return 'steelTower';
+  if (/convention/.test(n)) return 'convention';
   if (b.landmark || h > 100) return 'glass';
   if (h > 55) return 'steel';
   if (h > 28) return 'limestone';

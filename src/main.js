@@ -16,6 +16,13 @@ import {
   applyXZUvs,
 } from './textures.js';
 import { buildBridges } from './bridges.js';
+import { buildLandmarkMeshes, isLandmarkMeshBuilding } from './landmarks.js';
+import { buildStreetLights, buildRooftopDetails, buildStreetLightGlows } from './details.js';
+import { createSkyDome, createCityGlow } from './sky.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const canvas = document.getElementById('c');
 const layersEl = document.getElementById('layers');
@@ -36,6 +43,8 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -76,8 +85,24 @@ fill.position.set(-400, 300, -600);
 scene.add(fill);
 
 const materials = createCityMaterials();
+materials.envMap = createCityGlow(renderer);
 scene.environment = materials.envMap;
-scene.environmentIntensity = 0.42;
+scene.environmentIntensity = 0.55;
+scene.add(createSkyDome());
+
+let composer;
+function initComposer() {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    0.42,
+    0.55,
+    0.72,
+  );
+  composer.addPass(bloom);
+  composer.addPass(new OutputPass());
+}
 
 const roadLineMats = {
   0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),
@@ -395,6 +420,11 @@ function buildingTint(b, cx, cz) {
   const n = (b.n || '').toLowerCase();
   if (/u\.?s\.? steel|us steel/.test(n)) return new THREE.Color(0x6a4a3a);
   if (/ppg/.test(n)) return new THREE.Color(0xd8ece6);
+  if (/koppers/.test(n)) return new THREE.Color(0x4a7a58);
+  if (/gulf tower|grant building/.test(n)) return new THREE.Color(0x9a9488);
+  if (/cathedral|chapel|church/.test(n)) return new THREE.Color(0x8a8478);
+  if (/carnegie|sandstone|soldiers/.test(n)) return new THREE.Color(0x8a8070);
+  if (/convention/.test(n)) return new THREE.Color(0xd8dcd8);
   const h = hash01(cx, cz);
   const height = b.h || 10;
   const cool = height > 70 ? 0.62 : 0.08;
@@ -454,11 +484,18 @@ async function buildCity(data) {
     ppg: [],
     gothic: [],
     stadium: [],
+    artdeco: [],
+    chapel: [],
+    sandstone: [],
+    copper: [],
+    convention: [],
+    steelTower: [],
   };
   let buildingCount = 0;
 
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
+    if (isLandmarkMeshBuilding(b)) continue;
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
@@ -487,8 +524,14 @@ async function buildCity(data) {
   }
 
   for (const [name, geoms] of Object.entries(buckets)) {
+    if (!materials.families[name]) continue;
     addChunks(geoms, materials.families[name].mat);
   }
+
+  scene.add(buildLandmarkMeshes(data.buildings, yFn));
+  scene.add(buildRooftopDetails(data.buildings, yFn));
+  scene.add(buildStreetLights(data.streets || [], yFn, waterIndex));
+  buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);
 
   const byRank = new Map();
   for (const s of data.streets) {
@@ -548,6 +591,14 @@ const views = {
     position: new THREE.Vector3(2200, 520, 900),
     target: new THREE.Vector3(1800, 80, 100),
   },
+  cathedral: {
+    position: new THREE.Vector3(4600, 380, -200),
+    target: new THREE.Vector3(4130, 120, -360),
+  },
+  mountwashington: {
+    position: new THREE.Vector3(-1100, 320, 1100),
+    target: new THREE.Vector3(-200, 60, 200),
+  },
 };
 
 let rotateMode = false;
@@ -600,6 +651,7 @@ function onResize() {
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
   labelRenderer.setSize(w, h);
+  if (composer) composer.setSize(w, h);
 }
 window.addEventListener('resize', onResize);
 onResize();
@@ -632,7 +684,8 @@ function tick(now) {
   focusGlow.position.z = controls.target.z;
 
   controls.update();
-  renderer.render(scene, camera);
+  if (composer) composer.render();
+  else renderer.render(scene, camera);
   labelRenderer.render(scene, camera);
 }
 requestAnimationFrame(tick);
@@ -643,6 +696,7 @@ requestAnimationFrame(tick);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
     await buildCity(data);
+    initComposer();
     setView('downtown');
     loaderEl.classList.add('hide');
   } catch (err) {
