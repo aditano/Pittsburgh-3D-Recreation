@@ -18,7 +18,7 @@ import {
 import { buildBridges } from './bridges.js';
 import { buildLandmarkMeshes, isLandmarkMeshBuilding } from './landmarks.js';
 import { buildStreetLights, buildRooftopDetails, buildStreetLightGlows } from './details.js';
-import { createSkyDome, createCityGlow } from './sky.js';
+import { createSkyDome, createEnvironmentMap } from './sky.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -29,22 +29,25 @@ const layersEl = document.getElementById('layers');
 const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
 
-const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x05070c);
-scene.fog = new THREE.FogExp2(0x05070c, 0.00026);
+const DAY_MODE = true;
 
-const camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(DAY_MODE ? 0x8ec8f0 : 0x05070c);
+scene.fog = new THREE.FogExp2(DAY_MODE ? 0xb8d8f0 : 0x05070c, DAY_MODE ? 0.00012 : 0.00026);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 2, 25000);
 camera.position.set(900, 650, 1100);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
   powerPreference: 'high-performance',
+  logarithmicDepthBuffer: true,
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+renderer.toneMappingExposure = DAY_MODE ? 1.22 : 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -64,31 +67,31 @@ controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.target.set(0, 40, 0);
 
-const hemi = new THREE.HemisphereLight(0xb8c4d8, 0x1a241c, 0.5);
+const hemi = new THREE.HemisphereLight(DAY_MODE ? 0xd8e8ff : 0xb8c4d8, DAY_MODE ? 0x6a7a58 : 0x1a241c, DAY_MODE ? 0.95 : 0.5);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xffffff, 1.15);
-sun.position.set(600, 900, 200);
+const sun = new THREE.DirectionalLight(0xffffff, DAY_MODE ? 1.65 : 1.15);
+sun.position.set(DAY_MODE ? 800 : 600, DAY_MODE ? 1200 : 900, DAY_MODE ? 400 : 200);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
 sun.shadow.camera.near = 100;
-sun.shadow.camera.far = 4000;
-sun.shadow.camera.left = -1500;
-sun.shadow.camera.right = 1500;
-sun.shadow.camera.top = 1500;
-sun.shadow.camera.bottom = -1500;
+sun.shadow.camera.far = 5000;
+sun.shadow.camera.left = -1800;
+sun.shadow.camera.right = 1800;
+sun.shadow.camera.top = 1800;
+sun.shadow.camera.bottom = -1800;
 sun.shadow.bias = -0.0002;
 scene.add(sun);
 
-const fill = new THREE.DirectionalLight(0x6a7a9a, 0.32);
-fill.position.set(-400, 300, -600);
+const fill = new THREE.DirectionalLight(DAY_MODE ? 0xc8d8f0 : 0x6a7a9a, DAY_MODE ? 0.45 : 0.32);
+fill.position.set(-500, 400, -500);
 scene.add(fill);
 
-const materials = createCityMaterials();
-materials.envMap = createCityGlow(renderer);
+const materials = createCityMaterials({ dayMode: DAY_MODE });
+materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
-scene.environmentIntensity = 0.55;
-scene.add(createSkyDome());
+scene.environmentIntensity = DAY_MODE ? 0.75 : 0.55;
+scene.add(createSkyDome({ day: DAY_MODE }));
 
 let composer;
 function initComposer() {
@@ -96,9 +99,9 @@ function initComposer() {
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(
     new THREE.Vector2(window.innerWidth, window.innerHeight),
-    0.42,
-    0.55,
-    0.72,
+    DAY_MODE ? 0.12 : 0.42,
+    DAY_MODE ? 0.35 : 0.55,
+    DAY_MODE ? 0.92 : 0.72,
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
@@ -110,7 +113,7 @@ const roadLineMats = {
   2: new THREE.LineBasicMaterial({ color: 0x6a7384, transparent: true, opacity: 0.8 }),
 };
 
-const focusLight = new THREE.SpotLight(0xffffff, 22, 2200, Math.PI / 5, 0.72, 1.15);
+const focusLight = new THREE.SpotLight(0xffffff, DAY_MODE ? 0 : 22, 2200, Math.PI / 5, 0.72, 1.15);
 focusLight.position.set(0, 700, 0);
 focusLight.target.position.set(0, 0, 0);
 focusLight.castShadow = false;
@@ -216,10 +219,10 @@ function makeGround(peaks, waterIndex) {
 }
 
 function makeGrid() {
-  const helper = new THREE.GridHelper(5000, 100, 0x1c2436, 0x121826);
+  const helper = new THREE.GridHelper(5000, 100, 0x8aa0b8, 0xa8b8c8);
   helper.position.y = 0.4;
   helper.material.transparent = true;
-  helper.material.opacity = 0.16;
+  helper.material.opacity = DAY_MODE ? 0.08 : 0.16;
   return helper;
 }
 
@@ -530,8 +533,8 @@ async function buildCity(data) {
 
   scene.add(buildLandmarkMeshes(data.buildings, yFn));
   scene.add(buildRooftopDetails(data.buildings, yFn));
-  scene.add(buildStreetLights(data.streets || [], yFn, waterIndex));
-  buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);
+  scene.add(buildStreetLights(data.streets || [], yFn, waterIndex, { dayMode: DAY_MODE }));
+  if (!DAY_MODE) buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);
 
   const byRank = new Map();
   for (const s of data.streets) {
@@ -554,7 +557,7 @@ async function buildCity(data) {
   }
   scene.add(buildRoadRibbons(data.streets || [], yFn, waterIndex));
 
-  const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel });
+  const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel, dayMode: DAY_MODE });
   scene.add(bridgeGroup);
 
   const trees = plantTrees(peaks, waterIndex, yFn);
@@ -572,32 +575,32 @@ async function buildCity(data) {
 
 const views = {
   aerial: {
-    position: new THREE.Vector3(0, 2800, 0.01),
-    target: new THREE.Vector3(0, 0, 0),
+    position: new THREE.Vector3(-280, 2600, 280),
+    target: new THREE.Vector3(-280, 0, -60),
   },
   downtown: {
-    position: new THREE.Vector3(780, 420, 920),
-    target: new THREE.Vector3(40, 60, -40),
+    position: new THREE.Vector3(520, 360, 520),
+    target: new THREE.Vector3(120, 45, 20),
   },
   point: {
-    position: new THREE.Vector3(-420, 280, 520),
-    target: new THREE.Vector3(-280, 20, 40),
+    position: new THREE.Vector3(-520, 210, 200),
+    target: new THREE.Vector3(-864, 12, -78),
   },
   bridges: {
-    position: new THREE.Vector3(180, 220, 640),
-    target: new THREE.Vector3(-40, 30, -180),
+    position: new THREE.Vector3(320, 250, -100),
+    target: new THREE.Vector3(-60, 28, -560),
   },
   oakland: {
-    position: new THREE.Vector3(2200, 520, 900),
-    target: new THREE.Vector3(1800, 80, 100),
+    position: new THREE.Vector3(4550, 420, 150),
+    target: new THREE.Vector3(3850, 70, -280),
   },
   cathedral: {
-    position: new THREE.Vector3(4600, 380, -200),
-    target: new THREE.Vector3(4130, 120, -360),
+    position: new THREE.Vector3(4550, 360, -80),
+    target: new THREE.Vector3(4134, 110, -356),
   },
   mountwashington: {
-    position: new THREE.Vector3(-1100, 320, 1100),
-    target: new THREE.Vector3(-200, 60, 200),
+    position: new THREE.Vector3(-1050, 300, 1150),
+    target: new THREE.Vector3(-100, 35, -80),
   },
 };
 

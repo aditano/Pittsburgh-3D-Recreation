@@ -19,7 +19,7 @@ const lightMat = new THREE.MeshStandardMaterial({
   metalness: 0.35,
 });
 
-export function buildStreetLights(streets, yFn, waterIndex) {
+export function buildStreetLights(streets, yFn, waterIndex, { dayMode = true } = {}) {
   const group = new THREE.Group();
   group.name = 'street-lights';
   const lights = [];
@@ -71,9 +71,9 @@ export function buildStreetLights(streets, yFn, waterIndex) {
 
   const bulbGeo = new THREE.SphereGeometry(0.22, 6, 4);
   const bulbMat = new THREE.MeshStandardMaterial({
-    color: 0xffe8c0,
-    emissive: 0xffc878,
-    emissiveIntensity: 2.5,
+    color: dayMode ? 0x888880 : 0xffe8c0,
+    emissive: dayMode ? 0x000000 : 0xffc878,
+    emissiveIntensity: dayMode ? 0 : 2.5,
     roughness: 0.3,
     metalness: 0,
   });

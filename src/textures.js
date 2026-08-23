@@ -9,11 +9,15 @@ function rng(seed) {
   };
 }
 
-function canvasTexture(canvas, { color = true, repeat = 1 } = {}) {
+function canvasTexture(canvas, { color = true, repeat = 1, renderer = null } = {}) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.anisotropy = 4;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  const maxAniso = renderer?.capabilities?.getMaxAnisotropy?.() ?? 8;
+  tex.anisotropy = Math.min(16, maxAniso);
   tex.repeat.set(repeat, repeat);
   tex.colorSpace = color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
   tex.needsUpdate = true;
@@ -299,7 +303,7 @@ function stdMat(maps, extras = {}) {
   });
 }
 
-export function createCityMaterials() {
+export function createCityMaterials({ dayMode = true } = {}) {
   const families = {
     lowrise: {
       mat: stdMat(
@@ -309,10 +313,10 @@ export function createCityMaterials() {
           mortar: '#2a241e',
           cols: 5,
           rows: 6,
-          litChance: 0.18,
+          litChance: dayMode ? 0.04 : 0.18,
           brick: true,
         }),
-        { roughness: 0.88, metalness: 0.04, emissiveIntensity: 0.55 },
+        { roughness: 0.88, metalness: 0.04, emissiveIntensity: dayMode ? 0.08 : 0.55 },
       ),
       floorH: 3.6,
       windowW: 3.8,
@@ -578,14 +582,14 @@ export function createCityMaterials() {
 
   const waterUniforms = { uTime: { value: 0 } };
   const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x0a2834,
+    color: dayMode ? 0x2a6a8a : 0x0a2834,
     map: water.map,
     roughnessMap: water.roughnessMap,
-    roughness: 0.22,
+    roughness: dayMode ? 0.18 : 0.22,
     metalness: 0.42,
     transparent: true,
-    opacity: 0.94,
-    envMapIntensity: 1.15,
+    opacity: dayMode ? 0.88 : 0.94,
+    envMapIntensity: dayMode ? 1.4 : 1.15,
   });
   waterMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterUniforms.uTime;
@@ -666,6 +670,7 @@ export function createCityMaterials() {
     bankMat,
     treeMat,
     envMap: makeNightEnv(),
+    dayMode,
   };
 }
 

@@ -173,6 +173,43 @@ export function makeWaterIndex(polygons) {
   };
 }
 
+/** Align a bridge span perpendicular to local river flow, preserving half-length. */
+export function alignBridgePerpendicular(pts, waterIndex, halfLen = null) {
+  const [a, c] = pts;
+  const cx = (a[0] + c[0]) * 0.5;
+  const cz = (a[1] + c[1]) * 0.5;
+  const span = halfLen ?? Math.hypot(c[0] - a[0], c[1] - a[1]) * 0.5;
+
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  let flowX = 0;
+  let flowZ = 1;
+  let bestLen = 0;
+  for (const [dx, dz] of dirs) {
+    let len = 0;
+    for (let i = 1; i < 300; i++) {
+      if (waterIndex.inside(cx + dx * i * 4, cz + dz * i * 4)) len = i * 4;
+      else break;
+    }
+    if (len > bestLen) {
+      bestLen = len;
+      flowX = dx;
+      flowZ = dz;
+    }
+  }
+
+  const bx = -flowZ;
+  const bz = flowX;
+  return [
+    [+(cx - bx * span).toFixed(2), +(cz - bz * span).toFixed(2)],
+    [+(cx + bx * span).toFixed(2), +(cz + bz * span).toFixed(2)],
+  ];
+}
+
 export function snapBridgeToBanks(pts, waterIndex, inset = 22) {
   const [a, c] = pts;
   const dx = c[0] - a[0];

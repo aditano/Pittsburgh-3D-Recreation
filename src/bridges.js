@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { snapBridgeToBanks } from './geo.js';
+import { alignBridgePerpendicular, snapBridgeToBanks } from './geo.js';
 
 const YELLOW = 0xe8c84a;
 const SISTERS_YELLOW = 0xf0d050;
@@ -226,7 +226,7 @@ function addTruss(geoms, frame, deckY, width, height, style) {
   }
 }
 
-export function buildBridges(bridges, { yFn, waterIndex, addLabel }) {
+export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = true }) {
   const group = new THREE.Group();
   const yellowGeoms = [];
   const steelGeoms = [];
@@ -236,7 +236,8 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel }) {
   const steelLines = [];
 
   for (const b of bridges) {
-    const pts = snapBridgeToBanks(b.pts, waterIndex, 24);
+    const aligned = alignBridgePerpendicular(b.pts, waterIndex);
+    const pts = snapBridgeToBanks(aligned, waterIndex, 24);
     const type = b.type || inferType(b.n);
     const frame = spanFrame(pts[0], pts[1]);
     const h0 = Math.max(0, yFn(pts[0][0], pts[0][1]));
@@ -277,7 +278,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel }) {
   const yellowMat = new THREE.MeshStandardMaterial({
     color: SISTERS_YELLOW,
     emissive: SISTERS_YELLOW,
-    emissiveIntensity: 0.48,
+    emissiveIntensity: dayMode ? 0.08 : 0.48,
     roughness: 0.32,
     metalness: 0.48,
     envMapIntensity: 0.8,
