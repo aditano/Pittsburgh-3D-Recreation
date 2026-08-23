@@ -1,0 +1,497 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "osm3s": {
+    "timestamp_osm_base": "2026-08-23T14:53:16Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "way",
+  "id": 134121347,
+  "bounds": {
+    "minlat": 40.4430066,
+    "minlon": -80.0466273,
+    "maxlat": 40.4735268,
+    "maxlon": -80.0171244
+  },
+  "nodes": [
+    34189204,
+    355870709,
+    355870708,
+    2997259322,
+    355870707,
+    355870705,
+    11106996174,
+    355870702,
+    355870701,
+    11106996173,
+    355870699,
+    11106996172,
+    355870698,
+    355870697,
+    355870695,
+    355870692,
+    355870691,
+    3490101256
+  ],
+  "geometry": [
+    { "lat": 40.4430066, "lon": -80.0171244 },
+    { "lat": 40.4434818, "lon": -80.0188649 },
+    { "lat": 40.4451148, "lon": -80.0241006 },
+    { "lat": 40.4461865, "lon": -80.0267005 },
+    { "lat": 40.4468131, "lon": -80.0282205 },
+    { "lat": 40.4494911, "lon": -80.0321687 },
+    { "lat": 40.4509618, "lon": -80.0337148 },
+    { "lat": 40.4521036, "lon": -80.0349152 },
+    { "lat": 40.4536058, "lon": -80.0358594 },
+    { "lat": 40.4539272, "lon": -80.0359145 },
+    { "lat": 40.4566101, "lon": -80.0363744 },
+    { "lat": 40.4573054, "lon": -80.0364929 },
+    { "lat": 40.4601366, "lon": -80.0369752 },
+    { "lat": 40.4630100, "lon": -80.0385201 },
+    { "lat": 40.4655567, "lon": -80.0407517 },
+    { "lat": 40.4688216, "lon": -80.0436700 },
+    { "lat": 40.4717599, "lon": -80.0457299 },
+    { "lat": 40.4735268, "lon": -80.0466273 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "name": "Ohio River",
+    "name:ar": "نهر أوهايو",
+    "name:chr": "ᎣᎭᏲ",
+    "name:fa": "رود اوهایو",
+    "name:he": "נהר אוהיו",
+    "name:mia": "kaanseenseepiiw",
+    "name:moh": "Ohrhionhwí:io",
+    "name:oj": "Wenizhishijiwan-ziibi",
+    "oneway:canoe": "no",
+    "order:strahler": "8",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "waterway": "river"
+  }
+},
+{
+  "type": "way",
+  "id": 163537181,
+  "bounds": {
+    "minlat": 40.4283833,
+    "minlon": -79.9735597,
+    "maxlat": 40.4331549,
+    "maxlon": -79.9607270
+  },
+  "nodes": [
+    2055238442,
+    34189349,
+    2055238444,
+    34189350,
+    4575815784
+  ],
+  "geometry": [
+    { "lat": 40.4283833, "lon": -79.9607270 },
+    { "lat": 40.4304667, "lon": -79.9641421 },
+    { "lat": 40.4319907, "lon": -79.9681283 },
+    { "lat": 40.4330643, "lon": -79.9730111 },
+    { "lat": 40.4331549, "lon": -79.9735597 }
+  ],
+  "tags": {
+    "alt_name:fr": "Monongahéla;Malangueulé;Mal-engueulée;Manangaîlé",
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Monongahela River",
+    "name:es": "Río Monongahela",
+    "name:fr": "Monongahela",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river",
+    "wikipedia": "en:Monongahela River"
+  }
+},
+{
+  "type": "way",
+  "id": 164023900,
+  "bounds": {
+    "minlat": 40.4515236,
+    "minlon": -79.9907137,
+    "maxlat": 40.4656009,
+    "maxlon": -79.9734781
+  },
+  "nodes": [
+    4575820689,
+    267170024,
+    267170027,
+    2635978558,
+    2635978559,
+    34189198,
+    4605103656
+  ],
+  "geometry": [
+    { "lat": 40.4656009, "lon": -79.9734781 },
+    { "lat": 40.4641285, "lon": -79.9744433 },
+    { "lat": 40.4617458, "lon": -79.9768541 },
+    { "lat": 40.4597180, "lon": -79.9797434 },
+    { "lat": 40.4581067, "lon": -79.9823129 },
+    { "lat": 40.4563597, "lon": -79.9844951 },
+    { "lat": 40.4515236, "lon": -79.9907137 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Allegheny River",
+    "name:ar": "نهر اليجينى",
+    "name:del": "Alikehane",
+    "name:fa": "رود الیگنی",
+    "name:fr": "Rivière Alleghany",
+    "name:he": "נהר אלגיני",
+    "name:moh": "Ohrhionhwí:io",
+    "name:ru": "Река Аллегейни",
+    "name:see": "Ohi:yo’",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river"
+  }
+},
+{
+  "type": "way",
+  "id": 341958153,
+  "bounds": {
+    "minlat": 40.4536058,
+    "minlon": -80.0506523,
+    "maxlat": 40.4665396,
+    "maxlon": -80.0358594
+  },
+  "nodes": [
+    355870701,
+    3490101249,
+    3490101250,
+    3490101251,
+    3490101252,
+    3684906636
+  ],
+  "geometry": [
+    { "lat": 40.4536058, "lon": -80.0358594 },
+    { "lat": 40.4547296, "lon": -80.0387635 },
+    { "lat": 40.4617287, "lon": -80.0468851 },
+    { "lat": 40.4635558, "lon": -80.0494904 },
+    { "lat": 40.4649400, "lon": -80.0502763 },
+    { "lat": 40.4665396, "lon": -80.0506523 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "name": "Ohio River",
+    "name:ar": "نهر أوهايو",
+    "name:chr": "ᎣᎭᏲ",
+    "name:fa": "رود اوهایو",
+    "name:he": "נהר אוהיו",
+    "name:mia": "kaanseenseepiiw",
+    "name:moh": "Ohrhionhwí:io",
+    "name:oj": "Wenizhishijiwan-ziibi",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "source": "bing",
+    "waterway": "river"
+  }
+},
+{
+  "type": "way",
+  "id": 344624377,
+  "bounds": {
+    "minlat": 40.4581067,
+    "minlon": -79.9823129,
+    "maxlat": 40.4692590,
+    "maxlon": -79.9744954
+  },
+  "nodes": [
+    3513793032,
+    3513793033,
+    3513793034,
+    3513793035,
+    3513793036,
+    3513793037,
+    3513793038,
+    3513793039,
+    3513793040,
+    3513793041,
+    3513793042,
+    2635978559
+  ],
+  "geometry": [
+    { "lat": 40.4692590, "lon": -79.9744954 },
+    { "lat": 40.4685776, "lon": -79.9754022 },
+    { "lat": 40.4679729, "lon": -79.9760608 },
+    { "lat": 40.4669500, "lon": -79.9770056 },
+    { "lat": 40.4658926, "lon": -79.9779550 },
+    { "lat": 40.4649457, "lon": -79.9785863 },
+    { "lat": 40.4638502, "lon": -79.9792086 },
+    { "lat": 40.4627996, "lon": -79.9798945 },
+    { "lat": 40.4614691, "lon": -79.9808121 },
+    { "lat": 40.4605325, "lon": -79.9814616 },
+    { "lat": 40.4595130, "lon": -79.9819204 },
+    { "lat": 40.4581067, "lon": -79.9823129 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "name": "Allegheny River",
+    "name:ar": "نهر اليجينى",
+    "name:del": "Alikehane",
+    "name:fa": "رود الیگنی",
+    "name:fr": "Rivière Alleghany",
+    "name:he": "נהר אלגיני",
+    "name:moh": "Ohrhionhwí:io",
+    "name:ru": "Река Аллегейни",
+    "name:see": "Ohi:yo’",
+    "source": "bing",
+    "waterway": "river"
+  }
+},
+{
+  "type": "way",
+  "id": 462167045,
+  "bounds": {
+    "minlat": 40.4107166,
+    "minlon": -79.9607270,
+    "maxlat": 40.4283833,
+    "maxlon": -79.9529191
+  },
+  "nodes": [
+    3129697853,
+    311622017,
+    34189346,
+    2055238437,
+    34189347,
+    3114398195,
+    2055238439,
+    34189348,
+    2055238442
+  ],
+  "geometry": [
+    { "lat": 40.4107166, "lon": -79.9529191 },
+    { "lat": 40.4118776, "lon": -79.9530527 },
+    { "lat": 40.4134593, "lon": -79.9532001 },
+    { "lat": 40.4186155, "lon": -79.9534392 },
+    { "lat": 40.4208736, "lon": -79.9540128 },
+    { "lat": 40.4220023, "lon": -79.9546424 },
+    { "lat": 40.4235435, "lon": -79.9555020 },
+    { "lat": 40.4257040, "lon": -79.9575548 },
+    { "lat": 40.4283833, "lon": -79.9607270 }
+  ],
+  "tags": {
+    "alt_name:fr": "Monongahéla;Malangueulé;Mal-engueulée;Manangaîlé",
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Monongahela River",
+    "name:es": "Río Monongahela",
+    "name:fr": "Monongahela",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river",
+    "wikipedia": "en:Monongahela River"
+  }
+},
+{
+  "type": "way",
+  "id": 462176620,
+  "bounds": {
+    "minlat": 40.4325863,
+    "minlon": -79.9965623,
+    "maxlat": 40.4338488,
+    "maxlon": -79.9735597
+  },
+  "nodes": [
+    4575815784,
+    34215602,
+    34189351,
+    34189352,
+    2055238445,
+    34189353,
+    4575815785
+  ],
+  "geometry": [
+    { "lat": 40.4331549, "lon": -79.9735597 },
+    { "lat": 40.4338488, "lon": -79.9777624 },
+    { "lat": 40.4335514, "lon": -79.9814987 },
+    { "lat": 40.4327394, "lon": -79.9877483 },
+    { "lat": 40.4325863, "lon": -79.9913534 },
+    { "lat": 40.4327395, "lon": -79.9946946 },
+    { "lat": 40.4331130, "lon": -79.9965623 }
+  ],
+  "tags": {
+    "alt_name:fr": "Monongahéla;Malangueulé;Mal-engueulée;Manangaîlé",
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Monongahela River",
+    "name:es": "Río Monongahela",
+    "name:fr": "Monongahela",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river",
+    "wikipedia": "en:Monongahela River"
+  }
+},
+{
+  "type": "way",
+  "id": 462176621,
+  "bounds": {
+    "minlat": 40.4331130,
+    "minlon": -80.0171244,
+    "maxlat": 40.4430066,
+    "maxlon": -79.9965623
+  },
+  "nodes": [
+    4575815785,
+    34189354,
+    34189355,
+    34189356,
+    34189357,
+    8436098326,
+    355870849,
+    34189204
+  ],
+  "geometry": [
+    { "lat": 40.4331130, "lon": -79.9965623 },
+    { "lat": 40.4335513, "lon": -79.9987537 },
+    { "lat": 40.4353102, "lon": -80.0032863 },
+    { "lat": 40.4382463, "lon": -80.0098127 },
+    { "lat": 40.4403163, "lon": -80.0135691 },
+    { "lat": 40.4409074, "lon": -80.0143466 },
+    { "lat": 40.4420546, "lon": -80.0158557 },
+    { "lat": 40.4430066, "lon": -80.0171244 }
+  ],
+  "tags": {
+    "alt_name:fr": "Monongahéla;Malangueulé;Mal-engueulée;Manangaîlé",
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Monongahela River",
+    "name:es": "Río Monongahela",
+    "name:fr": "Monongahela",
+    "oneway:canoe": "no",
+    "order:strahler": "7",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river",
+    "wikipedia": "en:Monongahela River"
+  }
+},
+{
+  "type": "way",
+  "id": 462176622,
+  "bounds": {
+    "minlat": 40.4430066,
+    "minlon": -80.0171244,
+    "maxlat": 40.4479056,
+    "maxlon": -79.9963227
+  },
+  "nodes": [
+    4575815787,
+    3268446026,
+    34189201,
+    34189202,
+    34189203,
+    6001638124,
+    8436080016,
+    6001638125,
+    34189204
+  ],
+  "geometry": [
+    { "lat": 40.4479056, "lon": -79.9963227 },
+    { "lat": 40.4472657, "lon": -79.9979352 },
+    { "lat": 40.4466796, "lon": -79.9996603 },
+    { "lat": 40.4455317, "lon": -80.0034342 },
+    { "lat": 40.4442405, "lon": -80.0090302 },
+    { "lat": 40.4436423, "lon": -80.0118268 },
+    { "lat": 40.4433547, "lon": -80.0137183 },
+    { "lat": 40.4432142, "lon": -80.0146419 },
+    { "lat": 40.4430066, "lon": -80.0171244 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Allegheny River",
+    "name:es": "Río Allegheny",
+    "oneway:canoe": "no",
+    "order:strahler": "7",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river"
+  }
+},
+{
+  "type": "way",
+  "id": 465555708,
+  "bounds": {
+    "minlat": 40.4479056,
+    "minlon": -79.9963227,
+    "maxlat": 40.4515236,
+    "maxlon": -79.9907137
+  },
+  "nodes": [
+    4605103656,
+    34189200,
+    4575815787
+  ],
+  "geometry": [
+    { "lat": 40.4515236, "lon": -79.9907137 },
+    { "lat": 40.4502368, "lon": -79.9923680 },
+    { "lat": 40.4479056, "lon": -79.9963227 }
+  ],
+  "tags": {
+    "boat": "yes",
+    "canoe": "yes",
+    "deep_draft": "no",
+    "intermittent": "no",
+    "name": "Allegheny River",
+    "name:ar": "نهر اليجينى",
+    "name:del": "Alikehane",
+    "name:fa": "رود الیگنی",
+    "name:fr": "Rivière Alleghany",
+    "name:he": "נהר אלגיני",
+    "name:moh": "Ohrhionhwí:io",
+    "name:ru": "Река Аллегейни",
+    "name:see": "Ohi:yo’",
+    "oneway:canoe": "no",
+    "rapids": "no",
+    "ship": "yes",
+    "source:deep_draft": "National Transportation Atlas Database 2011",
+    "tidal": "no",
+    "waterway": "river"
+  }
+}
+
+  ]
+}

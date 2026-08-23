@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { alignBridgePerpendicular, snapBridgeToBanks } from './geo.js';
+import { snapBridgeToBanks } from './geo.js';
 
 const YELLOW = 0xe8c84a;
 const SISTERS_YELLOW = 0xf0d050;
@@ -236,8 +236,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
   const steelLines = [];
 
   for (const b of bridges) {
-    const aligned = alignBridgePerpendicular(b.pts, waterIndex);
-    const pts = snapBridgeToBanks(aligned, waterIndex, 24);
+    const pts = snapBridgeToBanks(b.pts, waterIndex, 18);
     const type = b.type || inferType(b.n);
     const frame = spanFrame(pts[0], pts[1]);
     const h0 = Math.max(0, yFn(pts[0][0], pts[0][1]));

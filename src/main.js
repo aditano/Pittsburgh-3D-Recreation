@@ -6,6 +6,8 @@ import {
   surfaceHeight,
   makeWaterIndex,
   footprintCentroid,
+  footprintWaterOverlap,
+  footprintLandBaseY,
   hash01,
 } from './geo.js';
 import {
@@ -144,17 +146,16 @@ function footprintShape(footprint) {
   return shape;
 }
 
-function extrudeBuilding(footprint, height, yFn) {
+function extrudeBuilding(footprint, height, baseY) {
   const shape = footprintShape(footprint);
   const [cx, cz] = footprintCentroid(footprint);
-  const base = yFn ? yFn(cx, cz) : 0;
   const geom = new THREE.ExtrudeGeometry(shape, {
     depth: height,
     bevelEnabled: false,
   });
   geom.rotateX(-Math.PI / 2);
-  geom.translate(0, base, 0);
-  return { geom, base, cx, cz };
+  geom.translate(0, baseY, 0);
+  return { geom, base: baseY, cx, cz };
 }
 
 function flatPolygon(footprint, y, yFn) {
@@ -436,7 +437,8 @@ function buildingTint(b, cx, cz) {
 
 async function buildCity(data) {
   const peaks = data.terrainPeaks || [];
-  const waterIndex = makeWaterIndex((data.water || []).map((w) => w.f));
+  const waterPolys = (data.water || []).map((w) => w.f);
+  const waterIndex = makeWaterIndex(waterPolys, { erosion: 12 });
   const yFn = (x, z) => surfaceHeight(x, z, peaks, waterIndex);
 
   scene.add(makeGround(peaks, waterIndex));
@@ -499,10 +501,12 @@ async function buildCity(data) {
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
     if (isLandmarkMeshBuilding(b)) continue;
+    if (footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
-      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), yFn);
+      const baseY = footprintLandBaseY(b.f, yFn, waterIndex);
+      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), baseY);
       applyFacadeUVs(geom, spec.floorH, spec.windowW, base);
       tintGeometry(geom, buildingTint(b, cx, cz));
       buckets[family].push(geom);
@@ -531,7 +535,7 @@ async function buildCity(data) {
     addChunks(geoms, materials.families[name].mat);
   }
 
-  scene.add(buildLandmarkMeshes(data.buildings, yFn));
+  scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex));
   scene.add(buildRooftopDetails(data.buildings, yFn));
   scene.add(buildStreetLights(data.streets || [], yFn, waterIndex, { dayMode: DAY_MODE }));
   if (!DAY_MODE) buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);

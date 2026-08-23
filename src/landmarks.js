@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { footprintCentroid } from './geo.js';
+import { footprintCentroid, footprintWaterOverlap, footprintLandBaseY } from './geo.js';
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -329,16 +329,19 @@ const BUILDERS = {
   'oxford-centre': (b) => buildGlassTower(b.h, b.f),
 };
 
-export function buildLandmarkMeshes(buildings, yFn) {
+export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
   const group = new THREE.Group();
   group.name = 'landmarks';
 
   for (const b of buildings) {
     if (!b.landmarkMesh || !b.f) continue;
+    if (waterIndex && footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
     const builder = BUILDERS[b.landmarkMesh];
     if (!builder) continue;
     const [cx, cz] = footprintCentroid(b.f);
-    const baseY = yFn(cx, cz);
+    const baseY = waterIndex
+      ? footprintLandBaseY(b.f, yFn, waterIndex)
+      : yFn(cx, cz);
     try {
       const mesh = builder(b);
       mesh.position.set(cx, baseY, cz);

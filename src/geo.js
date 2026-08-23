@@ -112,7 +112,86 @@ function rasterizePoly(grid, poly, minX, minZ, res, cols, rows) {
   }
 }
 
-export function makeWaterIndex(polygons) {
+/** Land cutouts where rivers should not render (parks, points, riverfront). */
+export const LAND_CUTOUTS = [
+  {
+    n: 'Point State Park',
+    f: [
+      [-1020, 80],
+      [-980, -60],
+      [-900, -100],
+      [-820, -40],
+      [-800, 40],
+      [-860, 100],
+      [-980, 110],
+      [-1020, 80],
+    ],
+  },
+  {
+    n: 'North Shore riverfront',
+    f: [
+      [-420, -720],
+      [220, -920],
+      [280, -780],
+      [120, -660],
+      [-180, -600],
+      [-420, -720],
+    ],
+  },
+  {
+    n: 'South Shore near Liberty',
+    f: [
+      [300, 500],
+      [620, 540],
+      [700, 720],
+      [460, 800],
+      [300, 500],
+    ],
+  },
+  {
+    n: 'Station Square riverfront',
+    f: [
+      [-180, 300],
+      [80, 340],
+      [120, 480],
+      [-80, 520],
+      [-180, 300],
+    ],
+  },
+];
+
+function erasePoly(grid, poly, minX, minZ, res, cols, rows) {
+  const n = poly.length;
+  if (n < 3) return;
+  const closed =
+    Math.hypot(poly[0][0] - poly[n - 1][0], poly[0][1] - poly[n - 1][1]) < 0.01;
+  const count = closed ? n - 1 : n;
+
+  for (let row = 0; row < rows; row++) {
+    const y = row + 0.5;
+    const xs = [];
+    for (let i = 0; i < count; i++) {
+      const a = poly[i];
+      const b = poly[(i + 1) % n];
+      const y1 = (a[1] - minZ) / res;
+      const y2 = (b[1] - minZ) / res;
+      if (y1 > y !== y2 > y) {
+        const x1 = (a[0] - minX) / res;
+        const x2 = (b[0] - minX) / res;
+        xs.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1 || 1e-12));
+      }
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const a = Math.max(0, Math.floor(xs[k]));
+      const b = Math.min(cols - 1, Math.ceil(xs[k + 1]));
+      const base = row * cols;
+      for (let col = a; col <= b; col++) grid[base + col] = 0;
+    }
+  }
+}
+
+export function makeWaterIndex(polygons, { erosion = 0, cutouts = LAND_CUTOUTS } = {}) {
   const minX = -4200;
   const maxX = 8200;
   const minZ = -3600;
@@ -125,6 +204,35 @@ export function makeWaterIndex(polygons) {
   for (const poly of polygons) {
     if (!poly || poly.length < 3) continue;
     rasterizePoly(water, poly, minX, minZ, res, cols, rows);
+  }
+
+  for (const cut of cutouts) {
+    if (!cut?.f || cut.f.length < 3) continue;
+    erasePoly(water, cut.f, minX, minZ, res, cols, rows);
+  }
+
+  if (erosion > 0) {
+    const eroded = new Uint8Array(water);
+    const r = Math.ceil(erosion / res);
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const i = row * cols + col;
+        if (!water[i]) continue;
+        let keep = true;
+        for (let dz = -r; dz <= r && keep; dz++) {
+          for (let dx = -r; dx <= r; dx++) {
+            const rr = row + dz;
+            const cc = col + dx;
+            if (rr < 0 || rr >= rows || cc < 0 || cc >= cols || !water[rr * cols + cc]) {
+              keep = false;
+              break;
+            }
+          }
+        }
+        if (!keep) eroded[i] = 0;
+      }
+    }
+    water.set(eroded);
   }
 
   const bank = new Uint8Array(cols * rows);
@@ -171,6 +279,37 @@ export function makeWaterIndex(polygons) {
       return i >= 0 ? bank[i] / 255 : 0;
     },
   };
+}
+
+/** Align a bridge at a center point, perpendicular to local river flow. */
+export function alignBridgeAtCenter(cx, cz, halfLen, waterIndex) {
+  const dirs = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  let flowX = 0;
+  let flowZ = 1;
+  let bestLen = 0;
+  for (const [dx, dz] of dirs) {
+    let len = 0;
+    for (let i = 1; i < 300; i++) {
+      if (waterIndex.inside(cx + dx * i * 4, cz + dz * i * 4)) len = i * 4;
+      else break;
+    }
+    if (len > bestLen) {
+      bestLen = len;
+      flowX = dx;
+      flowZ = dz;
+    }
+  }
+  const bx = -flowZ;
+  const bz = flowX;
+  return [
+    [+(cx - bx * halfLen).toFixed(2), +(cz - bz * halfLen).toFixed(2)],
+    [+(cx + bx * halfLen).toFixed(2), +(cz + bz * halfLen).toFixed(2)],
+  ];
 }
 
 /** Align a bridge span perpendicular to local river flow, preserving half-length. */
@@ -259,6 +398,35 @@ export function snapBridgeToBanks(pts, waterIndex, inset = 22) {
     [+(a[0] + ux * sa).toFixed(2), +(a[1] + uz * sa).toFixed(2)],
     [+(a[0] + ux * sc).toFixed(2), +(a[1] + uz * sc).toFixed(2)],
   ];
+}
+
+export function footprintWaterOverlap(footprint, waterIndex) {
+  const n = footprint.length - 1;
+  if (n < 3) return 1;
+  let inside = 0;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const [x, z] = footprint[i];
+    total++;
+    if (waterIndex.inside(x, z)) inside++;
+  }
+  const [cx, cz] = footprintCentroid(footprint);
+  total++;
+  if (waterIndex.inside(cx, cz)) inside++;
+  return inside / total;
+}
+
+export function footprintLandBaseY(footprint, yFn, waterIndex) {
+  let best = -Infinity;
+  const n = footprint.length - 1;
+  for (let i = 0; i < n; i++) {
+    const [x, z] = footprint[i];
+    if (waterIndex.inside(x, z)) continue;
+    best = Math.max(best, yFn(x, z));
+  }
+  const [cx, cz] = footprintCentroid(footprint);
+  if (!waterIndex.inside(cx, cz)) best = Math.max(best, yFn(cx, cz));
+  return best > -Infinity ? best : yFn(cx, cz);
 }
 
 export function hash01(x, z) {
