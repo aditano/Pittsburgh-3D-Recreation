@@ -490,6 +490,27 @@ function parseHeight(tags) {
   return null;
 }
 
+/** Narrowest width of the footprint over a sweep of plan directions. */
+function narrowestExtent(ring) {
+  const [cx, cz] = ringCentroid(ring);
+  const n = ring.length - 1;
+  let best = Infinity;
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * Math.PI;
+    const c = Math.cos(a);
+    const s = Math.sin(a);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const v = (ring[i][0] - cx) * c + (ring[i][1] - cz) * s;
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
+    }
+    best = Math.min(best, hi - lo);
+  }
+  return best;
+}
+
 /**
  * Replace estimated building heights with OSM `height` / `building:levels`
  * values. Matching is by centroid proximity rather than name: most of the city
@@ -517,11 +538,16 @@ out tags center;`;
 
   let updated = 0;
   let bigChange = 0;
+  let rejected = 0;
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
     const [cx, cz] = ringCentroid(b.f);
+    // The match radius has to scale with the building's own size. At a flat 18 m
+    // narrow infill inherits whatever tower stands next door: two Strip District
+    // restaurants were handed the 23 storeys of the loft block beside them.
+    const span = Math.sqrt(Math.abs(ringArea(b.f)));
     let best = null;
-    let bestD = 18;
+    let bestD = Math.min(18, Math.max(6, span * 0.5));
     for (let gx = -1; gx <= 1; gx++) {
       for (let gz = -1; gz <= 1; gz++) {
         const cell = grid.get(key(cx + gx * CELL, cz + gz * CELL));
@@ -537,13 +563,36 @@ out tags center;`;
     }
     if (!best) continue;
     const next = +best.h.toFixed(1);
+    // A height that leaves the plan implausibly slender is the signature of a
+    // mismatched neighbour rather than a real tower, so keep the estimate.
+    if (next > 25 && next > narrowestExtent(b.f) * 6) {
+      rejected++;
+      continue;
+    }
     if (Math.abs(next - (b.h || 0)) > 1) {
       if (Math.abs(next - (b.h || 0)) > 8) bigChange++;
       b.h = next;
       updated++;
     }
   }
-  console.log(`  ${updated} heights refreshed from OSM (${bigChange} changed by >8 m)`);
+  // Backstop for estimates that were already implausible before the refresh, and
+  // for OSM tags that disagree with their own footprint: Star Lofts carries
+  // building:levels=23 on a 166 m2 plan. The tallest tower in the city, U.S.
+  // Steel, is only 3.5x its narrowest plan dimension, so 6x is generous.
+  let clamped = 0;
+  for (const b of data.buildings) {
+    if (!b.f || b.f.length < 4 || !b.h || b.h <= 25) continue;
+    const limit = narrowestExtent(b.f) * 6;
+    if (b.h > limit) {
+      b.h = +limit.toFixed(1);
+      clamped++;
+    }
+  }
+
+  console.log(
+    `  ${updated} heights refreshed from OSM (${bigChange} changed by >8 m, ${rejected} rejected as implausibly slender)`,
+  );
+  console.log(`  ${clamped} heights clamped to 6x their narrowest plan dimension`);
 }
 
 async function buildPointPark() {
