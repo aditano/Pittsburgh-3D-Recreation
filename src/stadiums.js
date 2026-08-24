@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const DEG = Math.PI / 180;
+const FT = 0.3048;
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -80,8 +81,40 @@ function fitScale(f, nomLong, nomShort, lo = 0.86, hi = 1.12) {
   return clamp(Math.min(e.long / nomLong, e.short / nomShort), lo, hi);
 }
 
+/**
+ * Playing-surface bearings surveyed off the OSM pitch rings that back this
+ * dataset. Acrisure's ring is the field-level enclosure -- its minimum-area
+ * rectangle is 123.3 x 86.2 m at 64.5 deg, which is the 109.7 x 48.8 m field
+ * plus the published 25 ft end-line and 60 ft sideline setbacks to the first
+ * row -- and PNC's ring carries a 66 m straight third-base foul line at
+ * -15.3 deg, so its home-plate-to-centre axis bisects the foul lines at 29.7.
+ *
+ * The shipped `field.open` is a principal-axis estimate over those same rings
+ * sampled unevenly (and, for baseball, a footprint-centroid offset), which
+ * lands 10-16 deg off. It is still the authority on WHICH end opens, so the
+ * surveyed bearing is only used when the two agree about that.
+ */
+function surveyedAxis(supplied, surveyed) {
+  if (!Number.isFinite(supplied)) return surveyed;
+  const d = Math.atan2(Math.sin(supplied - surveyed), Math.cos(supplied - surveyed));
+  return Math.abs(d) < 40 * DEG ? surveyed : supplied;
+}
+
 function box(w, h, d, x, y, z, ry = 0) {
   const g = new THREE.BoxGeometry(w, h, d);
+  if (ry) g.rotateY(ry);
+  g.translate(x, y, z);
+  return g;
+}
+
+/**
+ * Box tilted in the plane of a facade: local +X is the length, tilted by
+ * `tilt` in the wall plane before the wall's own yaw is applied. This is what
+ * draws diagonal bracing and raking struts rather than only orthogonal members.
+ */
+function brace(len, thick, depth, tilt, x, y, z, ry = 0) {
+  const g = new THREE.BoxGeometry(len, thick, depth);
+  g.rotateZ(tilt);
   if (ry) g.rotateY(ry);
   g.translate(x, y, z);
   return g;
@@ -92,6 +125,24 @@ function cyl(rTop, rBottom, h, seg, x, y, z, ry = 0) {
   if (ry) g.rotateY(ry);
   g.translate(x, y, z);
   return g;
+}
+
+/** Signed-area centroid of a plan ring, used to pin a venue by its playing surface. */
+function polygonCentroid(pts) {
+  let a2 = 0;
+  let cx = 0;
+  let cz = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const [x0, z0] = pts[i];
+    const [x1, z1] = pts[(i + 1) % n];
+    const cross = x0 * z1 - x1 * z0;
+    a2 += cross;
+    cx += (x0 + x1) * cross;
+    cz += (z0 + z1) * cross;
+  }
+  if (Math.abs(a2) < 1e-6) return [0, 0];
+  return [cx / (3 * a2), cz / (3 * a2)];
 }
 
 /**
@@ -162,6 +213,25 @@ function offsetPath(path, d) {
   return path.map((p) => ({ x: p.x + p.nx * d, z: p.z + p.nz * d, nx: p.nx, nz: p.nz, su: p.su, sv: p.sv }));
 }
 
+/** rotation.y that lays a box's local +X tangent to a path and its +Z along the outward normal. */
+function nodeYaw(p) {
+  return Math.atan2(p.nx, p.nz);
+}
+
+/** Box on a circular drum at polar angle `a`: local +X tangential, +Z outward. */
+function drumBox(w, h, d, cx, cz, radius, y, a) {
+  return box(w, h, d, cx + Math.cos(a) * radius, y, cz + Math.sin(a) * radius, Math.PI / 2 - a);
+}
+
+/**
+ * Member laid along a path node's outward normal, so local +X runs radially out
+ * from the bowl and `tilt` rakes it in the vertical plane through that normal.
+ * Canopy trusses, roof rafters and dome ribs all run this way.
+ */
+function radialMember(len, thick, depth, tilt, p, u, y) {
+  return brace(len, thick, depth, tilt, p.x + p.nx * u, y, p.z + p.nz * u, Math.atan2(-p.nz, p.nx));
+}
+
 function superEllipse(rx, rz, power) {
   return (t) => {
     const c = Math.cos(t);
@@ -209,18 +279,44 @@ function splineFn(points) {
   };
 }
 
+/** Arc-length parameterisation of a polyline, so a hard corner stays hard. */
+function polylineFn(points) {
+  const seg = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    const L = Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]);
+    seg.push(L);
+    total += L;
+  }
+  return (t) => {
+    let d = clamp(t, 0, 1) * total;
+    for (let i = 0; i < seg.length; i++) {
+      if (d <= seg[i] || i === seg.length - 1) {
+        const f = seg[i] ? clamp(d / seg[i], 0, 1) : 0;
+        return [lerp(points[i][0], points[i + 1][0], f), lerp(points[i][1], points[i + 1][1], f)];
+      }
+      d -= seg[i];
+    }
+    return points[points.length - 1];
+  };
+}
+
 /**
  * Stepped seating cross-section in (outward distance, height).
  * `seats` is the raked stair, `shell` the top fascia plus outer wall, and
  * `closed` the full contour used for end caps -- they share vertices so the
  * two sweeps meet without a seam.
+ *
+ * `grow` stretches successive treads: real bowls rake harder toward the back,
+ * and a constant rise is exactly what makes a deck read as smooth corduroy.
  */
-function rakedSection({ u0, v0, steps, run, rise, fascia, base = 0 }) {
+function rakedSection({ u0, v0, steps, run, rise, fascia, base = 0, grow = 0 }) {
   const seats = [[u0, v0]];
   let u = u0;
   let v = v0;
   for (let i = 0; i < steps; i++) {
-    v += rise;
+    const k = 1 + grow * (i / Math.max(steps - 1, 1));
+    v += rise * k;
     seats.push([u, v]);
     u += run;
     seats.push([u, v]);
@@ -237,6 +333,8 @@ function rakedSection({ u0, v0, steps, run, rise, fascia, base = 0 }) {
     uOut: u + fascia,
     uTop: u,
     vTop: v,
+    v0,
+    u0,
   };
 }
 
@@ -344,6 +442,72 @@ function sectionCap(section, node) {
   return geom;
 }
 
+/**
+ * A seating tier: raked treads in the seat colour, a pale stepped aisle every
+ * `aisleStep` nodes, and dark vomitory mouths punched through the back riser.
+ * The radial aisles are what break a bowl into wedge-shaped sections; without
+ * them a swept deck reads as one continuous corduroy ramp.
+ */
+function seatingTier({
+  path,
+  section,
+  closed = false,
+  seats,
+  aisles,
+  dark,
+  aisleStep = 6,
+  aisleFrom = 0,
+  vomStep = 0,
+  vomWidth = 3.2,
+}) {
+  seats.push(sweepStrip(path, section.seats, closed));
+  const lifted = section.seats.map(([u, v]) => [u, v + 0.14]);
+  const spans = closed ? path.length : path.length - 1;
+  if (aisles && aisleStep > 0) {
+    for (let i = aisleFrom; i < spans; i += aisleStep) {
+      const a = path[i];
+      const b = path[(i + 1) % path.length];
+      aisles.push(sweepStrip([a, b], lifted));
+    }
+  }
+  if (dark && vomStep > 0) {
+    const backU = section.uTop - 1.6;
+    for (let i = Math.floor(vomStep / 2); i < spans; i += vomStep) {
+      const p = path[i];
+      aisles.push(null);
+      dark.push(
+        box(vomWidth, 3.0, 2.4, p.x + p.nx * backU, section.vTop - 1.2, p.z + p.nz * backU, nodeYaw(p)),
+      );
+    }
+  }
+}
+
+/**
+ * Exterior bay rhythm: a column every `step` nodes standing off the wall line,
+ * with an optional diagonal brace pair in every other bay. Real stadium
+ * exteriors are read almost entirely from this vertical rhythm, so a flat
+ * swept wall always looks like a warehouse.
+ */
+function colonnade({ path, y0, y1, step, colW, colD, cols, braces, braceEvery = 0, outset = 0 }) {
+  const spans = path.length - 1;
+  for (let i = 0; i < path.length; i += step) {
+    const p = path[i];
+    const a = nodeYaw(p);
+    cols.push(box(colW, y1 - y0, colD, p.x + p.nx * outset, (y0 + y1) * 0.5, p.z + p.nz * outset, a));
+    if (!braces || !braceEvery || i % (step * braceEvery) !== 0 || i + step > spans) continue;
+    const q = path[Math.min(i + step, spans)];
+    const bay = Math.hypot(q.x - p.x, q.z - p.z);
+    const mx = (p.x + q.x) * 0.5 + p.nx * outset;
+    const mz = (p.z + q.z) * 0.5 + p.nz * outset;
+    const rise = y1 - y0;
+    const diag = Math.hypot(bay, rise);
+    const tilt = Math.atan2(rise, bay);
+    for (const sgn of [1, -1]) {
+      braces.push(brace(diag, 0.55, colD * 0.6, sgn * tilt, mx, (y0 + y1) * 0.5, mz, a));
+    }
+  }
+}
+
 function flipIfDownward(geom) {
   const idx = geom.getIndex();
   const pos = geom.attributes.position;
@@ -449,6 +613,21 @@ function groundPolygon(pts, y, uvFn) {
   return geom;
 }
 
+/**
+ * Drops collinear samples so the ear clipper is not handed zero-area triangles
+ * when a plan curve is sampled by polar angle across a straight run.
+ */
+function dedupeCollinear(pts, tol = 0.05) {
+  const out = [];
+  for (const q of pts) {
+    const a = out[out.length - 1];
+    const b = out[out.length - 2];
+    if (a && b && Math.abs((a[0] - b[0]) * (q[1] - b[1]) - (a[1] - b[1]) * (q[0] - b[0])) < tol) out.pop();
+    out.push(q);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Procedural playing-surface textures
 // ---------------------------------------------------------------------------
@@ -486,9 +665,16 @@ function tracePolygon(ctx, pts, toPx) {
 
 const GRASS_DARK = '#255d2c';
 const GRASS_LIGHT = '#357f3a';
+const APRON_GRASS = '#1d4a23';
 const INFIELD_DIRT = '#8a5a36';
-const WARNING_DIRT = '#7a4f30';
+const WARNING_DIRT = '#6f4527';
+const CHALK = '#f2f4ef';
 
+/**
+ * PNC Park's surface, home plate at the texture origin, +X to dead centre and
+ * +Z the first-base / right-field side. 96,750 sq ft of Kentucky bluegrass,
+ * mown in wedges out of home plate the way the Pirates' crew cuts it.
+ */
 function baseballFieldMaps(boundary, dom) {
   const made = makeCtx(1024, 1024);
   if (!made) return null;
@@ -499,116 +685,166 @@ function baseballFieldMaps(boundary, dom) {
   const hz = (x, z) => toPx(x, z)[1];
   const home = toPx(0, 0);
 
-  ctx.fillStyle = GRASS_DARK;
+  ctx.fillStyle = APRON_GRASS;
   ctx.fillRect(0, 0, 1024, 1024);
-
-  // Mow pattern: wedges fanning out of home plate, the way a real crew cuts it.
-  ctx.fillStyle = GRASS_LIGHT;
-  for (let i = -8; i < 8; i += 2) {
-    ctx.beginPath();
-    ctx.moveTo(home[0], home[1]);
-    ctx.arc(home[0], home[1], 1500, i * 9 * DEG, (i + 1) * 9 * DEG);
-    ctx.closePath();
-    ctx.fill();
-  }
 
   ctx.save();
   tracePolygon(ctx, boundary, toPx);
   ctx.clip();
 
+  ctx.fillStyle = GRASS_DARK;
+  ctx.fillRect(0, 0, 1024, 1024);
+  ctx.fillStyle = GRASS_LIGHT;
+  for (let i = -10; i < 10; i += 2) {
+    ctx.beginPath();
+    ctx.moveTo(home[0], home[1]);
+    ctx.arc(home[0], home[1], 1500, i * 7 * DEG, (i + 1) * 7 * DEG);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Warning track: 15 ft of crushed brick inside the wall and around the arc.
   ctx.strokeStyle = WARNING_DIRT;
-  ctx.lineWidth = 4.6 * ppm;
+  ctx.lineWidth = 9.2 * ppm;
   tracePolygon(ctx, boundary, toPx);
   ctx.stroke();
 
-  // Infield skin: a 95 ft arc off the pitching rubber, closed back to the foul lines.
-  const moundX = 18.44;
-  const skinReach = 38.9;
-  const skinSweep = 71.8 * DEG;
+  // Infield skin: the 95 ft arc off the pitching rubber, closed to the foul lines.
+  const moundX = 60.5 * FT;
+  const skinReach = 39.6;
+  const skinSweep = 72 * DEG;
   ctx.fillStyle = INFIELD_DIRT;
   ctx.beginPath();
-  ctx.moveTo(hx(-6, -6), hz(-6, -6));
+  ctx.moveTo(hx(-6.5, -6.5), hz(-6.5, -6.5));
   ctx.lineTo(hx(skinReach * 0.7071, -skinReach * 0.7071), hz(skinReach * 0.7071, -skinReach * 0.7071));
-  ctx.arc(hx(moundX, 0), hz(moundX, 0), 28.96 * ppm, -skinSweep, skinSweep);
-  ctx.lineTo(hx(-6, 6), hz(-6, 6));
+  ctx.arc(hx(moundX, 0), hz(moundX, 0), 95 * FT * ppm, -skinSweep, skinSweep);
+  ctx.lineTo(hx(-6.5, 6.5), hz(-6.5, 6.5));
   ctx.closePath();
   ctx.fill();
   ctx.beginPath();
-  ctx.arc(home[0], home[1], 4.2 * ppm, 0, Math.PI * 2);
+  ctx.arc(home[0], home[1], 4.0 * ppm, 0, Math.PI * 2);
   ctx.fill();
 
-  // Infield grass diamond, set 3 m inside the base paths.
+  // Infield grass, cut 3 m inside base paths that run 90 ft between bags.
+  const bag = 90 * FT;
   ctx.fillStyle = GRASS_LIGHT;
   tracePolygon(
     ctx,
     [
-      [4.3, 0],
-      [19.4, -16.4],
-      [35.5, 0],
-      [19.4, 16.4],
+      [4.6, 0],
+      [bag * 0.7071, -(bag * 0.7071 - 4.6)],
+      [bag * 1.4142 - 4.6, 0],
+      [bag * 0.7071, bag * 0.7071 - 4.6],
     ],
     toPx,
   );
   ctx.fill();
+  ctx.fillStyle = GRASS_DARK;
+  for (let i = 0; i < 4; i += 2) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(hx(6 + i * 9, -40), hz(0, -40), 9 * ppm, 80 * ppm);
+    ctx.clip();
+    tracePolygon(
+      ctx,
+      [
+        [4.6, 0],
+        [bag * 0.7071, -(bag * 0.7071 - 4.6)],
+        [bag * 1.4142 - 4.6, 0],
+        [bag * 0.7071, bag * 0.7071 - 4.6],
+      ],
+      toPx,
+    );
+    ctx.fill();
+    ctx.restore();
+  }
 
+  // Mound and its 18 ft dirt circle.
   ctx.fillStyle = INFIELD_DIRT;
   ctx.beginPath();
-  ctx.arc(hx(moundX, 0), hz(moundX, 0), 5.5 * ppm, 0, Math.PI * 2);
+  ctx.arc(hx(moundX, 0), hz(moundX, 0), 9 * FT * ppm, 0, Math.PI * 2);
   ctx.fill();
 
-  ctx.strokeStyle = '#f2f4ef';
-  ctx.lineWidth = 0.5 * ppm;
+  // Foul lines run the full 325 / 320 ft to the poles.
+  ctx.strokeStyle = CHALK;
+  ctx.lineWidth = 0.42 * ppm;
   for (const sign of [-1, 1]) {
     ctx.beginPath();
     ctx.moveTo(home[0], home[1]);
-    ctx.lineTo(hx(103 * 0.7071, sign * 103 * 0.7071), hz(103 * 0.7071, sign * 103 * 0.7071));
+    ctx.lineTo(hx(104 * 0.7071, sign * 104 * 0.7071), hz(104 * 0.7071, sign * 104 * 0.7071));
     ctx.stroke();
   }
-  ctx.strokeRect(hx(-0.9, -1.5), hz(-0.9, -1.5), 1.85 * ppm, 1.2 * ppm);
-  ctx.strokeRect(hx(-0.9, 0.3), hz(-0.9, 0.3), 1.85 * ppm, 1.2 * ppm);
+  // Batter's boxes, catcher's box, on-deck circles and coach's boxes.
+  ctx.strokeRect(hx(-1.1, -1.9), hz(-1.1, -1.9), 1.83 * ppm, 1.22 * ppm);
+  ctx.strokeRect(hx(-1.1, 0.7), hz(-1.1, 0.7), 1.83 * ppm, 1.22 * ppm);
+  ctx.strokeRect(hx(-3.6, -1.1), hz(-3.6, -1.1), 2.4 * ppm, 2.2 * ppm);
+  for (const sign of [-1, 1]) {
+    ctx.beginPath();
+    ctx.arc(hx(9, sign * 13), hz(9, sign * 13), 1.5 * ppm, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeRect(hx(24, sign * 24), hz(24, sign * 24), 6 * ppm, 3 * ppm);
+  }
 
-  ctx.fillStyle = '#f2f4ef';
+  ctx.fillStyle = CHALK;
   for (const [bx, bz] of [
-    [19.4, 19.4],
-    [38.8, 0],
-    [19.4, -19.4],
+    [bag * 0.7071, bag * 0.7071],
+    [bag * 1.4142, 0],
+    [bag * 0.7071, -bag * 0.7071],
   ]) {
-    ctx.fillRect(hx(bx, bz) - 0.8 * ppm, hz(bx, bz) - 0.8 * ppm, 1.6 * ppm, 1.6 * ppm);
+    ctx.fillRect(hx(bx, bz) - 0.75 * ppm, hz(bx, bz) - 0.75 * ppm, 1.5 * ppm, 1.5 * ppm);
   }
   ctx.restore();
 
   return fieldTexture(canvas);
 }
 
-const FOOTBALL_DOM = { x: 150, z: 112.5 };
+/**
+ * NFL field: 120 yd x 53 1/3 yd including end zones. The texture domain is the
+ * field-level enclosure, 25 ft behind each end line and 60 ft outside each
+ * sideline, so the painted field fills its bowl the way the real one does.
+ */
+const ACR_FIELD = { half: 60 * 0.9144, wide: 26 + 2 / 3 };
+const FOOTBALL_DOM = { x: 132, z: 94 };
 
 function footballFieldMaps() {
-  const made = makeCtx(1024, 768);
+  const made = makeCtx(1024, 728);
   if (!made) return null;
   const { canvas, ctx } = made;
   const ppm = 1024 / FOOTBALL_DOM.x;
   const toPx = (x, z) => [(x + FOOTBALL_DOM.x * 0.5) * ppm, (z + FOOTBALL_DOM.z * 0.5) * ppm];
-  const halfLen = 45.72;
-  const endZone = 9.14;
-  const halfWide = 24.4;
+  const halfLen = 50 * 0.9144;
+  const endZone = 10 * 0.9144;
+  const halfWide = 26.5 * 0.9144;
+  const outer = halfLen + endZone;
 
-  // Turf runs to the edge of the domain so the apron outside the sidelines
-  // reads as grass rather than a dark moat.
-  ctx.fillStyle = GRASS_DARK;
-  ctx.fillRect(0, 0, 1024, 768);
-  ctx.fillStyle = GRASS_LIGHT;
-  for (let i = -4; i < 14; i += 2) {
-    ctx.fillRect(toPx(-halfLen + i * 9.144, 0)[0], 0, 9.144 * ppm, 768);
+  ctx.fillStyle = APRON_GRASS;
+  ctx.fillRect(0, 0, 1024, 728);
+
+  // Bench aprons: the trodden strip between the sidelines and the front row.
+  ctx.fillStyle = '#22532a';
+  for (const sign of [-1, 1]) {
+    const y0 = toPx(0, sign * (halfWide + 1.8))[1];
+    const y1 = toPx(0, sign * (halfWide + 13))[1];
+    ctx.fillRect(toPx(-halfLen, 0)[0], Math.min(y0, y1), 2 * halfLen * ppm, Math.abs(y1 - y0));
   }
 
   const top = toPx(0, -halfWide)[1];
   const bottom = toPx(0, halfWide)[1];
+  const gh = bottom - top;
 
+  ctx.fillStyle = GRASS_DARK;
+  ctx.fillRect(toPx(-outer, 0)[0], top, 2 * outer * ppm, gh);
+  ctx.fillStyle = GRASS_LIGHT;
+  for (let i = 0; i < 20; i += 2) {
+    ctx.fillRect(toPx(-halfLen + i * 4.572, 0)[0], top, 4.572 * ppm, gh);
+  }
+
+  // Steelers end zones are painted black with the wordmark in gold.
   ctx.fillStyle = '#14161a';
-  ctx.fillRect(toPx(-halfLen - endZone, 0)[0], top, endZone * ppm, bottom - top);
-  ctx.fillRect(toPx(halfLen, 0)[0], top, endZone * ppm, bottom - top);
-  ctx.fillStyle = '#c8a93a';
-  ctx.font = `bold ${5.2 * ppm}px sans-serif`;
+  ctx.fillRect(toPx(-outer, 0)[0], top, endZone * ppm, gh);
+  ctx.fillRect(toPx(halfLen, 0)[0], top, endZone * ppm, gh);
+  ctx.fillStyle = '#ffb612';
+  ctx.font = `bold ${5.4 * ppm}px sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (const [ex, rot] of [
@@ -625,25 +861,37 @@ function footballFieldMaps() {
 
   ctx.strokeStyle = '#eef2ee';
   ctx.lineWidth = 0.32 * ppm;
-  for (let i = 0; i <= 20; i++) {
+  for (let i = 1; i < 20; i++) {
     const x = toPx(-halfLen + i * 4.572, 0)[0];
     ctx.beginPath();
     ctx.moveTo(x, top);
     ctx.lineTo(x, bottom);
     ctx.stroke();
   }
-  ctx.lineWidth = 0.5 * ppm;
+  // Sidelines, end lines and the 6 ft white border outside them.
+  ctx.lineWidth = 0.6 * ppm;
+  ctx.strokeRect(toPx(-outer, -halfWide)[0], top, 2 * outer * ppm, gh);
+  ctx.lineWidth = 0.7 * ppm;
+  for (const gx of [-halfLen, halfLen]) {
+    const x = toPx(gx, 0)[0];
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 0.35 * ppm;
   ctx.strokeRect(
-    toPx(-halfLen - endZone, -halfWide)[0],
-    top,
-    (2 * halfLen + 2 * endZone) * ppm,
-    bottom - top,
+    toPx(-outer - 1.83, -halfWide - 1.83)[0],
+    toPx(0, -halfWide - 1.83)[1],
+    (2 * outer + 3.66) * ppm,
+    (2 * halfWide + 3.66) * ppm,
   );
 
-  // NFL hash marks sit 70 ft 9 in in from each sideline, so 2.83 m off the centre line.
+  // Hash marks 70 ft 9 in in from each sideline, one per yard.
   ctx.lineWidth = 0.28 * ppm;
-  for (const hz of [-2.83, 2.83]) {
+  for (const hz of [-(halfWide - 70.75 * FT), halfWide - 70.75 * FT]) {
     for (let i = 1; i < 100; i++) {
+      if (i % 5 === 0) continue;
       const x = toPx(-halfLen + i * 0.9144, 0)[0];
       const y = toPx(0, hz)[1];
       ctx.beginPath();
@@ -653,32 +901,92 @@ function footballFieldMaps() {
     }
   }
 
+  // Yard numbers are 6 ft tall, 27 ft in from the sideline.
   ctx.fillStyle = '#eef2ee';
-  ctx.font = `bold ${3.6 * ppm}px sans-serif`;
+  ctx.font = `bold ${5.5 * ppm}px sans-serif`;
   for (let i = 1; i < 10; i++) {
     const yard = i * 10;
     const label = String(yard > 50 ? 100 - yard : yard);
     const x = toPx(-halfLen + yard * 0.9144, 0)[0];
     for (const [zz, rot] of [
-      [-13.4, 0],
-      [13.4, Math.PI],
+      [-(halfWide - 27 * FT), 0],
+      [halfWide - 27 * FT, Math.PI],
     ]) {
       const p = toPx(0, zz);
       ctx.save();
-      ctx.translate(x, p[1]);
+      ctx.translate(p[0], p[1]);
       ctx.rotate(rot);
       ctx.fillText(label, 0, 0);
       ctx.restore();
     }
   }
 
-  ctx.strokeStyle = '#c8a93a';
-  ctx.lineWidth = 0.6 * ppm;
+  // Midfield mark.
+  ctx.strokeStyle = '#ffb612';
+  ctx.lineWidth = 0.7 * ppm;
   const mid = toPx(0, 0);
   ctx.beginPath();
-  ctx.arc(mid[0], mid[1], 8 * ppm, 0, Math.PI * 2);
+  ctx.arc(mid[0], mid[1], 9 * ppm, 0, Math.PI * 2);
   ctx.stroke();
+  ctx.fillStyle = '#ffb612';
+  for (let i = 0; i < 3; i++) {
+    ctx.beginPath();
+    ctx.arc(mid[0] + (i - 1) * 3.4 * ppm, mid[1], 1.5 * ppm, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
+  return fieldTexture(canvas);
+}
+
+/** Hockey sheet, 200 x 85 ft, drawn white with the NHL line markings. */
+function iceMaps() {
+  const made = makeCtx(512, 256);
+  if (!made) return null;
+  const { canvas, ctx } = made;
+  const L = 200 * FT;
+  const W = 85 * FT;
+  const ppm = 512 / L;
+  const toPx = (x, z) => [(x + L * 0.5) * ppm, (z + W * 0.5) * ppm];
+  ctx.fillStyle = '#eef3f7';
+  ctx.fillRect(0, 0, 512, 256);
+  ctx.strokeStyle = '#c22b32';
+  ctx.lineWidth = 0.35 * ppm;
+  for (const gx of [-64 * FT, 64 * FT]) {
+    const x = toPx(gx, 0)[0];
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 256);
+    ctx.stroke();
+  }
+  ctx.lineWidth = 0.32 * ppm;
+  const c = toPx(0, 0);
+  ctx.beginPath();
+  ctx.moveTo(c[0], 0);
+  ctx.lineTo(c[0], 256);
+  ctx.stroke();
+  ctx.strokeStyle = '#2b4fa2';
+  ctx.lineWidth = 0.9 * ppm;
+  for (const gx of [-25 * FT, 25 * FT]) {
+    const x = toPx(gx, 0)[0];
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, 256);
+    ctx.stroke();
+  }
+  ctx.strokeStyle = '#2b4fa2';
+  ctx.lineWidth = 0.3 * ppm;
+  ctx.beginPath();
+  ctx.arc(c[0], c[1], 15 * FT * ppm, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.strokeStyle = '#c22b32';
+  for (const fx of [-69 * FT, -20 * FT, 20 * FT, 69 * FT]) {
+    for (const fz of [-22 * FT, 22 * FT]) {
+      const p = toPx(fx, fz);
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 15 * FT * ppm, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   return fieldTexture(canvas);
 }
 
@@ -686,8 +994,8 @@ function fallbackTurf() {
   return mat(0x2c6a33, { roughness: 0.95, metalness: 0.01 });
 }
 
-function turfMaterial(map) {
-  if (!map) return fallbackTurf();
+function turfMaterial(map, fallback) {
+  if (!map) return fallback || fallbackTurf();
   return new THREE.MeshStandardMaterial({
     map,
     roughness: 0.93,
@@ -701,53 +1009,53 @@ function turfMaterial(map) {
 // ---------------------------------------------------------------------------
 
 /**
- * Outfield wall distance in metres by angle off dead centre, negative on the
- * left-field side: the published 325 / 389 / 410 / 399 / 375 / 320 ft posted
- * distances, with the 410 ft pocket sitting in the left-centre gap.
+ * Outfield wall by angle off dead centre, negative on the left-field side:
+ * the posted 325 / 389 / 410 / 399 / 375 / 320 ft distances, with the 410 ft
+ * North Side Notch stepped rather than faired so it reads as a corner.
  */
 const PNC_WALL = [
-  [-45, 99.1],
-  [-38, 106.5],
-  [-32, 113.5],
-  [-27, 118.6],
-  [-22, 122.6],
-  [-17, 125.0],
-  [-12, 124.2],
-  [-6, 122.4],
-  [0, 121.6],
-  [8, 119.2],
+  [-45, 325 * FT],
+  [-38, 108.0],
+  [-32, 114.5],
+  [-26, 389 * FT],
+  [-21, 122.0],
+  [-18.5, 410 * FT],
+  [-13.5, 410 * FT],
+  [-11, 122.4],
+  [-5, 121.8],
+  [0, 399 * FT],
+  [8, 119.4],
   [16, 116.6],
-  [22, 114.3],
-  [30, 107.5],
-  [38, 101.5],
-  [45, 97.5],
-];
-
-// Inner edge of the grandstand, right-field corner -> behind home -> left-field corner.
-const PNC_STAND_EDGE = [
-  [54, 69],
-  [36, 54],
-  [16, 34],
-  [2, 22],
-  [-9, 16],
-  [-16, 7],
-  [-18.5, 0],
-  [-16, -7],
-  [-9, -16],
-  [2, -22],
-  [16, -34],
-  [36, -54],
-  [54, -69],
+  [24, 375 * FT],
+  [31, 108.0],
+  [38, 102.0],
+  [45, 320 * FT],
 ];
 
 /**
- * Where the OSM playing surface has its centroid, in this model's frame: home
- * plate at the origin, +X toward dead centre, +Z the right-field side. The
- * shipped dataset positions the venue on exactly that centroid, so anchoring
- * here is what puts the grandstand back inside the real footprint instead of
- * out over the Allegheny.
+ * Inner edge of the grandstand, right-field corner -> behind home -> left-field
+ * corner. The 51 ft from the plate to the first seats behind home is the
+ * published backstop distance, and the foul-side edge stands about 8 m outside
+ * each foul line, which is all the foul ground a park wedged into the city grid
+ * has room for.
  */
-const PNC_FIELD_ANCHOR = [52.8, 6.9];
+const PNC_STAND_EDGE = [
+  [62, 74],
+  [44, 56],
+  [28, 40],
+  [14, 27],
+  [2, 19],
+  [-8, 13.5],
+  [-14, 6],
+  [-51 * FT, 0],
+  [-14, -6],
+  [-8, -13.5],
+  [2, -19],
+  [14, -27],
+  [28, -40],
+  [44, -56],
+  [62, -74],
+];
 
 function pncWallPoints() {
   return PNC_WALL.map(([a, r]) => [Math.cos(a * DEG) * r, Math.sin(a * DEG) * r]);
@@ -758,27 +1066,33 @@ function tangentYaw(angle) {
   return Math.PI / 2 - angle;
 }
 
-/** 6 ft in left, 10 ft through centre, then the 21 ft Clemente Wall in right. */
+/** 6 ft in left and left-centre, 10 ft through centre, the 21 ft Clemente Wall in right. */
 function pncWallHeight(angle) {
-  if (angle <= -14) return lerp(1.8, 3.0, (angle + 45) / 31);
-  if (angle <= 18) return 3.0;
-  if (angle >= 26) return 6.4;
-  return lerp(3.0, 6.4, (angle - 18) / 8);
+  if (angle <= -6) return 6 * FT;
+  if (angle <= 6) return lerp(6 * FT, 10 * FT, (angle + 6) / 12);
+  if (angle <= 18) return 10 * FT;
+  if (angle >= 27) return 21 * FT;
+  return lerp(10 * FT, 21 * FT, (angle - 18) / 9);
 }
 
 /**
- * PNC Park: two-deck, 220-degree bowl that stays open across the outfield so the
- * downtown skyline reads through it. Kasota limestone shell, navy exposed steel.
- * Local +X runs from home plate to dead centre, +Z is the right-field side.
+ * PNC Park: 38,747 seats in the only two-deck park built in the United States
+ * since 1953, deliberately low -- the highest seat is 88 ft above the field --
+ * so the downtown skyline reads over the outfield. Ochre Kasota limestone with
+ * an arched street arcade, exposed navy steel, and the bowl left open across
+ * the outfield for the river and the bridge.
+ *
+ * Local +X runs from home plate to dead centre and +Z is the first-base /
+ * right-field side, which the surveyed axis puts over the Allegheny.
  */
 export function buildPncPark(spec = {}) {
   const group = new THREE.Group();
   group.name = 'pnc-park';
 
   const h = clamp(spec.h, 30, 46);
-  const hs = h / 36;
+  const hs = clamp(h / 36, 0.9, 1.15);
   const s = fitScale(spec.f, 280, 218);
-  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 0.2503;
+  const yaw = surveyedAxis(spec.orientYaw, 29.7 * DEG);
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -786,30 +1100,43 @@ export function buildPncPark(spec = {}) {
   group.add(oriented);
   const core = new THREE.Group();
 
-  const limestone = mat(0xc7bda6, { roughness: 0.84, metalness: 0.05 });
-  const concrete = mat(0x9c988c, { roughness: 0.9, metalness: 0.04 });
-  const steel = mat(0x2a4d7c, { roughness: 0.5, metalness: 0.55, envMapIntensity: 0.9 });
-  const seatLower = mat(0x27548c, { roughness: 0.88, metalness: 0.04 });
-  const seatUpper = mat(0x1e4372, { roughness: 0.88, metalness: 0.04 });
-  const padding = mat(0x14361f, { roughness: 0.92, metalness: 0.03 });
+  const limestone = mat(0xcabf9f, { roughness: 0.85, metalness: 0.04 });
+  const limeDark = mat(0xa79b7d, { roughness: 0.88, metalness: 0.04 });
+  const concrete = mat(0x9e9a8f, { roughness: 0.9, metalness: 0.04 });
+  const steel = mat(0x1f3b66, { roughness: 0.48, metalness: 0.6, envMapIntensity: 0.9 });
+  const seatLower = mat(0x25436f, { roughness: 0.88, metalness: 0.04 });
+  const seatUpper = mat(0x1b3358, { roughness: 0.88, metalness: 0.04 });
+  const padding = mat(0x123a20, { roughness: 0.92, metalness: 0.03 });
+  const glass = mat(0x8fb2c8, {
+    roughness: 0.12,
+    metalness: 0.5,
+    transparent: true,
+    opacity: 0.62,
+    emissive: 0x24405c,
+    emissiveIntensity: 0.35,
+    envMapIntensity: 1.3,
+  });
   const board = mat(0x0b0d10, { roughness: 0.35, metalness: 0.3, emissive: 0x2a3550, emissiveIntensity: 0.55 });
   const lamp = mat(0xdfe4d8, { roughness: 0.3, metalness: 0.5, emissive: 0xfff0c0, emissiveIntensity: 0.9 });
 
   const stone = [];
+  const stoneDark = [];
   const conc = [];
   const steelG = [];
   const seatsA = [];
   const seatsB = [];
+  const aisles = [];
   const dark = [];
+  const glassG = [];
   const boards = [];
   const lamps = [];
 
   // --- playing surface -----------------------------------------------------
   const wall = pncWallPoints();
   const boundary = PNC_STAND_EDGE.concat(wall);
-  const dom = { x0: -32, z0: -84, span: 168 };
+  const dom = { x0: -36, z0: -92, span: 184 };
   const turf = turfMaterial(baseballFieldMaps(boundary, dom));
-  const fieldGeom = groundPolygon(boundary, 0.35, (x, z) => [
+  const fieldGeom = groundPolygon(boundary, 0.3, (x, z) => [
     (x - dom.x0) / dom.span,
     1 - (z - dom.z0) / dom.span,
   ]);
@@ -817,119 +1144,235 @@ export function buildPncPark(spec = {}) {
   field.receiveShadow = true;
   core.add(field);
 
-  // --- outfield wall (6 ft in left, the 21 ft Clemente Wall in right) -------
-  const wallPath = buildPath(splineFn(wall), 56, 0, 1);
+  // --- outfield wall -------------------------------------------------------
+  const wallPath = buildPath(polylineFn(wall), 64, 0, 1);
   const wallAngles = wallPath.map((_, i) => lerp(-45, 45, i / (wallPath.length - 1)));
   wallPath.forEach((p, i) => {
     p.sv = pncWallHeight(wallAngles[i]);
   });
-  dark.push(sweepStrip(wallPath, [[0, 0], [0, 1], [0.6, 1], [0.6, 0]]));
+  dark.push(sweepStrip(wallPath, [[0, 0], [0, 1], [0.55, 1], [0.55, 0]]));
+  // Yellow-topped padding rail, and the foul poles at each 45 deg corner.
+  steelG.push(sweepStrip(offsetPath(wallPath, 0.55), [[0, 1.02], [0.16, 1.02], [0.16, 0.97]]));
+  for (const a of [-45, 45]) {
+    const r = a < 0 ? 325 * FT : 320 * FT;
+    steelG.push(box(0.5, 12, 0.5, Math.cos(a * DEG) * r, 6, Math.sin(a * DEG) * r));
+  }
 
-  // --- lower and upper decks: only two, which is the whole point of the park -
+  // --- lower bowl: 34 rows from the 51 ft backstop out to the concourse ----
   const standFn = splineFn(PNC_STAND_EDGE);
-  const standPath = buildPath(standFn, 78, 0, 1);
-  const lowerPath = offsetPath(standPath, 2.4);
-  const lower = rakedSection({ u0: 0, v0: 1.3 * hs, steps: 14, run: 1.5, rise: 0.78 * hs, fascia: 2.6 });
-  seatsA.push(sweepStrip(lowerPath, lower.seats));
+  const standPath = buildPath(standFn, 76, 0, 1);
+  const lowerPath = offsetPath(standPath, 1.4);
+  const lower = rakedSection({ u0: 0, v0: 1.0 * hs, steps: 16, run: 1.4, rise: 0.46 * hs, fascia: 2.4, grow: 0.5 });
+  seatingTier({
+    path: lowerPath,
+    section: lower,
+    seats: seatsA,
+    aisles,
+    dark,
+    aisleStep: 5,
+    aisleFrom: 2,
+    vomStep: 10,
+  });
   conc.push(sweepStrip(lowerPath, lower.shell));
 
+  // --- club and suite band between the decks -------------------------------
+  const clubFront = lower.uTop - 1.0;
+  const suiteTop = lower.vTop + 5.6 * hs;
+  conc.push(
+    sweepStrip(lowerPath, [
+      [clubFront, lower.vTop + 1.1],
+      [clubFront + 4.2, lower.vTop + 1.1],
+      [clubFront + 4.2, lower.vTop - 1.4],
+      [clubFront, lower.vTop - 1.4],
+    ]),
+  );
+  glassG.push(
+    sweepStrip(offsetPath(lowerPath, clubFront + 0.5), [
+      [0, suiteTop],
+      [0, lower.vTop + 1.3],
+    ]),
+  );
+  stone.push(
+    sweepStrip(lowerPath, [
+      [clubFront + 0.5, suiteTop + 1.5],
+      [clubFront + 5.4, suiteTop + 1.5],
+      [clubFront + 5.4, suiteTop],
+      [clubFront + 0.5, suiteTop],
+    ]),
+  );
+
+  // --- upper deck: cantilevered over the lower concourse, top seat at 88 ft -
+  const upperFront = lower.uTop - 5.0;
   const upper = rakedSection({
-    u0: 13.5,
-    v0: 17 * hs,
-    steps: 16,
-    run: 1.6,
-    rise: 0.92 * hs,
-    fascia: 2.8,
+    u0: upperFront,
+    v0: suiteTop + 1.8 * hs,
+    steps: 12,
+    run: 1.45,
+    rise: 0.62 * hs,
+    fascia: 3.0,
     base: 0,
+    grow: 0.3,
   });
-  seatsB.push(sweepStrip(lowerPath, upper.seats));
+  seatingTier({
+    path: lowerPath,
+    section: upper,
+    seats: seatsB,
+    aisles,
+    dark,
+    aisleStep: 5,
+    aisleFrom: 2,
+    vomStep: 12,
+  });
   stone.push(sweepStrip(lowerPath, upper.shell));
   const standEnds = [lowerPath[0], lowerPath[lowerPath.length - 1]];
   for (const node of standEnds) {
     conc.push(sectionCap(lower.closed, node));
     stone.push(sectionCap(upper.closed, node));
   }
-
-  // Suite band tucked between the decks, and the canopy over the upper deck.
-  const suitePath = offsetPath(lowerPath, 11.0);
-  stone.push(
-    sweepStrip(suitePath, [
-      [0, 16.8 * hs],
-      [1.6, 16.8 * hs],
-      [1.6, 12.6 * hs],
-      [0, 12.6 * hs],
+  // Raking struts under the cantilever, and the fascia the boards hang from.
+  // Raking struts carry the cantilevered upper deck back to the concourse.
+  for (let i = 2; i < lowerPath.length - 2; i += 5) {
+    const p = lowerPath[i];
+    const reach = 9.5;
+    const rise = 5.0;
+    steelG.push(radialMember(Math.hypot(reach, rise), 0.7, 0.9, -Math.atan2(rise, reach), p, upperFront + reach * 0.5, upper.v0 - rise * 0.5));
+  }
+  conc.push(
+    sweepStrip(lowerPath, [
+      [upperFront, upper.v0],
+      [upperFront - 0.5, upper.v0],
+      [upperFront - 0.5, upper.v0 - 2.6],
+      [upperFront, upper.v0 - 2.6],
     ]),
   );
-  // Only the back rows and press box are sheltered; the upper deck is open air.
-  const canopyTop = upper.vTop + 4.4 * hs;
+
+  // --- steel roof over the back rows, carried on navy trusses --------------
+  const roofY = upper.vTop + 4.2 * hs;
+  const roofIn = upper.uTop - 9.0;
   steelG.push(
     sweepStrip(lowerPath, [
-      [upper.uTop - 7, canopyTop],
-      [upper.uOut + 1.2, canopyTop],
-      [upper.uOut + 1.2, canopyTop - 1.0],
-      [upper.uTop - 7, canopyTop - 1.0],
+      [roofIn, roofY],
+      [upper.uOut + 1.4, roofY],
+      [upper.uOut + 1.4, roofY - 1.1],
+      [roofIn, roofY - 1.1],
     ]),
   );
   stone.push(
     sweepStrip(lowerPath, [
-      [upper.uTop, canopyTop - 1.1],
+      [upper.uTop, roofY - 1.2],
       [upper.uTop, upper.vTop],
     ]),
   );
+  for (let i = 1; i < lowerPath.length - 1; i += 4) {
+    const p = lowerPath[i];
+    const a = nodeYaw(p);
+    steelG.push(box(0.7, roofY - upper.vTop, 0.7, p.x + p.nx * (upper.uTop + 1.2), (roofY + upper.vTop) * 0.5, p.z + p.nz * (upper.uTop + 1.2), a));
+    const reach = upper.uOut - roofIn;
+    steelG.push(radialMember(reach, 0.85, 0.5, -0.09, p, roofIn + reach * 0.5, roofY - 1.9));
+  }
 
-  // --- limestone base arcade: the rhythmic archways at street level --------
-  const facadePath = offsetPath(lowerPath, upper.uOut - 0.4);
-  const arcadeTop = 10.6 * hs;
+  // --- Kasota limestone shell: arched arcade at street level ---------------
+  const facadePath = offsetPath(lowerPath, upper.uOut - 0.3);
+  const arcadeTop = 8.4;
+  const parapet = upper.vTop + 1.2;
   stone.push(
     sweepStrip(facadePath, [
+      [0, parapet],
+      [1.7, parapet],
+      [1.7, arcadeTop],
       [0, arcadeTop],
-      [1.9, arcadeTop],
-      [1.9, arcadeTop - 1.7],
-      [0, arcadeTop - 1.7],
     ]),
   );
-  stone.push(
+  stoneDark.push(
     sweepStrip(facadePath, [
-      [0, 1.3],
-      [1.9, 1.3],
-      [1.9, 0],
-      [0, 0],
+      [0.3, arcadeTop + 1.3],
+      [2.2, arcadeTop + 1.3],
+      [2.2, arcadeTop - 0.4],
+      [0.3, arcadeTop - 0.4],
     ]),
   );
-  for (let i = 0; i < facadePath.length; i += 3) {
+  // Every other bay of the arcade is an opening; the rest is a rusticated pier.
+  for (let i = 0; i < facadePath.length; i += 2) {
     const p = facadePath[i];
-    const a = Math.atan2(p.nx, p.nz);
-    const pierH = arcadeTop - 3.0;
-    stone.push(box(2.2, pierH, 2.0, p.x + p.nx * 0.9, 1.3 + pierH * 0.5, p.z + p.nz * 0.9, a));
-    if (i % 6 !== 0) {
-      // Exposed navy trusswork carried up the limestone between the arches.
-      steelG.push(
-        box(0.7, upper.vTop - arcadeTop, 1.2, p.x + p.nx * 0.6, (upper.vTop + arcadeTop) * 0.5, p.z + p.nz * 0.6, a),
-      );
+    const a = nodeYaw(p);
+    stoneDark.push(box(2.6, arcadeTop, 2.3, p.x + p.nx * 1.0, arcadeTop * 0.5, p.z + p.nz * 1.0, a));
+    dark.push(box(2.9, 5.2, 0.5, p.x + p.nx * 2.0, 2.6, p.z + p.nz * 2.0, a));
+  }
+  // Thin jagged stone courses band the smooth upper wall.
+  for (const y of [12.0, 16.4, 20.8]) {
+    stoneDark.push(
+      sweepStrip(facadePath, [
+        [0.15, y + 0.5],
+        [1.9, y + 0.5],
+        [1.9, y],
+        [0.15, y],
+      ]),
+    );
+  }
+  // Navy stair towers slice vertically through the limestone.
+  for (let i = 6; i < facadePath.length - 6; i += 12) {
+    const p = facadePath[i];
+    const a = nodeYaw(p);
+    steelG.push(box(6.4, parapet, 2.4, p.x + p.nx * 2.4, parapet * 0.5, p.z + p.nz * 2.4, a));
+    for (let k = 1; k <= 3; k++) {
+      steelG.push(brace(8.4, 0.5, 2.6, 0.5, p.x + p.nx * 2.6, (parapet * k) / 3.6, p.z + p.nz * 2.6, a));
     }
   }
 
-  // --- left-field bleachers, open right field keeps the skyline view --------
-  // Both outfield ribbons start from the grandstand's own end node, otherwise
+  // --- left-field bleachers; open right field keeps the skyline view -------
+  // Both outfield ribbons start on the grandstand's own end node, otherwise
   // they begin out at the foul pole and leave a hole at each corner.
-  const bleacherPath = offsetPath(
-    buildPath(splineFn([PNC_STAND_EDGE[PNC_STAND_EDGE.length - 1]].concat(wall.slice(0, 7))), 32, 0, 1),
-    4.4,
-  );
-  const bleach = rakedSection({ u0: 0, v0: 3.4 * hs, steps: 9, run: 1.5, rise: 0.85 * hs, fascia: 2.2, base: 0 });
-  seatsA.push(sweepStrip(bleacherPath, bleach.seats));
+  const bleachSeed = [PNC_STAND_EDGE[PNC_STAND_EDGE.length - 1]].concat(wall.slice(0, 6));
+  const bleacherPath = offsetPath(buildPath(splineFn(bleachSeed), 30, 0, 1), 3.6);
+  const bleach = rakedSection({ u0: 0, v0: 2.6 * hs, steps: 9, run: 1.45, rise: 0.62 * hs, fascia: 2.0, base: 0, grow: 0.4 });
+  seatingTier({ path: bleacherPath, section: bleach, seats: seatsA, aisles, aisleStep: 5, aisleFrom: 2 });
   stone.push(sweepStrip(bleacherPath, bleach.shell));
   for (const node of [bleacherPath[0], bleacherPath[bleacherPath.length - 1]]) {
     stone.push(sectionCap(bleach.closed, node));
   }
+  const bleachFacade = offsetPath(bleacherPath, bleach.uOut - 0.3);
+  colonnade({
+    path: bleachFacade,
+    y0: 0,
+    y1: bleach.vTop + 1.0,
+    step: 3,
+    colW: 1.2,
+    colD: 1.6,
+    cols: stoneDark,
+    outset: 0.7,
+  });
+
+  // --- left-field rotunda: skeletal navy steel, wrapped by a spiral ramp ---
+  {
+    const p = bleacherPath[1];
+    const radius = 13.5;
+    const height = 22 * hs;
+    const cx = p.x + p.nx * (radius * 0.55 + bleach.uOut);
+    const cz = p.z + p.nz * (radius * 0.55 + bleach.uOut);
+    steelG.push(cyl(radius, radius, 0.9, 14, cx, height, cz));
+    for (let k = 0; k < 4; k++) {
+      steelG.push(cyl(radius + 0.5, radius + 0.5, 0.7, 14, cx, 4.5 + k * 5.6, cz));
+    }
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2;
+      steelG.push(drumBox(1.0, height, 1.0, cx, cz, radius, height * 0.5, a));
+      if (k % 3 === 0) continue;
+      // Baseball-card tapestries of Pirates legends face Federal Street.
+      stoneDark.push(drumBox(5.6, 9.0, 0.5, cx, cz, radius + 0.3, 13.5, a));
+    }
+    dark.push(cyl(radius - 1.4, radius - 1.4, height - 1.0, 14, cx, (height - 1.0) * 0.5, cz));
+  }
 
   // --- right-field riverwalk terrace, kept low for the skyline view ---------
-  const riverPath = offsetPath(buildPath(splineFn(wall.slice(9).concat([PNC_STAND_EDGE[0]])), 32, 0, 1), 2.2);
+  const riverSeed = wall.slice(11).concat([PNC_STAND_EDGE[0]]);
+  const riverPath = offsetPath(buildPath(splineFn(riverSeed), 26, 0, 1), 1.6);
+  const walkY = 4.6 * hs;
+  const walkDeep = 13;
   stone.push(
     sweepStrip(riverPath, [
-      [0, 4.2 * hs],
-      [11, 4.2 * hs],
-      [11, 0],
+      [0, walkY],
+      [walkDeep, walkY],
+      [walkDeep, 0],
       [0, 0],
     ]),
   );
@@ -938,9 +1381,9 @@ export function buildPncPark(spec = {}) {
       sectionCap(
         [
           [0, 0],
-          [0, 4.2 * hs],
-          [11, 4.2 * hs],
-          [11, 0],
+          [0, walkY],
+          [walkDeep, walkY],
+          [walkDeep, 0],
         ],
         node,
       ),
@@ -948,26 +1391,34 @@ export function buildPncPark(spec = {}) {
   }
   for (let i = 0; i < riverPath.length; i += 2) {
     const p = riverPath[i];
-    steelG.push(box(0.25, 1.4, 0.25, p.x + p.nx * 10.4, 4.2 * hs + 0.7, p.z + p.nz * 10.4));
+    steelG.push(box(0.24, 1.3, 0.24, p.x + p.nx * (walkDeep - 0.5), walkY + 0.65, p.z + p.nz * (walkDeep - 0.5)));
   }
   steelG.push(
-    sweepStrip(offsetPath(riverPath, 10.4), [
-      [0, 4.2 * hs + 1.4],
-      [0, 4.2 * hs + 1.0],
+    sweepStrip(offsetPath(riverPath, walkDeep - 0.5), [
+      [0, walkY + 1.3],
+      [0, walkY + 0.95],
     ]),
   );
+  // A few rows of river-side seats above the concourse.
+  const rivSeat = rakedSection({ u0: 0.6, v0: walkY + 0.6, steps: 5, run: 1.3, rise: 0.6 * hs, fascia: 1.4, base: walkY });
+  seatingTier({ path: riverPath, section: rivSeat, seats: seatsA, aisles, aisleStep: 5, aisleFrom: 2 });
+  stone.push(sweepStrip(riverPath, rivSeat.shell));
 
-  // --- heptagonal home-plate gate rotunda ----------------------------------
+  // --- home-plate gate rotunda, its steel held behind the stone ------------
   {
     const p = facadePath[Math.round((facadePath.length - 1) / 2)];
-    const radius = 13;
-    const height = 21 * hs;
-    const cx = p.x + p.nx * radius * 0.34;
-    const cz = p.z + p.nz * radius * 0.34;
-    stone.push(cyl(radius, radius, height, 7, cx, height * 0.5, cz, Math.PI / 7));
-    steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.45, cz, Math.PI / 7));
-    steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.76, cz, Math.PI / 7));
-    steelG.push(cyl(radius + 1.5, radius + 1.5, 0.9, 7, cx, height + 0.5, cz, Math.PI / 7));
+    const radius = 14;
+    const height = 24 * hs;
+    const cx = p.x + p.nx * radius * 0.28;
+    const cz = p.z + p.nz * radius * 0.28;
+    stone.push(cyl(radius, radius, height, 9, cx, height * 0.5, cz, Math.PI / 9));
+    stoneDark.push(cyl(radius + 0.7, radius + 0.7, 1.0, 9, cx, arcadeTop + 1.0, cz, Math.PI / 9));
+    stoneDark.push(cyl(radius + 1.5, radius + 1.5, 1.2, 9, cx, height + 0.6, cz, Math.PI / 9));
+    steelG.push(cyl(radius - 1.0, radius - 1.0, 1.0, 9, cx, height + 1.8, cz, Math.PI / 9));
+    for (let k = 0; k < 9; k++) {
+      const a = (k / 9) * Math.PI * 2 + Math.PI / 9;
+      glassG.push(drumBox(8.4, height - arcadeTop - 3.0, 0.4, cx, cz, radius, (height + arcadeTop) * 0.5, a));
+    }
   }
 
   // The corner ramp pavilions sit back inside the facade line: the grandstand
@@ -975,77 +1426,84 @@ export function buildPncPark(spec = {}) {
   // out of the corners lands in the Allegheny.
   for (const idx of [0, facadePath.length - 1]) {
     const p = facadePath[idx];
-    const a = Math.atan2(p.nx, p.nz);
-    const height = 24 * hs;
+    const a = nodeYaw(p);
+    const height = 25 * hs;
     const cx = p.x - p.nx * 6;
     const cz = p.z - p.nz * 6;
-    stone.push(box(19, height, 15, cx, height * 0.5, cz, a));
+    stone.push(box(18, height, 15, cx, height * 0.5, cz, a));
     for (let k = 1; k <= 3; k++) {
-      steelG.push(box(20, 0.7, 16, cx, (height * k) / 3.6, cz, a));
+      steelG.push(box(19, 0.7, 16, cx, (height * k) / 3.6, cz, a));
     }
-    steelG.push(box(20, 0.9, 16, cx, height + 0.45, cz, a));
+    stoneDark.push(box(19.4, 1.1, 16.4, cx, height + 0.55, cz, a));
   }
 
   // --- scoreboards ----------------------------------------------------------
-  const mainAngle = -26 * DEG;
-  const mainR = 133;
+  // Main board over the left-field seats: 24 x 42 ft video with LED wings.
+  const mainAngle = -30 * DEG;
+  const mainR = 122;
   const mainX = Math.cos(mainAngle) * mainR;
   const mainZ = Math.sin(mainAngle) * mainR;
   const mainRot = tangentYaw(mainAngle);
-  steelG.push(box(22, 18 * hs, 1.6, mainX, 9 * hs, mainZ, mainRot));
-  boards.push(box(20, 10.5, 1.0, mainX - Math.cos(mainAngle), 17.5 * hs, mainZ - Math.sin(mainAngle), mainRot));
-  for (let i = 0; i < 4; i++) {
-    const off = (i - 1.5) * 5.2;
-    lamps.push(
-      box(4.2, 0.9, 1.2, mainX - Math.sin(mainAngle) * off, 24.5 * hs, mainZ + Math.cos(mainAngle) * off, mainRot),
-    );
+  for (const off of [-16, 16]) {
+    steelG.push(box(1.5, 24 * hs, 1.5, mainX - Math.sin(mainAngle) * off, 12 * hs, mainZ + Math.cos(mainAngle) * off, mainRot));
   }
+  steelG.push(box(36, 15 * hs, 1.5, mainX, 17 * hs, mainZ, mainRot));
+  boards.push(box(12.8, 7.3, 0.9, mainX - Math.cos(mainAngle) * 0.9, 18.5 * hs, mainZ - Math.sin(mainAngle) * 0.9, mainRot));
+  boards.push(box(30, 2.4, 0.7, mainX - Math.cos(mainAngle) * 0.9, 12.4 * hs, mainZ - Math.sin(mainAngle) * 0.9, mainRot));
 
-  // Manually operated out-of-town board on the tall right-field wall.
-  const ootAngle = 33 * DEG;
-  const ootR = 103;
+  // Out-of-town board set into the 21 ft Clemente Wall in right field.
+  const ootAngle = 34 * DEG;
+  const ootR = 104;
   boards.push(
-    box(24, 3.4, 0.5, Math.cos(ootAngle) * ootR, 3.9, Math.sin(ootAngle) * ootR, tangentYaw(ootAngle)),
+    box(26, 3.6, 0.5, Math.cos(ootAngle) * ootR, 4.0, Math.sin(ootAngle) * ootR, tangentYaw(ootAngle)),
   );
 
-  // --- Forbes Field style light towers -------------------------------------
-  const towerTs = [0.06, 0.22, 0.38, 0.62, 0.78, 0.94];
-  for (const t of towerTs) {
+  // --- Forbes Field style light towers above the roof ----------------------
+  for (const t of [0.07, 0.24, 0.4, 0.6, 0.76, 0.93]) {
     const idx = Math.round(t * (facadePath.length - 1));
     const p = facadePath[idx];
-    const px = p.x - p.nx * 4;
-    const pz = p.z - p.nz * 4;
-    const a = Math.atan2(p.nx, p.nz);
-    const top = canopyTop + 8 * hs;
-    steelG.push(box(3.2, top - canopyTop + 2, 1.6, px, canopyTop + (top - canopyTop) * 0.5, pz, a));
-    steelG.push(box(11, 1.2, 1.4, px, top, pz, a));
-    for (let i = 0; i < 3; i++) {
-      lamps.push(box(2.8, 1.4, 0.7, px + Math.cos(a) * (i - 1) * 3.6, top + 1.2, pz - Math.sin(a) * (i - 1) * 3.6, a));
+    const px = p.x - p.nx * 3;
+    const pz = p.z - p.nz * 3;
+    const a = nodeYaw(p);
+    const top = roofY + 9.5 * hs;
+    steelG.push(box(2.6, top - roofY + 2, 1.4, px, roofY + (top - roofY) * 0.5, pz, a));
+    steelG.push(box(13, 1.1, 1.2, px, top, pz, a));
+    for (let i = 0; i < 4; i++) {
+      lamps.push(box(2.6, 1.3, 0.6, px + Math.cos(a) * (i - 1.5) * 3.3, top + 1.1, pz - Math.sin(a) * (i - 1.5) * 3.3, a));
     }
   }
   for (const [tx, tz] of [
-    [112, -76],
-    [131, -34],
+    [104, -84],
+    [126, -44],
+    [120, 52],
   ]) {
-    const top = 32 * hs;
-    steelG.push(box(2.4, top, 2.4, tx, top * 0.5, tz));
-    steelG.push(box(12, 1.2, 1.6, tx, top + 0.8, tz, Math.atan2(tx, tz)));
-    lamps.push(box(9, 1.3, 0.9, tx, top + 2.0, tz, Math.atan2(tx, tz)));
+    const top = 30 * hs;
+    const a = Math.atan2(tx, tz);
+    steelG.push(box(2.2, top, 2.2, tx, top * 0.5, tz));
+    steelG.push(box(12, 1.1, 1.4, tx, top + 0.8, tz, a));
+    lamps.push(box(9, 1.2, 0.8, tx, top + 1.9, tz, a));
   }
 
-  // --- outfield backdrop shrubbery / batter's eye ---------------------------
-  const eyeAngle = -4 * DEG;
+  // --- batter's eye: the centre-field rhododendron bank -------------------
+  const eyeAngle = -3 * DEG;
   dark.push(
-    box(28, 8.5, 3.0, Math.cos(eyeAngle) * 124, 4.25, Math.sin(eyeAngle) * 124, tangentYaw(eyeAngle)),
+    box(26, 7.5, 3.4, Math.cos(eyeAngle) * 123, 3.75, Math.sin(eyeAngle) * 123, tangentYaw(eyeAngle)),
   );
+  for (let i = 0; i < 7; i++) {
+    const a = (-10 + i * 3.2) * DEG;
+    dark.push(cyl(2.4, 2.0, 3.0, 6, Math.cos(a) * 120, 8.4, Math.sin(a) * 120));
+  }
 
   const parts = [
     [stone, limestone],
+    [stoneDark, limeDark],
     [conc, concrete],
+    [aisles, concrete],
     [steelG, steel],
     [seatsA, seatLower],
     [seatsB, seatUpper],
     [dark, padding],
+    [glassG, glass],
     [boards, board],
     [lamps, lamp],
   ];
@@ -1053,7 +1511,10 @@ export function buildPncPark(spec = {}) {
     const mesh = meshFrom(geoms, material);
     if (mesh) core.add(mesh);
   }
-  anchorAndAttach(core, oriented, PNC_FIELD_ANCHOR[0], PNC_FIELD_ANCHOR[1]);
+  // landmarks.js drops the venue on the OSM playing-surface centroid, so the
+  // model has to hang from the centroid of its own playing surface.
+  const anchor = polygonCentroid(boundary);
+  anchorAndAttach(core, oriented, anchor[0], anchor[1]);
   return group;
 }
 
@@ -1062,35 +1523,40 @@ export function buildPncPark(spec = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Field-level plan, half-extents: 128 x 76 m encloses the 109.7 x 48.8 m
- * football field with a 6.6 m apron behind each end line and 12 m along the
- * sidelines. The long axis matches the 123 m OSM playing surface; its traced
- * 86 m width is far too wide for a 48.8 m field, so the short axis follows the
- * field instead. 40 m of straight run either side of the corner radius is what
- * keeps the sidelines reading straight rather than slumping into an oval.
+ * Field-level plan, half-extents. The first row stands 60 ft off each sideline
+ * and 25 ft off each end line, so the enclosure around the 109.7 x 48.8 m
+ * field is 124.9 x 85.4 m -- which is exactly the 123.3 x 86.2 m minimum-area
+ * rectangle of the OSM field-level ring. 36 m of straight run either side of
+ * the corner radius keeps the sidelines reading straight rather than slumping
+ * into an oval.
  */
-const ACR_RX = 64;
-const ACR_RZ = 38;
-const ACR_CORNER = 24;
-// The club tier stops at the south corners and the upper deck stops shorter
-// still, so the whole end zone end stays open to the skyline.
-const ACR_CLUB_OPEN = 35 * DEG;
-const ACR_UPPER_OPEN = 43 * DEG;
+const ACR_RX = 62.5;
+const ACR_RZ = 42.7;
+const ACR_CORNER = 26;
+// The club tier and the suites stop at the south corners and the upper deck
+// stops shorter still, so the whole south end zone stays open to the skyline.
+const ACR_CLUB_OPEN = 40 * DEG;
+const ACR_UPPER_OPEN = 47 * DEG;
 
 /**
- * Acrisure Stadium: rounded-rectangle plan, a lower bowl that rings the field,
- * three-tier sideline grandstands wrapping the closed north end, and nothing
- * taller than a concourse terrace across the south end zone -- the open
- * horseshoe that frames downtown. Local +X points out through the open end.
+ * Acrisure Stadium: 68,400 seats in a horseshoe, the lower bowl ringing the
+ * field, three-tier grandstands down both sidelines wrapping the closed north
+ * end, and nothing across the south end but the 2015 South Plaza terrace and
+ * the 28 x 96 ft video board -- the gap that frames downtown, on axis with
+ * Point State Park.
+ *
+ * The exterior is the point of the building: charcoal exposed structural steel
+ * (12,000 tons of it) over buff precast, with 50,000 sq ft of glass at the
+ * corners and the Great Hall. Local +X points out through the open end.
  */
 export function buildAcrisureStadium(spec = {}) {
   const group = new THREE.Group();
   group.name = 'acrisure-stadium';
 
   const h = clamp(spec.h, 42, 64);
-  const hs = h / 58;
+  const hs = clamp(h / 58, 0.9, 1.12);
   const s = fitScale(spec.f, 290, 261);
-  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 1.14;
+  const yaw = surveyedAxis(spec.orientYaw, 64.5 * DEG);
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -1098,39 +1564,47 @@ export function buildAcrisureStadium(spec = {}) {
   group.add(oriented);
   const core = new THREE.Group();
 
-  const concrete = mat(0x9b978c, { roughness: 0.88, metalness: 0.05 });
-  const clad = mat(0x6e737a, { roughness: 0.62, metalness: 0.3 });
-  const steel = mat(0x4a4f56, { roughness: 0.45, metalness: 0.62, envMapIntensity: 0.9 });
-  const seatLower = mat(0xa08a2c, { roughness: 0.9, metalness: 0.05 });
-  const seatUpper = mat(0x86722a, { roughness: 0.9, metalness: 0.05 });
+  const precast = mat(0xbdb193, { roughness: 0.87, metalness: 0.05 });
+  const concrete = mat(0x8f8b81, { roughness: 0.9, metalness: 0.05 });
+  const steel = mat(0x3b3f45, { roughness: 0.44, metalness: 0.66, envMapIntensity: 0.95 });
+  const steelPale = mat(0x9aa0a4, { roughness: 0.5, metalness: 0.4, envMapIntensity: 0.6 });
+  const seatGold = mat(0xe8b21c, { roughness: 0.9, metalness: 0.05 });
+  const seatBlack = mat(0x22242a, { roughness: 0.9, metalness: 0.06 });
+  const glass = mat(0x8fb4cc, {
+    roughness: 0.1,
+    metalness: 0.55,
+    transparent: true,
+    opacity: 0.6,
+    emissive: 0x263f56,
+    emissiveIntensity: 0.4,
+    envMapIntensity: 1.4,
+  });
   const board = mat(0x0a0c0f, { roughness: 0.3, metalness: 0.35, emissive: 0x3a4460, emissiveIntensity: 0.6 });
   const lamp = mat(0xe4e8dc, { roughness: 0.28, metalness: 0.5, emissive: 0xfff2c8, emissiveIntensity: 1.0 });
 
   const conc = [];
-  const shell = [];
+  const cast = [];
   const steelG = [];
+  const steelG2 = [];
   const seatsA = [];
   const seatsB = [];
+  const aisles = [];
+  const dark = [];
+  const glassG = [];
   const boards = [];
   const lamps = [];
 
   const plan = roundedRect(ACR_RX, ACR_RZ, ACR_CORNER);
 
-  // --- field: turf apron follows the bowl plan so it never clips the seats --
-  // Sampling the plan by polar angle drops several points onto each straight
-  // run, and the ear clipper turns those into zero-area triangles, so a sample
-  // is only kept where the outline actually turns.
-  const apron = [];
-  for (let i = 0; i < 96; i++) {
-    const p = plan((i / 96) * Math.PI * 2);
-    const q = [p[0] * 0.96, p[1] * 0.96];
-    const a = apron[apron.length - 1];
-    const b = apron[apron.length - 2];
-    if (a && b && Math.abs((a[0] - b[0]) * (q[1] - b[1]) - (a[1] - b[1]) * (q[0] - b[0])) < 0.05) apron.pop();
-    apron.push(q);
-  }
+  // --- field ---------------------------------------------------------------
+  const apron = dedupeCollinear(
+    Array.from({ length: 108 }, (_, i) => {
+      const p = plan((i / 108) * Math.PI * 2);
+      return [p[0] * 0.995, p[1] * 0.995];
+    }),
+  );
   const turf = turfMaterial(footballFieldMaps());
-  const fieldGeom = groundPolygon(apron, 0.3, (x, z) => [
+  const fieldGeom = groundPolygon(apron, 0.25, (x, z) => [
     x / FOOTBALL_DOM.x + 0.5,
     0.5 - z / FOOTBALL_DOM.z,
   ]);
@@ -1138,118 +1612,336 @@ export function buildAcrisureStadium(spec = {}) {
   field.receiveShadow = true;
   core.add(field);
 
-  // --- lower bowl: complete ring around the field --------------------------
-  const ringPath = buildPath(plan, 104, 0, Math.PI * 2, true);
-  const lower = rakedSection({ u0: 0, v0: 1.9 * hs, steps: 16, run: 1.5, rise: 0.86 * hs, fascia: 2.6 });
-  seatsA.push(sweepStrip(ringPath, lower.seats, true));
+  // --- lower bowl: a complete ring, 60 ft off the sidelines ----------------
+  const ringPath = buildPath(plan, 108, 0, Math.PI * 2, true);
+  dark.push(sweepStrip(ringPath, [[-0.4, 1.1], [0.3, 1.1], [0.3, 0]], true));
+  const lower = rakedSection({ u0: 0.4, v0: 1.2 * hs, steps: 16, run: 1.5, rise: 0.52 * hs, fascia: 2.6, grow: 0.5 });
+  seatingTier({
+    path: ringPath,
+    section: lower,
+    closed: true,
+    seats: seatsA,
+    aisles,
+    dark,
+    aisleStep: 5,
+    vomStep: 9,
+  });
   conc.push(sweepStrip(ringPath, lower.shell, true));
 
-  // --- club tier: stops at the south corners ------------------------------
-  const clubPath = buildPath(plan, 88, ACR_CLUB_OPEN, Math.PI * 2 - ACR_CLUB_OPEN);
-  const club = rakedSection({ u0: 12, v0: 19.5 * hs, steps: 8, run: 1.75, rise: 0.95 * hs, fascia: 2.8 });
-  seatsA.push(sweepStrip(clubPath, club.seats));
-  shell.push(sweepStrip(clubPath, club.shell));
+  // --- club tier and the suite ring, both stopping at the south corners ----
+  const clubPath = buildPath(plan, 84, ACR_CLUB_OPEN, Math.PI * 2 - ACR_CLUB_OPEN);
+  const clubBase = lower.vTop + 3.2 * hs;
+  conc.push(
+    sweepStrip(clubPath, [
+      [lower.uTop - 0.4, clubBase - 0.4],
+      [lower.uOut + 3.0, clubBase - 0.4],
+      [lower.uOut + 3.0, lower.vTop - 2.2],
+      [lower.uTop - 0.4, lower.vTop - 2.2],
+    ]),
+  );
+  const club = rakedSection({ u0: lower.uTop + 1.6, v0: clubBase, steps: 7, run: 1.7, rise: 0.7 * hs, fascia: 2.6, grow: 0.25 });
+  seatingTier({ path: clubPath, section: club, seats: seatsA, aisles, aisleStep: 6, aisleFrom: 3 });
+  cast.push(sweepStrip(clubPath, club.shell));
+  // 129 luxury suites in a glazed band, with the upper deck cantilevered over.
+  const suiteBase = club.vTop + 1.5 * hs;
+  const suiteTop = suiteBase + 6.6 * hs;
+  glassG.push(
+    sweepStrip(offsetPath(clubPath, club.uTop - 0.6), [
+      [0, suiteTop],
+      [0, suiteBase],
+    ]),
+  );
+  cast.push(
+    sweepStrip(clubPath, [
+      [club.uTop - 1.2, suiteTop + 1.4],
+      [club.uOut + 2.4, suiteTop + 1.4],
+      [club.uOut + 2.4, suiteTop],
+      [club.uTop - 1.2, suiteTop],
+    ]),
+  );
+  cast.push(
+    sweepStrip(clubPath, [
+      [club.uTop - 1.2, suiteBase],
+      [club.uOut + 2.4, suiteBase],
+      [club.uOut + 2.4, suiteBase - 1.5],
+      [club.uTop - 1.2, suiteBase - 1.5],
+    ]),
+  );
 
   // --- upper deck: sidelines plus the north end bleachers, nothing south ---
-  const upperPath = buildPath(plan, 82, ACR_UPPER_OPEN, Math.PI * 2 - ACR_UPPER_OPEN);
+  // It cantilevers 45 ft out over the suites on tapered diagonal pipes bearing
+  // on quadpods at the upper concourse, which is the building's signature.
+  const upperFront = club.uTop - 4.0;
   const upper = rakedSection({
-    u0: 16,
-    v0: 31 * hs,
-    steps: 24,
-    run: 1.45,
-    rise: 1.02 * hs,
-    fascia: 3.6,
+    u0: upperFront,
+    v0: suiteTop + 2.8 * hs,
+    steps: 18,
+    run: 1.3,
+    rise: 0.78 * hs,
+    fascia: 3.4,
     base: 0,
+    grow: 0.4,
   });
-  seatsB.push(sweepStrip(upperPath, upper.seats));
+  const upperPath = buildPath(plan, 88, ACR_UPPER_OPEN, Math.PI * 2 - ACR_UPPER_OPEN);
+  seatingTier({
+    path: upperPath,
+    section: upper,
+    seats: seatsB,
+    aisles,
+    dark,
+    aisleStep: 5,
+    aisleFrom: 2,
+    vomStep: 11,
+  });
+  // The 2025 reseat mixed black into the upper deck to take the edge off the
+  // sea of gold; the back rows carry most of it.
+  dark.push(sweepStrip(upperPath, upper.seats.slice(-11).map(([u, v]) => [u, v + 0.08])));
   conc.push(sweepStrip(upperPath, upper.shell));
+  conc.push(
+    sweepStrip(upperPath, [
+      [upperFront, upper.v0],
+      [upperFront - 0.6, upper.v0],
+      [upperFront - 0.6, upper.v0 - 3.4],
+      [upperFront, upper.v0 - 3.4],
+    ]),
+  );
   for (const node of [clubPath[0], clubPath[clubPath.length - 1]]) {
-    shell.push(sectionCap(club.closed, node));
+    cast.push(sectionCap(club.closed, node));
   }
   for (const node of [upperPath[0], upperPath[upperPath.length - 1]]) {
     conc.push(sectionCap(upper.closed, node));
   }
+  const cantilever = 45 * FT;
+  for (let i = 1; i < upperPath.length - 1; i += 4) {
+    const p = upperPath[i];
+    const drop = upper.v0 - suiteTop - 0.5;
+    steelG.push(
+      radialMember(Math.hypot(cantilever, drop), 1.0, 1.3, -Math.atan2(drop, cantilever), p, upperFront + cantilever * 0.5, upper.v0 - drop * 0.5),
+    );
+  }
 
-  // --- partial canopy over the back of the upper deck ----------------------
-  const canopyY = upper.vTop + 4.6 * hs;
-  const canopyIn = upper.uTop - 9;
-  steelG.push(
+  // --- 75 ft cantilevered canopy over the back of the upper deck ----------
+  const canopyY = upper.vTop + 5.0 * hs;
+  const canopyIn = upper.uTop - 75 * FT;
+  steelG2.push(
     sweepStrip(upperPath, [
       [canopyIn, canopyY],
-      [upper.uOut + 1.2, canopyY],
-      [upper.uOut + 1.2, canopyY - 1.2],
-      [canopyIn, canopyY - 1.2],
+      [upper.uOut + 2.0, canopyY],
+      [upper.uOut + 2.0, canopyY - 1.4],
+      [canopyIn, canopyY - 1.4],
     ]),
   );
   conc.push(
     sweepStrip(upperPath, [
-      [upper.uTop, canopyY - 1.3],
+      [upper.uTop, canopyY - 1.5],
       [upper.uTop, upper.vTop],
     ]),
   );
-  for (let i = 2; i < upperPath.length - 2; i += 5) {
+  for (let i = 2; i < upperPath.length - 2; i += 4) {
     const p = upperPath[i];
-    const a = Math.atan2(p.nx, p.nz);
-    steelG.push(
-      box(1.2, canopyY, 3.5, p.x + p.nx * (upper.uTop + 1.6), canopyY * 0.5, p.z + p.nz * (upper.uTop + 1.6), a),
-    );
-    lamps.push(box(7.4, 1.1, 1.0, p.x + p.nx * (canopyIn + 0.6), canopyY - 2.0, p.z + p.nz * (canopyIn + 0.6), a));
-  }
-
-  // --- south end: a single low terrace, so the gap reads from any angle ----
-  const southPath = buildPath(plan, 32, -ACR_CLUB_OPEN, ACR_CLUB_OPEN);
-  const southDeck = rakedSection({ u0: 11, v0: 16.5 * hs, steps: 6, run: 1.8, rise: 0.92 * hs, fascia: 3.0 });
-  seatsA.push(sweepStrip(southPath, southDeck.seats));
-  shell.push(sweepStrip(southPath, southDeck.shell));
-  for (const node of [southPath[0], southPath[southPath.length - 1]]) {
-    shell.push(sectionCap(southDeck.closed, node));
-  }
-  for (let i = 0; i < southPath.length; i += 4) {
-    const p = southPath[i];
-    steelG.push(box(0.3, 1.3, 0.3, p.x + p.nx * (southDeck.uOut - 0.6), southDeck.vTop + 0.65, p.z + p.nz * (southDeck.uOut - 0.6)));
-  }
-
-  // --- 28 x 96 ft video board, on open legs behind the south terrace -------
-  const boardX = ACR_RX + 30;
-  for (const bz of [-15, 15]) {
-    steelG.push(box(2.6, 26 * hs, 2.6, boardX + 3.2, 13 * hs, bz));
-  }
-  steelG.push(box(3.0, 2.2, 33, boardX + 3.2, 25.2 * hs, 0));
-  steelG.push(box(3.0, 2.2, 33, boardX + 3.2, 34.8 * hs, 0));
-  boards.push(box(1.4, 8.5, 29.3, boardX, 30 * hs, 0));
-
-  // --- second board hung off the canopy over the north end bleachers -------
-  const northX = -(ACR_RX + upper.uTop - 12);
-  steelG.push(box(2.6, 8.5, 30, northX - 1.9, upper.vTop + 2.5 * hs, 0));
-  boards.push(box(1.2, 7.0, 26, northX, upper.vTop + 2.5 * hs, 0));
-
-  // --- exterior ramp towers and cladding fins ------------------------------
-  for (let i = 4; i < upperPath.length - 4; i += 10) {
-    const p = upperPath[i];
-    const a = Math.atan2(p.nx, p.nz);
-    const ox = p.x + p.nx * (upper.uOut + 4.2);
-    const oz = p.z + p.nz * (upper.uOut + 4.2);
-    conc.push(box(13, upper.vTop * 0.9, 8.5, ox, upper.vTop * 0.45, oz, a));
-    for (let k = 1; k <= 3; k++) {
-      shell.push(box(14, 0.8, 9.5, ox, (upper.vTop * 0.9 * k) / 3.4, oz, a));
+    const a = nodeYaw(p);
+    steelG.push(box(1.1, canopyY - upper.vTop + 3, 2.6, p.x + p.nx * (upper.uTop + 1.4), (canopyY + upper.vTop) * 0.5 - 1, p.z + p.nz * (upper.uTop + 1.4), a));
+    const reach = upper.uOut + 2.0 - canopyIn;
+    steelG.push(radialMember(reach, 1.2, 0.7, -0.06, p, canopyIn + reach * 0.5, canopyY - 2.4));
+    if (i % 8 === 2) {
+      lamps.push(box(8.4, 1.1, 1.0, p.x + p.nx * (canopyIn + 1.0), canopyY - 2.6, p.z + p.nz * (canopyIn + 1.0), a));
     }
   }
-  const fascia = offsetPath(upperPath, upper.uOut + 0.4);
-  shell.push(
-    sweepStrip(fascia, [
-      [0, upper.vTop + 0.4],
-      [0.9, upper.vTop + 0.4],
-      [0.9, upper.vTop - 4.5],
-      [0, upper.vTop - 4.5],
+
+  // --- south end: the 2015 South Plaza, 2,700 seats and five suites -------
+  const southPath = buildPath(plan, 34, -ACR_CLUB_OPEN, ACR_CLUB_OPEN);
+  const southDeck = rakedSection({ u0: lower.uTop + 1.6, v0: clubBase - 1.4, steps: 8, run: 1.7, rise: 0.8 * hs, fascia: 2.8, grow: 0.3 });
+  seatingTier({ path: southPath, section: southDeck, seats: seatsA, aisles, aisleStep: 6, aisleFrom: 3 });
+  cast.push(sweepStrip(southPath, southDeck.shell));
+  for (const node of [southPath[0], southPath[southPath.length - 1]]) {
+    cast.push(sectionCap(southDeck.closed, node));
+  }
+  glassG.push(
+    sweepStrip(offsetPath(southPath, southDeck.uTop - 0.4), [
+      [0, southDeck.vTop + 5.6 * hs],
+      [0, southDeck.vTop + 1.0],
+    ]),
+  );
+  cast.push(
+    sweepStrip(southPath, [
+      [southDeck.uTop - 1.0, southDeck.vTop + 7.0 * hs],
+      [southDeck.uOut + 1.6, southDeck.vTop + 7.0 * hs],
+      [southDeck.uOut + 1.6, southDeck.vTop + 5.6 * hs],
+      [southDeck.uTop - 1.0, southDeck.vTop + 5.6 * hs],
+    ]),
+  );
+  for (let i = 0; i < southPath.length; i += 3) {
+    const p = southPath[i];
+    steelG.push(box(0.3, 1.2, 0.3, p.x + p.nx * (southDeck.u0 - 0.5), southDeck.v0 + 0.6, p.z + p.nz * (southDeck.u0 - 0.5)));
+  }
+
+  // --- 28 x 96 ft video board on open legs behind the south terrace -------
+  const boardX = ACR_RX + 42;
+  for (const bz of [-16, 16]) {
+    steelG.push(box(2.4, 30 * hs, 2.4, boardX + 3.4, 15 * hs, bz));
+  }
+  for (let k = 0; k < 3; k++) {
+    const y0 = 4 + k * 9 * hs;
+    const y1 = y0 + 9 * hs;
+    for (const sgn of [1, -1]) {
+      steelG.push(
+        brace(Math.hypot(32, 9 * hs), 0.5, 1.2, sgn * Math.atan2(9 * hs, 32), boardX + 3.4, (y0 + y1) * 0.5, 0, Math.PI / 2),
+      );
+    }
+  }
+  steelG.push(box(3.0, 2.0, 34, boardX + 3.4, 22.5 * hs, 0));
+  steelG.push(box(3.0, 2.0, 34, boardX + 3.4, 33.5 * hs, 0));
+  boards.push(box(1.2, 28 * FT, 96 * FT, boardX + 1.6, 28 * hs, 0));
+  cast.push(box(9, 8, 44, boardX + 8, 4, 0));
+
+  // --- 35 x 73 ft corner board, north-west, added 2014 --------------------
+  {
+    const t = 152 * DEG;
+    const p = plan(t);
+    const r = Math.hypot(p[0], p[1]);
+    const ux = p[0] / r;
+    const uz = p[1] / r;
+    const bx = p[0] + ux * (upper.uOut + 4);
+    const bz = p[1] + uz * (upper.uOut + 4);
+    const a = Math.atan2(ux, uz);
+    steelG.push(box(24, 4, 2.2, bx, upper.vTop + 2.0, bz, a));
+    boards.push(box(73 * FT, 35 * FT, 1.0, bx - ux * 1.2, upper.vTop + 8.0, bz - uz * 1.2, a));
+  }
+
+  // --- exterior: a buff precast podium under an open charcoal steel frame --
+  // Above the upper concourse the real building has almost no skin at all:
+  // the exposed frame stands clear of the raked concrete deck behind it, which
+  // is why the stadium reads dark grey rather than as a clad drum.
+  const outer = offsetPath(upperPath, upper.uOut + 0.5);
+  const ringTop = canopyY + 1.6;
+  const podium = upper.v0 - 9.5;
+  cast.push(
+    sweepStrip(outer, [
+      [0.2, podium],
+      [2.0, podium],
+      [2.0, 5.2],
+      [0.2, 5.2],
+    ]),
+  );
+  cast.push(
+    sweepStrip(outer, [
+      [0.5, 5.0],
+      [2.7, 5.0],
+      [2.7, 0],
+      [0.5, 0],
+    ]),
+  );
+  // Punched openings in the podium, one per bay.
+  for (let i = 1; i < outer.length - 1; i += 3) {
+    const p = outer[i];
+    const a = nodeYaw(p);
+    for (const y of [9.5, 16.0]) {
+      dark.push(box(6.4, 3.6, 0.6, p.x + p.nx * 2.4, y, p.z + p.nz * 2.4, a));
+    }
+  }
+  colonnade({
+    path: outer,
+    y0: 0,
+    y1: ringTop,
+    step: 3,
+    colW: 1.6,
+    colD: 3.0,
+    cols: steelG,
+    braces: steelG,
+    braceEvery: 2,
+    outset: 2.0,
+  });
+  // Horizontal ring beams tie the frame at each concourse level.
+  for (const y of [podium + 1.2, upper.v0 + 1.0, (upper.v0 + upper.vTop) * 0.5]) {
+    steelG.push(
+      sweepStrip(offsetPath(outer, 2.0), [
+        [0, y + 0.9],
+        [1.1, y + 0.9],
+        [1.1, y - 0.9],
+        [0, y - 0.9],
+      ]),
+    );
+  }
+  // Ring beam at the top, and the glazed upper concourse behind the frame.
+  steelG2.push(
+    sweepStrip(offsetPath(outer, 1.4), [
+      [0, ringTop + 1.4],
+      [2.0, ringTop + 1.4],
+      [2.0, ringTop - 3.0],
+      [0, ringTop - 3.0],
+    ]),
+  );
+  glassG.push(
+    sweepStrip(offsetPath(outer, 0.6), [
+      [0, upper.v0 - 0.5],
+      [0, podium + 1.6],
     ]),
   );
 
+  // Glazed escalator and stair towers standing off the frame.
+  for (let i = 6; i < outer.length - 6; i += 13) {
+    const p = outer[i];
+    const a = nodeYaw(p);
+    const top = upper.v0 + 3;
+    const ox = p.x + p.nx * 8.0;
+    const oz = p.z + p.nz * 8.0;
+    glassG.push(box(14, top, 13, ox, top * 0.5, oz, a));
+    for (const k of [-1, 1]) {
+      steelG.push(box(0.9, top, 0.9, ox + Math.cos(a) * k * 6.8, top * 0.5, oz - Math.sin(a) * k * 6.8, a));
+    }
+    // Escalator runs climbing the tower face.
+    for (let k = 0; k < 3; k++) {
+      conc.push(brace(19, 0.9, 5.0, 0.45, ox, 2.5 + k * (top - 5) / 3, oz + 0, a));
+    }
+    steelG2.push(box(15.4, 1.3, 14.4, ox, top + 0.65, oz, a));
+    steelG.push(box(15, 1.0, 5.0, ox, 1.0, oz, a));
+  }
+  // The two south corners carry the open-air ramps up to the upper concourse.
+  for (const t of [ACR_UPPER_OPEN, -ACR_UPPER_OPEN]) {
+    const p = plan(t);
+    const r = Math.hypot(p[0], p[1]);
+    const ux = p[0] / r;
+    const uz = p[1] / r;
+    const cx = p[0] + ux * (upper.uOut * 0.72);
+    const cz = p[1] + uz * (upper.uOut * 0.72);
+    const a = Math.atan2(ux, uz);
+    conc.push(box(21, 6, 17, cx, 3, cz, a));
+    for (let k = 1; k <= 5; k++) {
+      conc.push(box(21, 0.8, 17, cx, 3 + k * (upper.v0 - 3) / 5, cz, a));
+      steelG.push(box(22, 0.5, 0.6, cx, 3.6 + k * (upper.v0 - 3) / 5, cz, a));
+    }
+    steelG.push(box(1.4, upper.v0, 1.4, cx + ux * 8, upper.v0 * 0.5, cz + uz * 8, a));
+  }
+
+  // --- FedEx Great Hall: 40,000 sq ft of glazed hall on the east side -----
+  {
+    const t = -100 * DEG;
+    const p = plan(t);
+    const r = Math.hypot(p[0], p[1]);
+    const ux = p[0] / r;
+    const uz = p[1] / r;
+    const gx = p[0] + ux * (upper.uOut + 8);
+    const gz = p[1] + uz * (upper.uOut + 8);
+    const a = Math.atan2(ux, uz);
+    cast.push(box(64, 17, 15, gx, 8.5, gz, a));
+    glassG.push(box(56, 13, 15.6, gx, 8.0, gz, a));
+    steelG2.push(box(68, 1.4, 19, gx + ux * 1.5, 17.6, gz + uz * 1.5, a));
+    for (let k = -3; k <= 3; k++) {
+      steelG.push(box(1.1, 18, 1.1, gx + Math.cos(a) * k * 9.2, 9, gz - Math.sin(a) * k * 9.2, a));
+      steelG.push(brace(11, 0.6, 1.0, -1.05, gx + ux * 3.6 + Math.cos(a) * k * 9.2, 18.5, gz + uz * 3.6 - Math.sin(a) * k * 9.2, a));
+    }
+  }
+
   const parts = [
     [conc, concrete],
-    [shell, clad],
+    [cast, precast],
+    [aisles, concrete],
     [steelG, steel],
-    [seatsA, seatLower],
-    [seatsB, seatUpper],
+    [steelG2, steelPale],
+    [seatsA, seatGold],
+    [seatsB, seatGold],
+    [dark, seatBlack],
+    [glassG, glass],
     [boards, board],
     [lamps, lamp],
   ];
@@ -1268,17 +1960,18 @@ export function buildAcrisureStadium(spec = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * PPG Paints Arena: chamfered rounded-rectangle body in light precast, a shallow
- * arched roof, and the serpentine glass atrium wall facing downtown.
- * Local +X is the outward normal of the glass facade.
+ * PPG Paints Arena: 720,000 sq ft and 18,400 seats under a shallow domed roof
+ * on steel trusses, clad in light metal panel over precast. The identifying
+ * feature is the 400 ft long S-shaped curtain wall wrapping a 100 ft atrium,
+ * turned to face downtown; local +X is its outward normal.
  */
 export function buildPpgArena(spec = {}) {
   const group = new THREE.Group();
   group.name = 'ppg-paints-arena';
 
   const h = clamp(spec.h, 32, 48);
-  const hs = h / 40;
-  const s = fitScale(spec.f, 190, 175);
+  const hs = clamp(h / 40, 0.9, 1.15);
+  const s = fitScale(spec.f, 166, 154);
   const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : Math.PI;
 
   const oriented = new THREE.Group();
@@ -1287,71 +1980,96 @@ export function buildPpgArena(spec = {}) {
   group.add(oriented);
   const core = new THREE.Group();
 
-  const precast = mat(0xcfcabb, { roughness: 0.82, metalness: 0.06 });
+  const precast = mat(0xc9c4b6, { roughness: 0.84, metalness: 0.06 });
+  const panel = mat(0xb9bec4, { roughness: 0.42, metalness: 0.52, envMapIntensity: 1.0 });
   const accent = mat(0x8d8878, { roughness: 0.72, metalness: 0.12 });
   const steel = mat(0x5a6068, { roughness: 0.4, metalness: 0.68, envMapIntensity: 1.0 });
-  const roofMat = mat(0x93999f, { roughness: 0.7, metalness: 0.26 });
-  const glass = mat(0x9cc0d4, {
-    roughness: 0.1,
+  const roofMat = mat(0xa8adb3, { roughness: 0.52, metalness: 0.45, envMapIntensity: 1.0 });
+  const glass = mat(0x8fb6cf, {
+    roughness: 0.08,
     metalness: 0.55,
     transparent: true,
-    opacity: 0.66,
+    opacity: 0.58,
     emissive: 0x2c4a63,
-    emissiveIntensity: 0.5,
-    envMapIntensity: 1.4,
+    emissiveIntensity: 0.45,
+    envMapIntensity: 1.5,
     side: THREE.DoubleSide,
   });
   const lamp = mat(0xe8ecdf, { roughness: 0.3, metalness: 0.4, emissive: 0xffe9b4, emissiveIntensity: 0.85 });
 
   const body = [];
+  const clad = [];
   const trim = [];
   const steelG = [];
   const roofG = [];
   const glassG = [];
   const lamps = [];
 
-  const rx = 80;
-  const rz = 78;
-  const plan = superEllipse(rx, rz, 0.5);
-  const wallTop = 25 * hs;
-  const wallPath = buildPath(plan, 96, 0, Math.PI * 2, true);
+  const rx = 78;
+  const rz = 74;
+  const plan = superEllipse(rx, rz, 0.52);
+  const wallTop = 24 * hs;
+  const wallPath = buildPath(plan, 100, 0, Math.PI * 2, true);
 
-  // Cornice down to plinth. Profiles run top-to-bottom so the swept faces
-  // point outward rather than into the bowl.
+  // Precast plinth, metal panel above it, parapet on top. Profiles run
+  // top-to-bottom so the swept faces point outward rather than into the bowl.
+  clad.push(
+    sweepStrip(wallPath, [
+      [0.2, wallTop + 0.8],
+      [1.6, wallTop + 0.2],
+      [1.6, wallTop - 1.6],
+      [0, wallTop - 3.4],
+      [0, 9.5],
+    ]),
+  );
   body.push(
     sweepStrip(wallPath, [
-      [0.2, wallTop + 0.6],
-      [1.7, wallTop],
-      [1.7, wallTop - 1.4],
-      [0, wallTop - 3.2],
-      [0, 6.4],
-      [0.9, 5.5],
+      [0, 9.8],
+      [0.9, 9.2],
       [0.9, 0],
     ]),
   );
   trim.push(
     sweepStrip(wallPath, [
-      [0.25, wallTop - 6.5],
-      [0.25, wallTop - 11.5],
+      [0.3, wallTop - 5.0],
+      [0.3, wallTop - 8.6],
     ]),
   );
 
   // Shallow arched roof, ringed by a parapet at the springing line.
-  const roofRise = h - wallTop - 1.2;
-  roofG.push(domeCap(plan, 96, 8, wallTop + 0.6, roofRise));
+  const roofRise = Math.max(h - wallTop - 1.0, 6);
+  roofG.push(domeCap(plan, 100, 9, wallTop + 0.6, roofRise));
   steelG.push(
     sweepStrip(wallPath, [
-      [0.2, wallTop + 2.4],
-      [1.0, wallTop + 2.4],
+      [0.2, wallTop + 2.6],
+      [1.0, wallTop + 2.6],
       [1.0, wallTop + 0.4],
       [0.2, wallTop + 0.4],
     ]),
   );
+  // Radial standing-seam ribs so the dome is not a bald shell from the air.
+  // domeCap puts radius fraction s at y0 + rise*(1 - s*s), so a rib running
+  // from s = 0.3 out to the eave only needs a matching rake.
+  for (let i = 0; i < wallPath.length; i += 2) {
+    const p = wallPath[i];
+    const rr = Math.hypot(p.x, p.z) || 1;
+    const sIn = 0.3;
+    const run = rr * (1 - sIn);
+    const drop = roofRise * (1 - sIn * sIn);
+    const midS = (1 + sIn) * 0.5;
+    const spoke = { x: 0, z: 0, nx: p.x / rr, nz: p.z / rr };
+    roofG.push(
+      radialMember(Math.hypot(run, drop), 0.5, 0.32, -Math.atan2(drop, run), spoke, rr * midS, wallTop + 0.8 + roofRise * (1 - midS * midS)),
+    );
+  }
 
-  // The pair of tied-arch trusses reads outside as a raised ridge over the bowl.
-  for (const oz of [-19, 19]) {
-    roofG.push(box(112, 2.6, 3.4, 0, wallTop + roofRise * 0.94, oz));
-    steelG.push(box(114, 0.7, 1.0, 0, wallTop + roofRise * 0.94 + 1.6, oz));
+  // The pair of tied-arch roof trusses reads outside as a raised ridge.
+  for (const oz of [-18, 18]) {
+    roofG.push(box(108, 2.4, 3.2, 0, wallTop + roofRise * 0.95, oz));
+    steelG.push(box(110, 0.7, 1.0, 0, wallTop + roofRise * 0.95 + 1.5, oz));
+    for (let k = -4; k <= 4; k++) {
+      steelG.push(box(1.0, 2.6, 1.0, k * 11, wallTop + roofRise * 0.95 + 2.6, oz));
+    }
   }
   for (const [mx, mz, mw, md] of [
     [-30, -34, 18, 12],
@@ -1365,7 +2083,6 @@ export function buildPpgArena(spec = {}) {
     steelG.push(box(mw, 4.6, md, mx, my + 1.4, mz));
     trim.push(box(mw * 0.45, 1.8, md * 0.5, mx, my + 4.6, mz));
   }
-  // Rooftop catwalk ring and stair penthouse give the shallow dome some scale.
   const catRatio = 0.72;
   const catwalk = buildPath((t) => {
     const p = plan(t);
@@ -1383,67 +2100,100 @@ export function buildPpgArena(spec = {}) {
     ),
   );
   const penthouseY = wallTop + roofRise * (1 - (46 / rx) ** 2 * 0.5);
-  steelG.push(box(15, 7, 12, -46, penthouseY + 2.5, 4));
+  clad.push(box(15, 7, 12, -46, penthouseY + 2.5, 4));
 
-  // --- serpentine glass curtain wall on the downtown-facing facade ---------
+  // --- the ice sheet, visible in the plan view through the roof opening ----
+  const ice = new THREE.Mesh(
+    groundPolygon(
+      [
+        [-30.5, -12.9],
+        [30.5, -12.9],
+        [30.5, 12.9],
+        [-30.5, 12.9],
+      ],
+      0.2,
+      (x, z) => [x / (200 * FT) + 0.5, 0.5 - z / (85 * FT)],
+    ),
+    turfMaterial(iceMaps(), mat(0xe6edf2, { roughness: 0.2, metalness: 0.1 })),
+  );
+  ice.receiveShadow = true;
+  core.add(ice);
+
+  // --- the 400 ft S-shaped curtain wall on the downtown-facing facade -----
   const spineFn = (t) => {
-    const a = lerp(-62 * DEG, 62 * DEG, t);
+    const a = lerp(-64 * DEG, 64 * DEG, t);
     const base = plan(a);
-    const bulge = 6 * Math.sin(t * Math.PI * 3) + 11 * Math.sin(t * Math.PI);
+    const bulge = 7.5 * Math.sin(t * Math.PI * 2) + 13 * Math.sin(t * Math.PI);
     const len = Math.hypot(base[0], base[1]) || 1;
     return [base[0] + (base[0] / len) * bulge, base[1] + (base[1] / len) * bulge];
   };
-  const spine = buildPath(spineFn, 52, 0, 1);
-  const glassTop = 31 * hs;
+  const spine = buildPath(spineFn, 56, 0, 1);
+  const glassTop = 100 * FT * hs * 0.62 + 12;
   glassG.push(
     sweepStrip(spine, [
       [0, glassTop],
       [0, 1.5],
     ]),
   );
-  // Sloped glazing folds the atrium back into the precast wall.
+  // Sloped glazing folds the atrium back into the wall behind it.
   glassG.push(
     sweepStrip(spine, [
-      [-7, glassTop - 3.5],
+      [-8, glassTop - 4.0],
       [0, glassTop],
     ]),
   );
-  for (let i = 0; i < spine.length; i += 3) {
+  steelG.push(
+    sweepStrip(spine, [
+      [-8.4, glassTop - 4.0],
+      [0.7, glassTop + 0.5],
+      [0.7, glassTop - 0.4],
+      [-8.4, glassTop - 4.8],
+    ]),
+  );
+  for (let i = 0; i < spine.length; i += 2) {
     const p = spine[i];
-    const a = Math.atan2(p.nx, p.nz);
-    steelG.push(box(0.9, glassTop - 1.5, 0.9, p.x, (glassTop + 1.5) * 0.5, p.z, a));
-    steelG.push(box(0.6, 0.6, 7.6, p.x - p.nx * 3.5, glassTop - 1.5, p.z - p.nz * 3.5, a));
+    const a = nodeYaw(p);
+    steelG.push(box(0.75, glassTop - 1.5, 0.75, p.x, (glassTop + 1.5) * 0.5, p.z, a));
+    steelG.push(box(0.5, 0.5, 8.6, p.x - p.nx * 4.0, glassTop - 1.9, p.z - p.nz * 4.0, a));
   }
-  for (const level of [0.26, 0.46, 0.66, 0.86]) {
-    steelG.push(
+  // Six atrium levels read as horizontal spandrels behind the glass.
+  for (const level of [0.2, 0.35, 0.5, 0.66, 0.82]) {
+    trim.push(
       sweepStrip(spine, [
-        [-0.5, glassTop * level],
-        [0.6, glassTop * level],
-        [0.6, glassTop * level - 0.7],
-        [-0.5, glassTop * level - 0.7],
+        [-0.6, glassTop * level],
+        [0.7, glassTop * level],
+        [0.7, glassTop * level - 0.8],
+        [-0.6, glassTop * level - 0.8],
       ]),
     );
   }
   // Grand stair and entry canopy under the atrium.
   const entry = spine[Math.floor(spine.length / 2)];
   for (let i = 0; i < 7; i++) {
-    trim.push(box(3.0, 0.95, 40 - i * 2.4, entry.x + 11 - i * 1.7, 0.48 + i * 0.95, entry.z));
+    body.push(box(3.0, 0.95, 42 - i * 2.6, entry.x + 11 - i * 1.7, 0.48 + i * 0.95, entry.z));
   }
-  steelG.push(box(2.2, 1.2, 52, entry.x + 14, glassTop * 0.44, entry.z));
-  trim.push(box(19, 0.9, 50, entry.x + 6, glassTop * 0.44, entry.z));
+  steelG.push(box(2.2, 1.2, 54, entry.x + 14, glassTop * 0.42, entry.z));
+  clad.push(box(19, 0.9, 52, entry.x + 6, glassTop * 0.42, entry.z));
   for (const cz of [-20, 0, 20]) {
-    steelG.push(box(1.0, glassTop * 0.44, 1.0, entry.x + 13.5, glassTop * 0.22, entry.z + cz));
+    steelG.push(box(1.0, glassTop * 0.42, 1.0, entry.x + 13.5, glassTop * 0.21, entry.z + cz));
   }
 
-  // --- perimeter detail: precast joints, signage band, roof-edge lighting --
-  for (let i = 0; i < wallPath.length; i += 4) {
+  // --- perimeter detail: panel joints, corner glazing, signage, lighting --
+  for (let i = 0; i < wallPath.length; i += 3) {
     const p = wallPath[i];
-    const a = Math.atan2(p.nx, p.nz);
-    trim.push(box(0.5, wallTop - 7.5, 1.0, p.x + p.nx * 0.4, 6.4 + (wallTop - 7.5) * 0.5, p.z + p.nz * 0.4, a));
+    const a = nodeYaw(p);
+    trim.push(box(0.45, wallTop - 11.5, 1.0, p.x + p.nx * 0.4, 9.8 + (wallTop - 11.5) * 0.5, p.z + p.nz * 0.4, a));
   }
-  for (let i = 0; i < wallPath.length; i += 8) {
+  for (const t of [55 * DEG, 125 * DEG, 235 * DEG, 305 * DEG]) {
+    const p = plan(t);
+    const r = Math.hypot(p[0], p[1]);
+    const a = Math.atan2(p[0] / r, p[1] / r);
+    glassG.push(box(26, wallTop - 8, 1.0, p[0] * 1.005, 4 + (wallTop - 8) * 0.5, p[1] * 1.005, a));
+    steelG.push(box(27, 1.1, 3.0, p[0] * 1.01, wallTop - 3.4, p[1] * 1.01, a));
+  }
+  for (let i = 0; i < wallPath.length; i += 10) {
     const p = wallPath[i];
-    const a = Math.atan2(p.nx, p.nz);
+    const a = nodeYaw(p);
     lamps.push(box(3.4, 0.7, 0.6, p.x + p.nx * 2.0, wallTop - 2.2, p.z + p.nz * 2.0, a));
   }
   for (const [sx, sz] of [
@@ -1452,11 +2202,12 @@ export function buildPpgArena(spec = {}) {
     [0, rz + 2],
   ]) {
     const acrossX = sx === 0;
-    lamps.push(box(acrossX ? 26 : 1.0, 4.5, acrossX ? 1.0 : 26, sx, wallTop - 9, sz));
+    lamps.push(box(acrossX ? 26 : 1.0, 4.5, acrossX ? 1.0 : 26, sx, wallTop - 10, sz));
   }
 
   const parts = [
     [body, precast],
+    [clad, panel],
     [trim, accent],
     [steelG, steel],
     [roofG, roofMat],
