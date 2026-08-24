@@ -12,14 +12,25 @@
   <body>
     <div id="hud"></div>
     <script type="module">
+      /*
+       * Single-frame render of one district, for checking geometry without
+       * paying for the whole city. Materials, builders and lighting are the
+       * ones the real scene uses, so what shows up here is what ships.
+       *
+       *   ?b=<name substring>  pick the anchor building
+       *   ?x=&z=               anchor explicitly instead
+       *   ?r=                  radius in metres (default 220)
+       *   ?az=&el=&d=          camera azimuth / elevation in radians, distance
+       *   ?water=1             draw the river polygons too
+       */
       import * as THREE from 'three';
       import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-      import { createCityMaterials, buildingFamily, tintGeometry } from '/src/textures.js';
+      import { createCityMaterials, buildingFamily, tintGeometry, applyXZUvs } from '/src/textures.js';
       import { buildArticulatedBuilding, buildRoofscape, footprintSeed, detailTier } from '/src/architecture.js';
-      import { buildLandmarkMeshes } from '/src/landmarks.js';
+      import { buildLandmarkMeshes, isLandmarkMeshBuilding } from '/src/landmarks.js';
 
       const params = new URLSearchParams(location.search);
-      const want = (params.get('b') || 'U.S. Steel Tower').toLowerCase();
+      const want = (params.get('b') || '').toLowerCase();
       const az = Number(params.get('az') ?? 0.9);
       const el = Number(params.get('el') ?? 0.28);
       const zoom = Number(params.get('zoom') ?? 1.5);
@@ -27,24 +38,26 @@
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(innerWidth, innerHeight);
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.2;
+      renderer.toneMappingExposure = 1.22;
       renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       document.body.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
-      scene.background = new THREE.Color(0x9ec8e8);
-      scene.add(new THREE.HemisphereLight(0xd8e8ff, 0x6a7a58, 1.1));
-      const sun = new THREE.DirectionalLight(0xffffff, 1.7);
-      sun.position.set(400, 700, 260);
+      scene.background = new THREE.Color(0x8ec8f0);
+      scene.add(new THREE.HemisphereLight(0xd8e8ff, 0x6a7a58, 0.95));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.65);
+      sun.position.set(800, 1200, 400);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
       scene.add(sun);
+      const fill = new THREE.DirectionalLight(0xc8d8f0, 0.45);
+      fill.position.set(-500, 400, -500);
+      scene.add(fill);
 
       const materials = createCityMaterials({ dayMode: true });
       const data = await (await fetch('/data/pittsburgh.json')).json();
-
-      const hits = data.buildings.filter((b) => (b.n || '').toLowerCase().includes(want));
-      const target = hits.sort((a, b) => (b.h || 0) - (a.h || 0))[0];
-      const anchor = target ? centroid(target.f) : [Number(params.get('x') || 0), Number(params.get('z') || 0)];
-      const radius = Number(params.get('r') || 220);
 
       function centroid(f) {
         let cx = 0, cz = 0;
@@ -53,15 +66,27 @@
         return [cx / n, cz / n];
       }
 
+      const hits = want ? data.buildings.filter((b) => (b.n || '').toLowerCase().includes(want)) : [];
+      const target = hits.sort((a, b) => (b.h || 0) - (a.h || 0))[0];
+      const anchor = target ? centroid(target.f) : [Number(params.get('x') || 0), Number(params.get('z') || 0)];
+      const radius = Number(params.get('r') || 220);
+
       const yFn = () => 0;
       const buckets = {};
       const roofGeoms = [];
       let count = 0;
       let maxY = 40;
+      const near = [];
       for (const b of data.buildings) {
         if (!b.f || b.f.length < 4) continue;
         const c = centroid(b.f);
-        if (Math.hypot(c[0] - anchor[0], c[1] - anchor[1]) > radius) continue;
+        const dist = Math.hypot(c[0] - anchor[0], c[1] - anchor[1]);
+        if (dist > radius + 400) continue;
+        near.push(b);
+        if (dist > radius) continue;
+        // Anything with its own mesh is drawn by buildLandmarkMeshes below;
+        // extruding it here as well buries the model inside a plain box.
+        if (isLandmarkMeshBuilding(b)) continue;
         const family = buildingFamily(b);
         const height = Math.max(3, b.h || 10);
         const { wall, trim, roofRing, roofY } = buildArticulatedBuilding({
@@ -78,25 +103,54 @@
         count++;
       }
       for (const [name, geoms] of Object.entries(buckets)) {
+        for (const g of geoms) if (!g.attributes.color) tintGeometry(g, new THREE.Color(0xffffff));
         const merged = mergeGeometries(geoms, false);
         if (!merged) continue;
-        for (const g of geoms) if (!g.attributes.color) tintGeometry(g, new THREE.Color(0xffffff));
-        const m = new THREE.Mesh(mergeGeometries(geoms.map((g) => { if (!g.attributes.color) tintGeometry(g, new THREE.Color(0xffffff)); return g; }), false), materials.families[name].mat);
+        const m = new THREE.Mesh(merged, materials.families[name].mat);
+        m.castShadow = true;
+        m.receiveShadow = true;
         scene.add(m);
       }
       if (roofGeoms.length) {
         scene.add(new THREE.Mesh(mergeGeometries(roofGeoms, false), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 })));
       }
 
-      const near = data.buildings.filter((b) => b.f && Math.hypot(centroid(b.f)[0] - anchor[0], centroid(b.f)[1] - anchor[1]) < radius + 400);
-      scene.add(buildLandmarkMeshes(near, yFn, null, null, null));
+      scene.add(buildLandmarkMeshes(near, yFn, null, data.pointPark, null));
 
-      const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshStandardMaterial({ color: 0x4a5a48 }));
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(6000, 6000), materials.groundMat.clone());
+      ground.material.vertexColors = false;
+      ground.material.color = new THREE.Color(0x8d8a80);
       ground.rotation.x = -Math.PI / 2;
       ground.position.set(anchor[0], -0.5, anchor[1]);
+      ground.receiveShadow = true;
+      applyXZUvs(ground.geometry, 0.02);
       scene.add(ground);
 
-      const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 12000);
+      if (params.get('water')) {
+        for (const surf of data.water || []) {
+          const ring = surf.f;
+          if (!ring || ring.length < 4) continue;
+          const shape = new THREE.Shape();
+          shape.moveTo(ring[0][0], -ring[0][1]);
+          for (let i = 1; i < ring.length - 1; i++) shape.lineTo(ring[i][0], -ring[i][1]);
+          shape.closePath();
+          for (const hole of surf.holes || []) {
+            if (!hole || hole.length < 4) continue;
+            const p = new THREE.Path();
+            p.moveTo(hole[0][0], -hole[0][1]);
+            for (let i = 1; i < hole.length - 1; i++) p.lineTo(hole[i][0], -hole[i][1]);
+            p.closePath();
+            shape.holes.push(p);
+          }
+          const geom = new THREE.ShapeGeometry(shape);
+          geom.rotateX(-Math.PI / 2);
+          const mesh = new THREE.Mesh(geom, materials.waterMat);
+          mesh.position.y = 0.4;
+          scene.add(mesh);
+        }
+      }
+
+      const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 20000);
       if (params.get('top')) maxY = Number(params.get('top'));
       const dist = params.get('d') ? Number(params.get('d')) : maxY * zoom + 120;
       camera.position.set(
@@ -107,7 +161,7 @@
       camera.lookAt(anchor[0], maxY * 0.5, anchor[1]);
       renderer.render(scene, camera);
       document.getElementById('hud').textContent =
-        `${target ? target.n : want} | ${count} buildings | topY ${maxY.toFixed(1)} m`;
+        `${target ? target.n : `${anchor[0].toFixed(0)},${anchor[1].toFixed(0)}`} | ${count} buildings | topY ${maxY.toFixed(1)} m | r ${radius}`;
       window.__ready = true;
     </script>
   </body>
