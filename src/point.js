@@ -304,29 +304,26 @@ export function buildPointStatePark(yFn, pointPark) {
       side: THREE.DoubleSide,
     });
 
+  // A 150 ft jet is only about a metre across at the nozzle, so the column has
+  // to stay thin and faint; anything heavier reads as a white post on the lawn.
   const JET_H = 46;
-  const jet = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.6, JET_H, 14, 1, true), spray(0.3));
+  const jet = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 1.5, JET_H, 12, 1, true), spray(0.11));
   jet.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H * 0.5, FOUNTAIN[1]);
   g.add(jet);
 
-  // Burst at the apex where the column breaks up, then the falling curtain.
-  const crown = new THREE.Mesh(new THREE.SphereGeometry(6.5, 18, 12), spray(0.16));
-  crown.scale.set(1, 0.62, 1);
-  crown.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H, FOUNTAIN[1]);
-  g.add(crown);
-
+  // Plume of spray thrown off the column, widening as it falls back to the basin.
   const fall = new THREE.Mesh(
-    new THREE.CylinderGeometry(11.5, 3.2, JET_H * 0.72, 22, 1, true),
-    spray(0.075),
+    new THREE.CylinderGeometry(9, 1.2, JET_H * 0.92, 20, 1, true),
+    spray(0.05),
   );
-  fall.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H * 0.64, FOUNTAIN[1]);
+  fall.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H * 0.54, FOUNTAIN[1]);
   g.add(fall);
 
   const mist = new THREE.Mesh(
-    new THREE.CylinderGeometry(FOUNTAIN_R - 3, FOUNTAIN_R - 11, 7, 30, 1, true),
-    spray(0.06),
+    new THREE.CylinderGeometry(FOUNTAIN_R - 6, FOUNTAIN_R - 13, 5, 26, 1, true),
+    spray(0.05),
   );
-  mist.position.set(FOUNTAIN[0], lawnY + 4, FOUNTAIN[1]);
+  mist.position.set(FOUNTAIN[0], lawnY + 3, FOUNTAIN[1]);
   g.add(mist);
 
   // Granite trace of Fort Duquesne, laid in the paving where the fort stood.

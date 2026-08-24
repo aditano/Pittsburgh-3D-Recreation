@@ -9,6 +9,7 @@ import {
   footprintCentroid,
   footprintWaterOverlap,
   footprintLandBaseY,
+  pointInPoly,
   hash01,
 } from './geo.js';
 import {
@@ -522,9 +523,17 @@ async function buildCity(data) {
 
   scene.add(makeGround(terrainFn, waterIndex));
 
+  // Point State Park and the lawns nested inside it are drawn in full detail by
+  // buildPointStatePark. Left in the generic pass as well they land within a few
+  // centimetres of it and z-fight, which turns the whole Point into a dark plate.
+  const pointRing = data.pointPark?.f;
   const parkGeoms = [];
   for (const p of data.parks) {
     if (p.f.length < 4) continue;
+    if (pointRing) {
+      const [pcx, pcz] = footprintCentroid(p.f);
+      if (pointInPoly(pcx, pcz, pointRing)) continue;
+    }
     try {
       const g = flatPolygon(p.f, 0.85, yFn);
       applyXZUvs(g, 0.012);

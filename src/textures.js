@@ -656,16 +656,19 @@ export function createCityMaterials({ dayMode = true } = {}) {
           u.y);
       }
 
-      // Two advected octaves in the stretched flow frame, plus the same field
-      // sampled at a small offset so the gradient can be differenced cheaply.
+      // Two advected octaves in the flow frame, plus a broad slow term. The frame
+      // must be stretched ALONG the flow and compressed across it so the noise
+      // pulls into long downstream streaks; scaling it the other way round makes
+      // features short along the flow and wide across it, which is what reads as
+      // bands marching across the channel. Streaks here run ~55 m by ~12 m.
       float riverSurface(vec2 p, vec2 flow, float t) {
         vec2 across = vec2(-flow.y, flow.x);
         float along = dot(p, flow);
         float side = dot(p, across);
-        vec2 q = vec2(along * 0.22 - t * 1.1, side * 0.035);
-        float n = vnoise(q) * 0.62;
-        n += vnoise(q * 2.7 + vec2(t * 0.5, 0.0)) * 0.26;
-        n += vnoise(vec2(along * 0.02 + t * 0.05, side * 0.012)) * 0.5;
+        vec2 q = vec2(along * 0.018 - t * 0.45, side * 0.085);
+        float n = vnoise(q) * 0.60;
+        n += vnoise(q * 2.4 + vec2(t * 0.2, 0.0)) * 0.22;
+        n += vnoise(vec2(along * 0.004 + t * 0.03, side * 0.018)) * 0.44;
         return n;
       }`;
 
@@ -677,11 +680,13 @@ export function createCityMaterials({ dayMode = true } = {}) {
          {
            vec2 flow = riverFlow(vWorldPos.xz);
            vec2 across = vec2(-flow.y, flow.x);
-           float e = 2.5;
+           // Differenced over a stride comparable to the streak width, so the
+           // slope stays gentle instead of sparkling at every pixel.
+           float e = 6.0;
            float c0 = riverSurface(vWorldPos.xz, flow, uTime);
            float ca = riverSurface(vWorldPos.xz + flow * e, flow, uTime);
            float cb = riverSurface(vWorldPos.xz + across * e, flow, uTime);
-           vec2 grad = vec2(ca - c0, cb - c0) * 0.9;
+           vec2 grad = vec2(ca - c0, cb - c0) * 0.42;
            normal = normalize(normal + vec3(
              flow.x * grad.x + across.x * grad.y,
              0.0,
@@ -694,8 +699,8 @@ export function createCityMaterials({ dayMode = true } = {}) {
          {
            vec2 flow = riverFlow(vWorldPos.xz);
            float s = riverSurface(vWorldPos.xz, flow, uTime);
-           diffuseColor.rgb *= 0.94 + s * 0.09;
-           diffuseColor.rgb += smoothstep(0.86, 1.16, s) * vec3(0.05, 0.08, 0.1);
+           diffuseColor.rgb *= 0.96 + s * 0.06;
+           diffuseColor.rgb += smoothstep(1.0, 1.24, s) * vec3(0.045, 0.07, 0.085);
          }`,
       );
   };
