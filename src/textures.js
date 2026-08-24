@@ -734,6 +734,7 @@ export function createCityMaterials({ dayMode = true } = {}) {
     metalness: 0.12,
     emissive: 0x102018,
     emissiveIntensity: 0.15,
+    side: THREE.DoubleSide,
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,

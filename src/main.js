@@ -283,53 +283,50 @@ function addLabel(text, position) {
   return obj;
 }
 
+/**
+ * Ribbon straddling a ring, used for the wet band along a shoreline. The strip
+ * is symmetric about each edge, so the offset direction only decides winding;
+ * normals are written straight up and the material draws both sides.
+ */
 function outlineRibbon(poly, width, y) {
   if (!poly || poly.length < 3) return null;
   const n = poly.length;
   const closed = Math.hypot(poly[0][0] - poly[n - 1][0], poly[0][1] - poly[n - 1][1]) < 0.05;
   const count = closed ? n - 1 : n;
-  let cx = 0;
-  let cz = 0;
-  for (let i = 0; i < count; i++) {
-    cx += poly[i][0];
-    cz += poly[i][1];
-  }
-  cx /= count;
-  cz /= count;
 
   const positions = [];
+  const normals = [];
   const half = width * 0.5;
   for (let i = 0; i < count; i++) {
     const a = poly[i];
     const b = poly[(i + 1) % n];
     const dx = b[0] - a[0];
     const dz = b[1] - a[1];
-    const len = Math.hypot(dx, dz) || 1;
-    let nx = -dz / len;
-    let nz = dx / len;
-    const mx = (a[0] + b[0]) * 0.5;
-    const mz = (a[1] + b[1]) * 0.5;
-    if ((mx - cx) * nx + (mz - cz) * nz < 0) {
-      nx = -nx;
-      nz = -nz;
-    }
+    const len = Math.hypot(dx, dz);
+    // Long river rings carry near-duplicate vertices; skip the degenerate ones
+    // so they cannot emit NaN normals into the merged buffer.
+    if (len < 0.01) continue;
+    const nx = -dz / len;
+    const nz = dx / len;
     const a0 = [a[0] - nx * half, a[1] - nz * half];
     const a1 = [a[0] + nx * half, a[1] + nz * half];
     const b0 = [b[0] - nx * half, b[1] - nz * half];
     const b1 = [b[0] + nx * half, b[1] + nz * half];
     positions.push(a0[0], y, a0[1], a1[0], y, a1[1], b1[0], y, b1[1]);
     positions.push(a0[0], y, a0[1], b1[0], y, b1[1], b0[0], y, b0[1]);
+    for (let k = 0; k < 6; k++) normals.push(0, 1, 0);
   }
+  if (!positions.length) return null;
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geom.computeVertexNormals();
+  geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   return geom;
 }
 
 function buildWaterEdges(water, yFn) {
   const geoms = [];
   for (const w of water) {
-    if (!w.f || w.f.length < 4 || w.f.length > 200) continue;
+    if (!w.f || w.f.length < 4) continue;
     let cx = 0;
     let cz = 0;
     const n = w.f.length - 1;
@@ -340,8 +337,11 @@ function buildWaterEdges(water, yFn) {
     cx /= n;
     cz /= n;
     const edgeY = Math.max(0.35, yFn(cx, cz) + 0.55);
-    const ribbon = outlineRibbon(w.f, 7, edgeY);
-    if (ribbon) geoms.push(ribbon);
+    // Islands get the same wet band as the banks, or they read as floating slabs.
+    for (const ring of [w.f, ...(w.holes || [])]) {
+      const ribbon = outlineRibbon(ring, 7, edgeY);
+      if (ribbon) geoms.push(ribbon);
+    }
   }
   if (!geoms.length) return null;
   const merged = mergeGeometries(geoms, false);
