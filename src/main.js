@@ -45,7 +45,9 @@ const DAY_MODE = true;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(DAY_MODE ? 0x8ec8f0 : 0x05070c);
-scene.fog = new THREE.FogExp2(DAY_MODE ? 0xb8d8f0 : 0x05070c, DAY_MODE ? 0.00012 : 0.00026);
+// Real Allegheny valley haze is a warm-grey blue, not the near-white the old
+// value read as once the ambient came down.
+scene.fog = new THREE.FogExp2(DAY_MODE ? 0x9dbcd8 : 0x05070c, DAY_MODE ? 0.00009 : 0.00026);
 
 const camera = new THREE.PerspectiveCamera(45, 1, 2, 25000);
 camera.position.set(900, 650, 1100);
@@ -59,7 +61,7 @@ const renderer = new THREE.WebGLRenderer({
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = DAY_MODE ? 1.22 : 1.08;
+renderer.toneMappingExposure = DAY_MODE ? 1.0 : 1.08;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
@@ -79,30 +81,60 @@ controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
 controls.target.set(0, 40, 0);
 
-const hemi = new THREE.HemisphereLight(DAY_MODE ? 0xd8e8ff : 0xb8c4d8, DAY_MODE ? 0x6a7a58 : 0x1a241c, DAY_MODE ? 0.95 : 0.5);
+/**
+ * Direct sun against sky ambient.
+ *
+ * Clear-sky daylight is roughly five parts direct sun to one part skylight on a
+ * surface facing the sun. The previous balance was almost one to one - hemi 0.95
+ * plus environment 0.75 against a 1.65 sun - so an unlit wall came out nearly as
+ * bright as a lit one. With no shading gradient the massing stops reading and
+ * every building flattens into a silhouette, which is most of why the city
+ * looked hazy and washed out rather than sunlit.
+ */
+const hemi = new THREE.HemisphereLight(
+  DAY_MODE ? 0xcfe2f7 : 0xb8c4d8,
+  DAY_MODE ? 0x6a7052 : 0x1a241c,
+  DAY_MODE ? 0.4 : 0.5,
+);
 scene.add(hemi);
 
-const sun = new THREE.DirectionalLight(0xffffff, DAY_MODE ? 1.65 : 1.15);
-sun.position.set(DAY_MODE ? 800 : 600, DAY_MODE ? 1200 : 900, DAY_MODE ? 400 : 200);
+const SUN_DIR = new THREE.Vector3(DAY_MODE ? 0.55 : 0.5, DAY_MODE ? 0.72 : 0.74, DAY_MODE ? 0.42 : 0.22)
+  .normalize();
+const SHADOW_HALF = 1500;
+
+const sun = new THREE.DirectionalLight(0xfff6e8, DAY_MODE ? 2.9 : 1.15);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 100;
-sun.shadow.camera.far = 5000;
-sun.shadow.camera.left = -1800;
-sun.shadow.camera.right = 1800;
-sun.shadow.camera.top = 1800;
-sun.shadow.camera.bottom = -1800;
-sun.shadow.bias = -0.0002;
+sun.shadow.camera.near = 20;
+sun.shadow.camera.far = 6500;
+sun.shadow.camera.left = -SHADOW_HALF;
+sun.shadow.camera.right = SHADOW_HALF;
+sun.shadow.camera.top = SHADOW_HALF;
+sun.shadow.camera.bottom = -SHADOW_HALF;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.6;
 scene.add(sun);
+scene.add(sun.target);
 
-const fill = new THREE.DirectionalLight(DAY_MODE ? 0xc8d8f0 : 0x6a7a9a, DAY_MODE ? 0.45 : 0.32);
+/**
+ * The shadow frustum is 3 km across, against a 15 km scene, so it has to follow
+ * the view or Oakland and the Strip get no shadows at all. The sun DIRECTION
+ * stays fixed, so shadows do not swing as the camera moves.
+ */
+function aimSun(at) {
+  sun.target.position.copy(at);
+  sun.position.copy(at).addScaledVector(SUN_DIR, 2600);
+}
+aimSun(new THREE.Vector3(0, 0, 0));
+
+const fill = new THREE.DirectionalLight(DAY_MODE ? 0xbcd2ea : 0x6a7a9a, DAY_MODE ? 0.16 : 0.32);
 fill.position.set(-500, 400, -500);
 scene.add(fill);
 
 const materials = createCityMaterials({ dayMode: DAY_MODE });
 materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
-scene.environmentIntensity = DAY_MODE ? 0.75 : 0.55;
+scene.environmentIntensity = DAY_MODE ? 0.42 : 0.55;
 scene.add(createSkyDome({ day: DAY_MODE }));
 
 let composer;
@@ -400,7 +432,14 @@ function makeGround(terrainFn, waterIndex, density, wooded) {
   return mesh;
 }
 
-function addLabel(text, position) {
+/**
+ * Every label ever added, so the declutter pass can rank them against each
+ * other. `rank` is a tie-break for which of two colliding labels survives:
+ * lower wins, so a district beats a bridge beats an ordinary building.
+ */
+const LABELS = [];
+
+function addLabel(text, position, rank = 2) {
   const el = document.createElement('div');
   el.className = 'label';
   el.textContent = text;
@@ -414,21 +453,104 @@ function addLabel(text, position) {
     text-shadow: 0 0 12px rgba(0,0,0,0.85);
     user-select: none;
     pointer-events: none;
+    transition: opacity 160ms linear;
   `;
   const obj = new CSS2DObject(el);
   obj.position.copy(position);
   scene.add(obj);
 
+  const stemMat = new THREE.LineBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.25,
+  });
   const stem = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(position.x, Math.max(0, position.y - position.y * 0.55), position.z),
     position.clone(),
   ]);
-  const line = new THREE.Line(
-    stem,
-    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 }),
-  );
+  const line = new THREE.Line(stem, stemMat);
   scene.add(line);
+
+  // Width is measured once the glyphs exist rather than guessed from the
+  // character count, because the tracking is wide enough that a proportional
+  // estimate is off by a third on the longer names.
+  LABELS.push({ el, obj, line, stemMat, rank, width: 0, anchor: position.clone() });
   return obj;
+}
+
+const LABEL_FADE_NEAR = 2600;
+const LABEL_FADE_FAR = 4200;
+const LABEL_PAD_X = 10;
+const LABEL_PAD_Y = 7;
+
+/**
+ * Hide labels that collide on screen, and fade out the far ones.
+ *
+ * With every landmark labelled at once, an oblique view stacks a dozen names
+ * into the same few hundred pixels near the horizon and the result is an
+ * unreadable smear that also hides the city behind it. So each frame the labels
+ * are projected, sorted near-to-far within their rank, and kept only while
+ * their box does not touch a box already kept. Nearest wins, which is the
+ * behaviour you want: the thing you flew to keeps its name.
+ *
+ * The kept boxes are compared by brute force. There are only a few dozen
+ * labels, so a grid or an interval tree would cost more to maintain than the
+ * comparisons it saves.
+ */
+const labelProj = new THREE.Vector3();
+const keptBoxes = [];
+
+function updateLabels(w, h) {
+  keptBoxes.length = 0;
+  const candidates = [];
+
+  for (const lab of LABELS) {
+    const dist = camera.position.distanceTo(lab.anchor);
+    labelProj.copy(lab.anchor).project(camera);
+    const behind = labelProj.z > 1 || labelProj.z < -1;
+    const offscreen = labelProj.x < -1.08 || labelProj.x > 1.08 || labelProj.y < -1.08 || labelProj.y > 1.08;
+    if (behind || offscreen || dist > LABEL_FADE_FAR) {
+      lab.el.style.opacity = '0';
+      lab.line.visible = false;
+      continue;
+    }
+    if (!lab.width) lab.width = lab.el.offsetWidth || 0;
+    candidates.push({
+      lab,
+      dist,
+      x: (labelProj.x * 0.5 + 0.5) * w,
+      y: (-labelProj.y * 0.5 + 0.5) * h,
+    });
+  }
+
+  candidates.sort((a, b) => a.lab.rank - b.lab.rank || a.dist - b.dist);
+
+  for (const c of candidates) {
+    const halfW = (c.lab.width || 90) * 0.5 + LABEL_PAD_X;
+    const x0 = c.x - halfW;
+    const x1 = c.x + halfW;
+    const y0 = c.y - 6 - LABEL_PAD_Y;
+    const y1 = c.y + 6 + LABEL_PAD_Y;
+    let clear = true;
+    for (const b of keptBoxes) {
+      if (x1 > b[0] && x0 < b[1] && y1 > b[2] && y0 < b[3]) {
+        clear = false;
+        break;
+      }
+    }
+    if (!clear) {
+      c.lab.el.style.opacity = '0';
+      c.lab.line.visible = false;
+      continue;
+    }
+    keptBoxes.push([x0, x1, y0, y1]);
+    // Fade rather than pop, so a label that survives the collision test at the
+    // edge of range does not blink on and off as the camera drifts.
+    const fade = 1 - smoothstep(LABEL_FADE_NEAR, LABEL_FADE_FAR, c.dist);
+    c.lab.el.style.opacity = String(0.9 * fade);
+    c.lab.line.visible = fade > 0.15;
+    c.lab.stemMat.opacity = 0.25 * fade;
+  }
 }
 
 /**
@@ -749,16 +871,20 @@ function placeLandmarkLabels(data, yFn) {
     const b = byName.get(want) || loose(want);
     if (!b) continue;
     const [cx, cz] = footprintCentroid(b.f);
-    addLabel(text, new THREE.Vector3(cx, yFn(cx, cz) + Math.max(24, b.h || 24) + 28, cz));
+    // Taller wins a collision: on a skyline view the towers are what a viewer
+    // is trying to identify, and a 14 m museum label sitting in front of a
+    // 250 m tower's label is the wrong one to keep.
+    const rank = 2 + Math.max(0, 1 - (b.h || 0) / 260);
+    addLabel(text, new THREE.Vector3(cx, yFn(cx, cz) + Math.max(24, b.h || 24) + 28, cz), rank);
   }
   for (const [text, x, z, lift] of DISTRICT_LABELS) {
-    addLabel(text, new THREE.Vector3(x, yFn(x, z) + lift, z));
+    addLabel(text, new THREE.Vector3(x, yFn(x, z) + lift, z), 0);
   }
   // Straight off the funicular alignments the meshes are built from, so the
   // label cannot drift away from the incline it names.
   for (const inc of INCLINES) {
     const [x, z] = inc.upper;
-    addLabel(inc.n.toUpperCase(), new THREE.Vector3(x, yFn(x, z) + 34, z));
+    addLabel(inc.n.toUpperCase(), new THREE.Vector3(x, yFn(x, z) + 34, z), 1);
   }
 }
 
@@ -1023,7 +1149,14 @@ async function buildCity(data, landcover) {
   }
   scene.add(buildRoadRibbons(data.streets || [], yFn, waterIndex));
 
-  const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel, dayMode: DAY_MODE });
+  const bridgeGroup = buildBridges(data.bridges || [], {
+    yFn,
+    waterIndex,
+    // Bridges outrank buildings in a collision: they are the landmarks a viewer
+    // navigates by here, and unlike a tower they cannot be identified by shape.
+    addLabel: (text, position) => addLabel(text, position, 1.5),
+    dayMode: DAY_MODE,
+  });
   scene.add(bridgeGroup);
 
   const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn, wooded);
@@ -1130,9 +1263,14 @@ window.addEventListener('hashchange', () => {
   if (name) setView(name);
 });
 
+let viewW = window.innerWidth;
+let viewH = window.innerHeight;
+
 function onResize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
+  viewW = w;
+  viewH = h;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   renderer.setSize(w, h, false);
@@ -1164,6 +1302,7 @@ function tick(now) {
   }
 
   materials.waterUniforms.uTime.value = now * 0.001;
+  aimSun(controls.target);
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
   focusGlow.position.x = controls.target.x;
@@ -1172,6 +1311,8 @@ function tick(now) {
   controls.update();
   if (composer) composer.render();
   else renderer.render(scene, camera);
+  camera.updateMatrixWorld();
+  updateLabels(viewW, viewH);
   labelRenderer.render(scene, camera);
 }
 requestAnimationFrame(tick);
