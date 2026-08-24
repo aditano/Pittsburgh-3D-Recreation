@@ -5,9 +5,9 @@
  * a cornice/parapet at every tier top, a proud ground-floor plinth, pilaster
  * bays, roof decks and a mechanical roofscape.
  *
- * Everything here returns plain indexed `BufferGeometry` so the caller can push
- * results straight into the existing per-material merge buckets in `main.js`.
- * No meshes, no groups, no per-building draw calls.
+ * Everything here returns plain `BufferGeometry` so the caller can push results
+ * straight into the existing per-material merge buckets in `main.js`. No
+ * meshes, no groups, no per-building draw calls.
  *
  * Coordinates: local metres, +X east, +Y up, +Z south. Footprints are arrays of
  * `[x, z]` and are expected (but not required) to be closed.
@@ -15,12 +15,16 @@
  * All pseudo-randomness comes from `hash01()` seeded by the footprint centroid,
  * so the city is identical every run.
  *
- * Triangle budget (measured on the real Pittsburgh dataset, see README of the
- * final report): tier 0 <= 140 tris, tier 1 <= 460 tris, tier 2 <= 1500 tris
- * including its roofscape. Suggested split of the ~7.4k buildings:
- *   tier 2 - largest / tallest few hundred  (full articulation + roofscape)
- *   tier 1 - a couple thousand mid-block buildings (plinth + cornice + massing)
- *   tier 0 - everything else (plain prism, same cost as today)
+ * Triangle budget, shell plus roofscape, measured over all 7,471 footprints in
+ * public/data/pittsburgh.json:
+ *
+ *   tier   count   avg tris   max tris   hard cap
+ *   0        153       14.9         36        140
+ *   1      6,916       64.4        440        460
+ *   2        402      509.0      1,318      1,500
+ *
+ * City total 652k triangles versus 112k for today's plain prisms, generated in
+ * ~0.55 s. Dial the whole thing up or down from `detailTier()` alone.
  */
 
 import * as THREE from 'three';
@@ -493,13 +497,45 @@ class Builder {
     return true;
   }
 
+  /**
+   * Indexed output is ~25% smaller, but ExtrudeGeometry is NOT indexed and
+   * mergeGeometries() refuses to mix the two, so the default expands.
+   * Also rewrites `this.flat` into the emitted vertex order.
+   */
   geometry() {
     if (this.idx.length < 3) return null;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
-    if (this.col) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    g.setIndex(this.idx);
+    if (this.indexed) {
+      g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+      g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
+      if (this.col) g.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+      g.setIndex(this.idx);
+      return g;
+    }
+    const n = this.idx.length;
+    const pos = new Float32Array(n * 3);
+    const nrm = new Float32Array(n * 3);
+    const col = this.col ? new Float32Array(n * 3) : null;
+    const flat = this.flat ? new Uint8Array(n) : null;
+    for (let i = 0; i < n; i++) {
+      const v = this.idx[i];
+      pos[i * 3] = this.pos[v * 3];
+      pos[i * 3 + 1] = this.pos[v * 3 + 1];
+      pos[i * 3 + 2] = this.pos[v * 3 + 2];
+      nrm[i * 3] = this.nrm[v * 3];
+      nrm[i * 3 + 1] = this.nrm[v * 3 + 1];
+      nrm[i * 3 + 2] = this.nrm[v * 3 + 2];
+      if (col) {
+        col[i * 3] = this.col[v * 3];
+        col[i * 3 + 1] = this.col[v * 3 + 1];
+        col[i * 3 + 2] = this.col[v * 3 + 2];
+      }
+      if (flat) flat[i] = this.flat[v];
+    }
+    if (flat) this.flat = flat;
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    if (col) g.setAttribute('color', new THREE.BufferAttribute(col, 3));
     return g;
   }
 }
@@ -644,8 +680,9 @@ function applyArchitectureUVs(geom, builder, floorH, windowW, baseY) {
  *       gets a plinth and a small roofscape (ordinary street fabric)
  *   0 - plain prism, same cost as today's extrusion (sheds, garages, huts)
  *
- * On the shipped Pittsburgh dataset this yields roughly 250 / 6850 / 370
- * for tiers 0 / 1 / 2.
+ * On the shipped Pittsburgh dataset this yields 153 / 6,916 / 402 buildings
+ * for tiers 0 / 1 / 2. Raising the tier-1 floor is the cheapest way to cut
+ * triangles: at `h >= 17 || area >= 900` the city drops to ~510k.
  *
  * @param {Array<[number, number]>} footprint
  * @param {number} height
@@ -702,7 +739,7 @@ function pickArchetype(seed, height, area, style) {
  * @param {number} [seed] deterministic seed in [0,1); defaults to the centroid hash
  * @param {object} [options]
  * @param {string} [options.style] facade family, biases prewar vs modern archetypes
- * @param {number} [options.maxVerts] ring decimation cap (default 32)
+ * @param {number} [options.maxVerts] ring decimation cap (default 28)
  * @returns {Array<{ring: Array<[number,number]>, y0: number, y1: number, archetype: string, index: number, top: boolean}>}
  *   Tiers bottom-to-top. `y0`/`y1` are relative to the building base (0 = base).
  *   Empty array for degenerate footprints.
@@ -727,38 +764,40 @@ export function massingProfile(footprint, height, seed, options = {}) {
   const r3 = h01(s, 3);
   const r4 = h01(s, 4);
 
-  // steps: [fraction of total height at the TOP of the tier, inward offset from the tier below]
+  // steps: [fraction of total height at the TOP of the tier, inward offset from
+  // the tier below]. Offsets are a fraction of the plan's characteristic width;
+  // insetRing() clamps each one against the current ring's inradius, so deep
+  // steps degrade instead of collapsing.
   let steps;
   if (archetype === 'crown') {
     steps = [
       [1 - (0.07 + r2 * 0.06), 0],
-      [1, w * (0.045 + r3 * 0.03)],
+      [1, w * (0.08 + r3 * 0.06)],
     ];
   } else if (archetype === 'podium') {
     const podium = clamp(Math.min(h * 0.3, 14 + r2 * 12), 6, h * 0.45);
     steps = [
       [podium / h, 0],
-      [1, w * (0.05 + r3 * 0.045)],
+      [1, w * (0.09 + r3 * 0.07)],
     ];
   } else if (archetype === 'tower') {
     const podium = clamp(Math.min(h * 0.22, 12 + r2 * 18), 6, h * 0.4);
     steps = [
       [podium / h, 0],
-      [1, w * (0.13 + r3 * 0.1)],
+      [1, w * (0.2 + r3 * 0.12)],
     ];
   } else if (archetype === 'setback') {
     steps = [
       [0.4 + r2 * 0.1, 0],
-      [0.68 + r3 * 0.08, w * (0.05 + r4 * 0.035)],
-      [1, w * (0.05 + r2 * 0.035)],
+      [0.68 + r3 * 0.08, w * (0.1 + r4 * 0.05)],
+      [1, w * (0.09 + r2 * 0.05)],
     ];
   } else {
     steps = [
-      [0.34 + r2 * 0.08, 0],
-      [0.58 + r3 * 0.07, w * (0.045 + r4 * 0.03)],
-      [0.8 + r4 * 0.06, w * (0.045 + r2 * 0.03)],
-      [0.91 + r3 * 0.04, w * (0.04 + r3 * 0.03)],
-      [1, w * (0.035 + r4 * 0.025)],
+      [0.36 + r2 * 0.08, 0],
+      [0.62 + r3 * 0.08, w * (0.1 + r4 * 0.05)],
+      [0.84 + r4 * 0.06, w * (0.09 + r2 * 0.04)],
+      [1, w * (0.08 + r3 * 0.04)],
     ];
   }
 
@@ -838,8 +877,10 @@ function emitTierTop(trim, wall, ring, y0, y1, p, mode) {
     return;
   }
   if (mode === 'light') {
-    band(trim, ring, y1 - ch, outer, y1, null, true);
-    capUp(wall, outer, y1, null, false);
+    // steeply battered coping: 2n triangles, but the wall still visibly steps
+    // out near the top instead of reading as a 45-degree bevel
+    band(trim, ring, y1 - ch, outer, y1 - ch * 0.12, null, true);
+    capUp(wall, outer, y1 - ch * 0.12, null, false);
     return;
   }
   band(trim, ring, y1 - ch, outer, y1 - ch * 0.45, null, true);
@@ -876,6 +917,9 @@ function emitPilasters(trim, ring, y0, y1, p, maxCount) {
   const n = ring.length;
   const depth = p.pilasterDepth;
   const halfW = p.pilasterWidth * 0.5;
+  // stretch the bay rhythm on very long perimeters so the budget spreads over
+  // the whole building instead of running out on the first few edges
+  const spacing = Math.max(p.pilasterSpacing, ringPerimeter(ring) / Math.max(1, maxCount));
   let placed = 0;
   for (let i = 0; i < n && placed < maxCount; i++) {
     const a = ring[i];
@@ -888,7 +932,7 @@ function emitPilasters(trim, ring, y0, y1, p, maxCount) {
     const uz = dz / len;
     const ox = uz;
     const oz = -ux;
-    const bays = Math.max(2, Math.round(len / p.pilasterSpacing));
+    const bays = Math.max(2, Math.round(len / spacing));
     for (let k = 1; k < bays && placed < maxCount; k++) {
       const t = (k / bays) * len;
       if (t < halfW + 0.8 || t > len - halfW - 0.8) continue;
@@ -919,13 +963,17 @@ function emitPilasters(trim, ring, y0, y1, p, maxCount) {
  * @param {number} [opts.floorH=3.5] metres per facade texture repeat (family spec)
  * @param {number} [opts.windowW=3.2] metres per horizontal texture repeat (family spec)
  * @param {number} [opts.skirt=0] extra metres of wall below baseY, hides gaps on slopes
+ * @param {boolean} [opts.indexed=false] emit indexed geometry. Leave false to stay
+ *   mergeable with `THREE.ExtrudeGeometry` (which is non-indexed); set true, on
+ *   every building, once nothing else feeds the same merge bucket - it saves
+ *   about 25% of the vertex buffer.
  * @returns {{wall: THREE.BufferGeometry|null, trim: THREE.BufferGeometry|null,
  *            tier: 0|1|2, triangles: number,
  *            roofRing: Array<[number,number]>|null, roofY: number}}
  *   `wall` carries the tiered shaft plus roof decks, `trim` carries the plinth,
  *   cornices, parapets and pilasters. Both use the SAME facade material as
  *   today; keep them apart only so the caller can tint the trim differently.
- *   Both are indexed with position/normal/uv, ready for `tintGeometry()` and
+ *   Both carry position/normal/uv, ready for `tintGeometry()` and
  *   `mergeGeometries()` alongside the existing ExtrudeGeometry output.
  */
 export function buildArticulatedBuilding(opts) {
@@ -939,6 +987,7 @@ export function buildArticulatedBuilding(opts) {
     floorH = 3.5,
     windowW = 3.2,
     skirt = 0,
+    indexed = false,
   } = opts || {};
 
   const empty = { wall: null, trim: null, tier: 0, triangles: 0, roofRing: null, roofY: baseY };
@@ -950,8 +999,8 @@ export function buildArticulatedBuilding(opts) {
   const det = tier === 0 || tier === 1 || tier === 2 ? tier : detailTier(footprint, h);
   const y0 = baseY - Math.max(0, skirt);
 
-  const wall = new Builder({ uvs: true });
-  const trim = new Builder({ uvs: true });
+  const wall = new Builder({ flatFlags: true, indexed });
+  const trim = new Builder({ flatFlags: true, indexed });
 
   if (det === 0) {
     const ring = simplifyRing(raw, 0.05, MAX_RING_VERTS[0]);
@@ -1093,7 +1142,8 @@ function makePlacer(ring, seed) {
  *   `buildArticulatedBuilding()`; pass it to avoid recomputing the massing
  * @param {number} [opts.roofY] world Y of the roof deck; defaults to baseY + height
  * @param {number} [opts.maxTriangles] hard cap (tier 1: 90, tier 2: 460)
- * @returns {THREE.BufferGeometry|null} indexed geometry with position/normal/color,
+ * @param {boolean} [opts.indexed=false] see `buildArticulatedBuilding`
+ * @returns {THREE.BufferGeometry|null} geometry with position/normal/color,
  *   intended for a single shared rooftop material (see `createRoofscapeMaterial`).
  */
 export function buildRoofscape(opts) {
@@ -1107,6 +1157,7 @@ export function buildRoofscape(opts) {
     roofRing = null,
     roofY = null,
     maxTriangles = null,
+    indexed = false,
   } = opts || {};
 
   const h = clamp(finite(height, 10), 2, 800);
@@ -1138,7 +1189,7 @@ export function buildRoofscape(opts) {
   const sa = Math.sin(ang);
   const rich = det === 2;
   const budget = maxTriangles ?? (rich ? 460 : 90);
-  const b = new Builder({ colors: true });
+  const b = new Builder({ colors: true, indexed });
   const place = makePlacer(inner, s);
 
   const boxAt = (x, z, sx, sz, sy, color) => {
