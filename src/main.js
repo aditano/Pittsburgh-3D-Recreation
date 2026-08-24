@@ -585,14 +585,20 @@ async function buildCity(data) {
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
-      const height = Math.max(3, b.h || 10);
       const [cx, cz] = footprintCentroid(b.f);
-      const baseY = footprintLandBaseY(b.f, yFn, waterIndex);
+
+      // A handful of footprints stand out over the river: the Gateway Clipper
+      // landing, boathouses and marina sheds, all tagged `building=yes` with no
+      // height and so handed a storeys-tall default. They are floating landings,
+      // so cap them and float them instead of standing them on the riverbed.
+      const afloat = footprintWaterOverlap(b.f, waterIndex) > 0.6;
+      const height = afloat ? Math.min(Math.max(3, b.h || 10), 7) : Math.max(3, b.h || 10);
+      const baseY = afloat ? 0.4 : footprintLandBaseY(b.f, yFn, waterIndex);
 
       // On a slope the base is taken from the highest footprint corner, so the
       // downhill wall needs a skirt to stay buried in the hillside.
       let low = baseY;
-      for (const [vx, vz] of b.f) low = Math.min(low, yFn(vx, vz));
+      if (!afloat) for (const [vx, vz] of b.f) low = Math.min(low, yFn(vx, vz));
       const skirt = Math.min(28, Math.max(0, baseY - low) + 1.2);
 
       const seed = footprintSeed(b.f);
