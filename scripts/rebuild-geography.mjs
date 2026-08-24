@@ -192,8 +192,43 @@ out geom;`;
     console.log(`  ${river.key}: ${kept} surface(s), ${(area / 1e6).toFixed(2)} km2 in frame`);
   }
 
-  surfaces.sort((a, b) => Math.abs(ringArea(b.f)) - Math.abs(ringArea(a.f)));
-  return surfaces;
+  // The three river multipolygons overlap around the confluence, and stacked
+  // semi-transparent surfaces double-darken there. Union them so the rendered
+  // water is a single non-overlapping sheet, then re-label each piece with the
+  // river that contributed most of it.
+  const named = [];
+  let union = [];
+  for (const s of surfaces) {
+    const poly = [s.f, ...(s.holes || [])];
+    union = union.length ? polygonClipping.union(union, [poly]) : [poly];
+  }
+  for (const poly of union) {
+    const outer = simplify(poly[0].map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]), 4);
+    if (!outer || Math.abs(ringArea(outer)) < 8000) continue;
+    const holes = [];
+    for (let i = 1; i < poly.length; i++) {
+      const h = simplify(poly[i].map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]), 4);
+      if (h && Math.abs(ringArea(h)) > 2500) holes.push(h);
+    }
+    const [cx, cz] = ringCentroid(outer);
+    let label = 'River';
+    let bestD = Infinity;
+    for (const s of surfaces) {
+      const [sx, sz] = ringCentroid(s.f);
+      const d = Math.hypot(sx - cx, sz - cz);
+      if (d < bestD) {
+        bestD = d;
+        label = s.n;
+      }
+    }
+    named.push({ n: label, f: outer, holes });
+  }
+
+  named.sort((a, b) => Math.abs(ringArea(b.f)) - Math.abs(ringArea(a.f)));
+  console.log(
+    `  unioned to ${named.length} non-overlapping surface(s), ${named.reduce((a, s) => a + s.holes.length, 0)} islands`,
+  );
+  return named;
 }
 
 function pointInRing(x, z, ring) {
@@ -338,6 +373,85 @@ out geom;`;
   return found;
 }
 
+function principalYaw(ring) {
+  const [cx, cz] = ringCentroid(ring);
+  let xx = 0;
+  let zz = 0;
+  let xz = 0;
+  const n = ring.length - 1;
+  for (let i = 0; i < n; i++) {
+    const dx = ring[i][0] - cx;
+    const dz = ring[i][1] - cz;
+    xx += dx * dx;
+    zz += dz * dz;
+    xz += dx * dz;
+  }
+  return 0.5 * Math.atan2(2 * xz, xx - zz);
+}
+
+/**
+ * Solve where each venue opens up by asking, in both cases, which way there is
+ * least stadium.
+ *
+ *   baseball - the bowl is stacked behind home plate, so the footprint centroid
+ *              sits back from the field centroid and the outfield lies along
+ *              that offset
+ *   football - the horseshoe opens at whichever end of the field's long axis has
+ *              the least structure beyond it
+ */
+async function buildStadiumFields(landmarks) {
+  const query = `[out:json][timeout:120];
+way["leisure"="pitch"]["sport"~"^(baseball|american_football)$"](${NEAR_BBOX});
+out geom;`;
+  const raw = await overpass('pitches', query);
+
+  const pitches = [];
+  for (const el of raw.elements) {
+    const ring = ringFromGeometry(el.geometry);
+    if (!ring || Math.abs(ringArea(ring)) < 4000) continue;
+    pitches.push({ sport: el.tags.sport, ring });
+  }
+
+  const out = new Map();
+  for (const [mesh, entry] of landmarks) {
+    if (mesh !== 'pnc-park' && mesh !== 'acrisure-stadium') continue;
+    const hit = pitches.find((p) => {
+      const [px, pz] = ringCentroid(p.ring);
+      return pointInRing(px, pz, entry.f);
+    });
+    if (!hit) {
+      console.log(`  ! ${entry.spec.n}: no playing surface found`);
+      continue;
+    }
+    const c = ringCentroid(hit.ring);
+    const shell = ringCentroid(entry.f);
+    const offset = Math.hypot(c[0] - shell[0], c[1] - shell[1]);
+
+    let axis;
+    if (hit.sport === 'baseball' && offset > 8) {
+      axis = [(c[0] - shell[0]) / offset, (c[1] - shell[1]) / offset];
+    } else {
+      const yaw = principalYaw(hit.ring);
+      axis = [Math.cos(yaw), Math.sin(yaw)];
+    }
+
+    const reach = (sign) => {
+      let far = -Infinity;
+      for (const [x, z] of entry.f) {
+        far = Math.max(far, ((x - c[0]) * axis[0] + (z - c[1]) * axis[1]) * sign);
+      }
+      return far;
+    };
+    const sign = reach(1) < reach(-1) ? 1 : -1;
+    const open = Math.atan2(axis[1] * sign, axis[0] * sign);
+    out.set(mesh, { c: c.map((v) => +v.toFixed(1)), open: +open.toFixed(4), sport: hit.sport });
+    console.log(
+      `  ${entry.spec.n.padEnd(20)} ${hit.sport.padEnd(18)} field @ ${c[0].toFixed(0)},${c[1].toFixed(0)} opens ${((open * 180) / Math.PI).toFixed(0)}deg`,
+    );
+  }
+  return out;
+}
+
 function parseHeight(tags) {
   const raw = tags.height ?? tags['building:height'];
   if (raw != null) {
@@ -468,6 +582,9 @@ async function main() {
   console.log('landmarks');
   const landmarks = await buildLandmarks();
 
+  console.log('playing surfaces');
+  const fields = await buildStadiumFields(landmarks);
+
   console.log('point state park');
   const pointRing = await buildPointPark();
   if (pointRing) console.log(`  ${pointRing.length} vertices, ${(Math.abs(ringArea(pointRing)) / 1e4).toFixed(1)} ha`);
@@ -496,6 +613,8 @@ async function main() {
     record.style = spec.style;
     record.landmark = true;
     record.landmarkMesh = spec.mesh;
+    const field = fields.get(spec.mesh);
+    if (field) record.field = field;
     if (!existing) data.buildings.push(record);
     const [cx, cz] = ringCentroid(f);
     console.log(`  ${spec.n.padEnd(38)} ${f.length - 1} verts @ ${cx.toFixed(0)},${cz.toFixed(0)}`);
