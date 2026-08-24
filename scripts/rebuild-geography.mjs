@@ -89,6 +89,27 @@ const LANDMARK_BUILDINGS = [
     h: 48,
     style: 'convention',
   },
+  // No bespoke mesh for these two, but OSM carries no height for either and the
+  // shipped estimates were badly wrong: the museum stood 54.2 m, an 18-storey
+  // slab across the middle of the Point. The museum occupies the recreated
+  // two-storey Monongahela Bastion of Fort Pitt; the Block House is a small
+  // two-floor brick redoubt of 1764, the oldest building in western Pennsylvania.
+  {
+    osm: 'Fort Pitt Museum',
+    match: /^fort pitt museum$/i,
+    n: 'Fort Pitt Museum',
+    mesh: null,
+    h: 12,
+    style: 'brick',
+  },
+  {
+    osm: 'Fort Pitt Block ?[Hh]ouse',
+    match: /^fort pitt block ?house$/i,
+    n: 'Fort Pitt Block House',
+    mesh: null,
+    h: 8,
+    style: 'brick',
+  },
 ];
 
 /** Hand-placed stand-ins that real OSM geometry now supersedes. */
@@ -362,13 +383,13 @@ out geom;`;
 
     const simplified = simplify(ring, 1.5);
     const area = Math.abs(ringArea(simplified));
-    const prev = found.get(spec.mesh);
+    const prev = found.get(spec.n);
     if (prev && prev.area >= area) continue;
-    found.set(spec.mesh, { spec, f: simplified, area });
+    found.set(spec.n, { spec, f: simplified, area });
   }
 
   for (const spec of LANDMARK_BUILDINGS) {
-    if (!found.has(spec.mesh)) console.log(`  ! ${spec.n}: no OSM footprint`);
+    if (!found.has(spec.n)) console.log(`  ! ${spec.n}: no OSM footprint`);
   }
   return found;
 }
@@ -413,7 +434,8 @@ out geom;`;
   }
 
   const out = new Map();
-  for (const [mesh, entry] of landmarks) {
+  for (const entry of landmarks.values()) {
+    const mesh = entry.spec.mesh;
     if (mesh !== 'pnc-park' && mesh !== 'acrisure-stadium') continue;
     const hit = pitches.find((p) => {
       const [px, pz] = ringCentroid(p.ring);
@@ -591,7 +613,7 @@ async function main() {
 
   // Drop hand-placed stand-ins and any stale landmark wiring.
   const before = data.buildings.length;
-  const meshNames = new Set([...landmarks.values()].map((v) => v.spec.mesh));
+  const meshNames = new Set([...landmarks.values()].map((v) => v.spec.mesh).filter(Boolean));
   data.buildings = data.buildings.filter((b) => !SYNTHETIC_NAMES.has(b.n));
   for (const b of data.buildings) {
     if (b.landmarkMesh && meshNames.has(b.landmarkMesh)) {
@@ -611,10 +633,15 @@ async function main() {
     record.h = spec.h;
     record.n = spec.n;
     record.style = spec.style;
-    record.landmark = true;
-    record.landmarkMesh = spec.mesh;
-    const field = fields.get(spec.mesh);
-    if (field) record.field = field;
+    if (spec.mesh) {
+      record.landmark = true;
+      record.landmarkMesh = spec.mesh;
+      const field = fields.get(spec.mesh);
+      if (field) record.field = field;
+    } else {
+      delete record.landmark;
+      delete record.landmarkMesh;
+    }
     if (!existing) data.buildings.push(record);
     const [cx, cz] = ringCentroid(f);
     console.log(`  ${spec.n.padEnd(38)} ${f.length - 1} verts @ ${cx.toFixed(0)},${cz.toFixed(0)}`);
