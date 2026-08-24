@@ -45,14 +45,79 @@ function centroidOf(pts) {
   return [cx / pts.length, cz / pts.length];
 }
 
-/** Scale a ring toward its centroid; enough for the park's convex outline. */
+function ringSignedArea(pts) {
+  let a = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const [x0, z0] = pts[i];
+    const [x1, z1] = pts[(i + 1) % pts.length];
+    a += x0 * z1 - x1 * z0;
+  }
+  return a / 2;
+}
+
+/**
+ * True inward polygon offset with mitred joins, preserving vertex count so the
+ * result still pairs 1:1 with the source ring for `bandGeometry`.
+ *
+ * The park is a 540 x 400 m wedge whose vertices sit anywhere from 88 m to 365 m
+ * off the centroid, so scaling toward the centroid varies the offset over 4x and
+ * leaves the seawall and walk visibly tapering. Miters are clamped because the
+ * confluence tip is acute enough to throw a spike clear across the lawn.
+ */
 function insetRing(pts, metres) {
-  const [cx, cz] = centroidOf(pts);
-  let mean = 0;
-  for (const [x, z] of pts) mean += Math.hypot(x - cx, z - cz);
-  mean /= pts.length;
-  const k = Math.max(0.05, 1 - metres / Math.max(mean, 1));
-  return pts.map(([x, z]) => [cx + (x - cx) * k, cz + (z - cz) * k]);
+  const n = pts.length;
+  if (n < 3 || !metres) return pts.map((p) => p.slice());
+  const sign = ringSignedArea(pts) > 0 ? 1 : -1;
+
+  const edges = [];
+  for (let i = 0; i < n; i++) {
+    const [ax, az] = pts[i];
+    const [bx, bz] = pts[(i + 1) % n];
+    let dx = bx - ax;
+    let dz = bz - az;
+    const len = Math.hypot(dx, dz);
+    if (len < 1e-6) {
+      edges.push(null);
+      continue;
+    }
+    dx /= len;
+    dz /= len;
+    edges.push({ px: ax - dz * sign * metres, pz: az + dx * sign * metres, dx, dz });
+  }
+
+  const prevEdge = (i) => {
+    for (let k = 1; k <= n; k++) {
+      const e = edges[(i - k + n * 2) % n];
+      if (e) return e;
+    }
+    return null;
+  };
+
+  const maxMiter = Math.abs(metres) * 3;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const cur = edges[i] || prevEdge(i);
+    const prev = prevEdge(i);
+    if (!cur || !prev) {
+      out.push(pts[i].slice());
+      continue;
+    }
+    const cross = prev.dx * cur.dz - prev.dz * cur.dx;
+    let p;
+    if (Math.abs(cross) < 1e-6) {
+      p = [cur.px, cur.pz];
+    } else {
+      const s = ((cur.px - prev.px) * cur.dz - (cur.pz - prev.pz) * cur.dx) / cross;
+      p = [prev.px + prev.dx * s, prev.pz + prev.dz * s];
+    }
+    const travel = Math.hypot(p[0] - pts[i][0], p[1] - pts[i][1]);
+    if (travel > maxMiter) {
+      const k = maxMiter / travel;
+      p = [pts[i][0] + (p[0] - pts[i][0]) * k, pts[i][1] + (p[1] - pts[i][1]) * k];
+    }
+    out.push(p);
+  }
+  return out;
 }
 
 function shapeFrom(pts, holes = []) {
@@ -86,6 +151,48 @@ function pointInRing(x, z, pts) {
     j = i;
   }
   return inside;
+}
+
+/**
+ * Edges of Fort Duquesne's bastioned square, centred on FORT_TRACE and turned so
+ * a bastion points down the confluence. The fort was small: roughly 50 m across
+ * the curtains, with the bastions carrying it out further.
+ */
+function fortOutline() {
+  const a = 25;
+  const g = 9;
+  const q = 9;
+  const ring = [];
+  const corners = [
+    [1, 1],
+    [-1, 1],
+    [-1, -1],
+    [1, -1],
+  ];
+  for (let i = 0; i < 4; i++) {
+    const [sx, sz] = corners[i];
+    const [nx, nz] = corners[(i + 1) % 4];
+    // Curtain runs between this corner's shoulder and the next corner's, then
+    // the shared bastion tip carries the outline around.
+    if (sz === nz) {
+      ring.push([sx * (a - g), sz * a], [nx * (a - g), nz * a]);
+    } else {
+      ring.push([sx * a, sz * (a - g)], [nx * a, nz * (a - g)]);
+    }
+    ring.push([nx * (a + q), nz * (a + q)]);
+  }
+
+  const yaw = -0.42;
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  const world = ring.map(([x, z]) => [
+    FORT_TRACE[0] + x * c - z * s,
+    FORT_TRACE[1] + x * s + z * c,
+  ]);
+  return world.map((p, i) => {
+    const n = world[(i + 1) % world.length];
+    return [p[0], p[1], n[0], n[1]];
+  });
 }
 
 /** Closed band between two rings, used for the seawall and perimeter walk. */
@@ -185,36 +292,57 @@ export function buildPointStatePark(yFn, pointPark) {
   nozzle.position.set(FOUNTAIN[0], lawnY + 2.1, FOUNTAIN[1]);
   g.add(nozzle);
 
-  const sprayMat = mat(0xe4f2fa, {
-    roughness: 0.15,
-    metalness: 0.02,
-    transparent: true,
-    opacity: 0.34,
-    depthWrite: false,
-    side: THREE.DoubleSide,
-  });
-  const plume = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 3.4, 46, 16, 1, true), sprayMat);
-  plume.position.set(FOUNTAIN[0], lawnY + 25, FOUNTAIN[1]);
-  g.add(plume);
-  const crown = new THREE.Mesh(new THREE.ConeGeometry(9, 16, 20, 1, true), sprayMat);
-  crown.position.set(FOUNTAIN[0], lawnY + 50, FOUNTAIN[1]);
+  // The jet throws about 150 ft. Additive blending is what makes it read as lit
+  // spray: with straight alpha these nested surfaces look like glass tubes.
+  const spray = (opacity) =>
+    new THREE.MeshBasicMaterial({
+      color: 0xdcecf6,
+      transparent: true,
+      opacity,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+    });
+
+  const JET_H = 46;
+  const jet = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.6, JET_H, 14, 1, true), spray(0.3));
+  jet.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H * 0.5, FOUNTAIN[1]);
+  g.add(jet);
+
+  // Burst at the apex where the column breaks up, then the falling curtain.
+  const crown = new THREE.Mesh(new THREE.SphereGeometry(6.5, 18, 12), spray(0.16));
+  crown.scale.set(1, 0.62, 1);
+  crown.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H, FOUNTAIN[1]);
   g.add(crown);
-  const mist = new THREE.Mesh(new THREE.ConeGeometry(FOUNTAIN_R - 4, 12, 28, 1, true), sprayMat);
-  mist.position.set(FOUNTAIN[0], lawnY + 6, FOUNTAIN[1]);
+
+  const fall = new THREE.Mesh(
+    new THREE.CylinderGeometry(11.5, 3.2, JET_H * 0.72, 22, 1, true),
+    spray(0.075),
+  );
+  fall.position.set(FOUNTAIN[0], lawnY + 1.6 + JET_H * 0.64, FOUNTAIN[1]);
+  g.add(fall);
+
+  const mist = new THREE.Mesh(
+    new THREE.CylinderGeometry(FOUNTAIN_R - 3, FOUNTAIN_R - 11, 7, 30, 1, true),
+    spray(0.06),
+  );
+  mist.position.set(FOUNTAIN[0], lawnY + 4, FOUNTAIN[1]);
   g.add(mist);
 
-  // Granite trace of the original Fort Duquesne outline.
+  // Granite trace of Fort Duquesne, laid in the paving where the fort stood.
+  // It was a bastioned square: four curtain walls with an arrow-head bastion on
+  // each corner, sited with a bastion facing the confluence.
   const traceGeoms = [];
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2 + 0.4;
-    for (let k = 0; k < 7; k++) {
-      const b = a + (k / 7) * ((Math.PI * 2) / 5);
-      const r = 34;
-      const gx = FORT_TRACE[0] + Math.cos(b) * r;
-      const gz = FORT_TRACE[1] + Math.sin(b) * r * 0.82;
-      const marker = new THREE.BoxGeometry(3.2, 0.5, 1.4);
-      marker.rotateY(-b);
-      marker.translate(gx, lawnY + 0.25, gz);
+  for (const [ax, az, bx, bz] of fortOutline()) {
+    const dx = bx - ax;
+    const dz = bz - az;
+    const len = Math.hypot(dx, dz);
+    const steps = Math.max(1, Math.round(len / 3.4));
+    for (let k = 0; k < steps; k++) {
+      const t = (k + 0.5) / steps;
+      const marker = new THREE.BoxGeometry((len / steps) * 0.78, 0.5, 1.3);
+      marker.rotateY(-Math.atan2(dz, dx));
+      marker.translate(ax + dx * t, lawnY + 0.25, az + dz * t);
       traceGeoms.push(marker);
     }
   }
@@ -226,11 +354,12 @@ export function buildPointStatePark(yFn, pointPark) {
   // Allée of trees along the lawn edges, kept clear of the fountain plaza.
   const dummy = new THREE.Object3D();
   const spots = [];
+  const plantable = insetRing(ring, 20);
   for (let x = -960; x <= -420; x += 26) {
     for (let z = -260; z <= 150; z += 26) {
       const jx = x + (hash01(x, z) - 0.5) * 18;
       const jz = z + (hash01(z, x) - 0.5) * 18;
-      if (!pointInRing(jx, jz, insetRing(ring, 20))) continue;
+      if (!pointInRing(jx, jz, plantable)) continue;
       if (Math.hypot(jx - FOUNTAIN[0], jz - FOUNTAIN[1]) < FOUNTAIN_R + 26) continue;
       if (Math.hypot(jx - FORT_TRACE[0], jz - FORT_TRACE[1]) < 44) continue;
       if (hash01(jz, jx) < 0.45) continue;
