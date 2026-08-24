@@ -71,6 +71,7 @@ export function terrainHeight(x, z, peaks) {
 }
 
 export function surfaceHeight(x, z, peaks, waterIndex) {
+  if (insidePointPark(x, z)) return 0.55;
   let h = terrainHeight(x, z, peaks);
   if (!waterIndex) return h;
   if (waterIndex.inside(x, z)) return -3.5;
@@ -112,20 +113,40 @@ function rasterizePoly(grid, poly, minX, minZ, res, cols, rows) {
   }
 }
 
+/**
+ * Point State Park outline from OSM (west-pointing triangle at the confluence).
+ * Fountain sits near the western tip; Fort Pitt Museum / Block House on the east lawn.
+ */
+export const POINT_PARK_RING = [
+  [-449, 103],
+  [-460, 115],
+  [-535, 102],
+  [-559, 142],
+  [-587, 111],
+  [-582, 94],
+  [-595, 84],
+  [-639, 81],
+  [-675, 121],
+  [-944, -60],
+  [-968, -78],
+  [-956, -80],
+  [-953, -112],
+  [-930, -134],
+  [-496, -257],
+  [-419, -25],
+  [-417, 34],
+  [-449, 103],
+];
+
+export function insidePointPark(x, z) {
+  return x < -560 && pointInPoly(x, z, POINT_PARK_RING);
+}
+
 /** Land cutouts where rivers should not render (parks, points, riverfront). */
 export const LAND_CUTOUTS = [
   {
     n: 'Point State Park',
-    f: [
-      [-1020, 80],
-      [-980, -60],
-      [-900, -100],
-      [-820, -40],
-      [-800, 40],
-      [-860, 100],
-      [-980, 110],
-      [-1020, 80],
-    ],
+    f: POINT_PARK_RING,
   },
   {
     n: 'North Shore riverfront',

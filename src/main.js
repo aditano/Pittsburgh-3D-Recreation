@@ -9,6 +9,7 @@ import {
   footprintWaterOverlap,
   footprintLandBaseY,
   hash01,
+  insidePointPark,
 } from './geo.js';
 import {
   createCityMaterials,
@@ -44,7 +45,7 @@ const renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: true,
   powerPreference: 'high-performance',
-  logarithmicDepthBuffer: true,
+  logarithmicDepthBuffer: false,
 });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -223,7 +224,7 @@ function makeGrid() {
   const helper = new THREE.GridHelper(5000, 100, 0x8aa0b8, 0xa8b8c8);
   helper.position.y = 0.4;
   helper.material.transparent = true;
-  helper.material.opacity = DAY_MODE ? 0.08 : 0.16;
+  helper.material.opacity = DAY_MODE ? 0.03 : 0.1;
   return helper;
 }
 
@@ -459,7 +460,7 @@ async function buildCity(data) {
     if (p.f.length < 4) continue;
     try {
       const g = flatPolygon(p.f, 0.85, yFn);
-      applyXZUvs(g, 0.05);
+      applyXZUvs(g, 0.012);
       parkGeoms.push(g);
     } catch {
       /* skip bad poly */
@@ -476,7 +477,7 @@ async function buildCity(data) {
     if (w.f.length < 4) continue;
     try {
       const g = flatPolygon(w.f, 0.15, null);
-      applyXZUvs(g, 0.012);
+      applyXZUvs(g, 0.004);
       waterGeoms.push(g);
     } catch {
       /* skip */
@@ -512,6 +513,10 @@ async function buildCity(data) {
     if (!b.f || b.f.length < 4) continue;
     if (isLandmarkMeshBuilding(b)) continue;
     if (footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
+    const [cx0, cz0] = footprintCentroid(b.f);
+    if (insidePointPark(cx0, cz0)) continue;
+    const n = (b.n || '').toLowerCase();
+    if (/point state park|fort pitt museum|fort pitt block house/.test(n)) continue;
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];

@@ -190,8 +190,8 @@ function makeGrassMaps() {
     }
   });
   return {
-    map: canvasTexture(color, { repeat: 8 }),
-    roughnessMap: canvasTexture(rough, { color: false, repeat: 8 }),
+    map: canvasTexture(color, { repeat: 2 }),
+    roughnessMap: canvasTexture(rough, { color: false, repeat: 2 }),
   };
 }
 
@@ -214,8 +214,8 @@ function makeGroundMaps() {
     }
   });
   return {
-    map: canvasTexture(color, { repeat: 48 }),
-    roughnessMap: canvasTexture(rough, { color: false, repeat: 48 }),
+    map: canvasTexture(color, { repeat: 10 }),
+    roughnessMap: canvasTexture(rough, { color: false, repeat: 10 }),
   };
 }
 
@@ -257,8 +257,8 @@ function makeWaterMaps() {
     }
   });
   return {
-    map: canvasTexture(color, { repeat: 6 }),
-    roughnessMap: canvasTexture(rough, { color: false, repeat: 10 }),
+    map: canvasTexture(color, { repeat: 2 }),
+    roughnessMap: canvasTexture(rough, { color: false, repeat: 3 }),
   };
 }
 
@@ -590,6 +590,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
     metalness: 0,
     emissive: 0x041208,
     emissiveIntensity: 0.2,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
 
   const waterUniforms = { uTime: { value: 0 } };
@@ -602,6 +605,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
     transparent: true,
     opacity: dayMode ? 0.88 : 0.94,
     envMapIntensity: dayMode ? 1.4 : 1.15,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
   waterMat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = waterUniforms.uTime;
@@ -616,7 +622,7 @@ export function createCityMaterials({ dayMode = true } = {}) {
         '#include <worldpos_vertex>',
         `#include <worldpos_vertex>
          vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-         vFlowUv = vWorldPos.xz * 0.008;`,
+         vFlowUv = vWorldPos.xz * 0.0018;`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
@@ -636,17 +642,18 @@ export function createCityMaterials({ dayMode = true } = {}) {
            mix(-0.85, 0.65, allegheny) + mix(0.55, 0.95, monongahela) + mix(0.95, -0.35, ohio),
            mix(0.45, 0.75, allegheny) + mix(0.35, 0.95, monongahela) + mix(-0.15, 0.55, ohio)
          ) + 1e-5);
-         vec2 scrollUv = vFlowUv + flowDir * uTime * 0.14;
-         float streak = sin(scrollUv.x * 18.0 + scrollUv.y * 6.0) * 0.5 + 0.5;
-         float rippleA = sin(dot(vWorldPos.xz, vec2(0.028, 0.016)) + uTime * 1.35) * 0.5 + 0.5;
-         float rippleB = sin(dot(vWorldPos.xz, vec2(-0.02, 0.034)) - uTime * 0.95 + streak * 2.0) * 0.5 + 0.5;
-         float rippleC = sin(dot(vWorldPos.xz, flowDir * 12.0) - uTime * 1.6) * 0.5 + 0.5;
-         float flow = streak * 0.35 + rippleA * 0.25 + rippleB * 0.2 + rippleC * 0.2;
-         float edge = smoothstep(0.0, 18.0, abs(vWorldPos.y));
-         diffuseColor.rgb += flow * 0.07 * vec3(0.45, 0.72, 0.9);
-         diffuseColor.rgb += vec3(0.05, 0.08, 0.1) * (1.0 - edge);
-         diffuseColor.rgb *= 0.84 + edge * 0.12;
-         diffuseColor.a *= 0.92 + flow * 0.06;`,
+         vec2 scrollUv = vFlowUv + flowDir * uTime * 0.06;
+         float streak = sin(scrollUv.x * 3.2 + scrollUv.y * 1.1) * 0.5 + 0.5;
+         float rippleA = sin(dot(vWorldPos.xz, vec2(0.006, 0.0035)) + uTime * 0.55) * 0.5 + 0.5;
+         float rippleB = sin(dot(vWorldPos.xz, vec2(-0.004, 0.007)) - uTime * 0.4) * 0.5 + 0.5;
+         float flow = streak * 0.45 + rippleA * 0.3 + rippleB * 0.25;
+         float pointT = clamp((-560.0 - vWorldPos.x) / 420.0, 0.0, 1.0);
+         float pointHalf = mix(230.0, 16.0, pointT);
+         if (vWorldPos.x < -540.0 && abs(vWorldPos.z + 72.0) < pointHalf) discard;
+         diffuseColor.rgb += flow * 0.05 * vec3(0.4, 0.7, 0.88);
+         diffuseColor.rgb += vec3(0.04, 0.07, 0.09);
+         diffuseColor.rgb *= 0.9 + flow * 0.06;
+         diffuseColor.a *= 0.94;`,
       );
   };
 
@@ -657,6 +664,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
     roughness: 0.94,
     metalness: 0.04,
     vertexColors: true,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
   });
 
   const roadMat = new THREE.MeshStandardMaterial({
@@ -665,6 +675,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
     roughness: 0.88,
     metalness: 0.08,
     vertexColors: true,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
 
   const foamMat = new THREE.MeshStandardMaterial({
@@ -673,6 +686,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
     metalness: 0.12,
     emissive: 0x102018,
     emissiveIntensity: 0.15,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
 
   const bankMat = new THREE.MeshStandardMaterial({

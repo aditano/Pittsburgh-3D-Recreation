@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { footprintCentroid, footprintWaterOverlap, footprintLandBaseY } from './geo.js';
+import { buildPointStatePark } from './point.js';
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -16,17 +17,46 @@ function mat(color, opts = {}) {
 }
 
 function footprintBounds(f) {
+  const [cx, cz] = footprintCentroid(f);
+  let xx = 0;
+  let zz = 0;
+  let xz = 0;
+  const n = f.length - 1;
+  for (let i = 0; i < n; i++) {
+    const dx = f[i][0] - cx;
+    const dz = f[i][1] - cz;
+    xx += dx * dx;
+    zz += dz * dz;
+    xz += dx * dz;
+  }
+  const yaw = 0.5 * Math.atan2(2 * xz, xx - zz);
+  const c = Math.cos(-yaw);
+  const s = Math.sin(-yaw);
   let minX = Infinity;
   let maxX = -Infinity;
   let minZ = Infinity;
   let maxZ = -Infinity;
-  for (const [x, z] of f) {
-    minX = Math.min(minX, x);
-    maxX = Math.max(maxX, x);
-    minZ = Math.min(minZ, z);
-    maxZ = Math.max(maxZ, z);
+  for (let i = 0; i < n; i++) {
+    const dx = f[i][0] - cx;
+    const dz = f[i][1] - cz;
+    const lx = dx * c - dz * s;
+    const lz = dx * s + dz * c;
+    minX = Math.min(minX, lx);
+    maxX = Math.max(maxX, lx);
+    minZ = Math.min(minZ, lz);
+    maxZ = Math.max(maxZ, lz);
   }
-  return { minX, maxX, minZ, maxZ, w: maxX - minX, d: maxZ - minZ };
+  return {
+    minX,
+    maxX,
+    minZ,
+    maxZ,
+    w: Math.max(8, maxX - minX),
+    d: Math.max(8, maxZ - minZ),
+    yaw,
+    cx,
+    cz,
+  };
 }
 
 function buildPPGTower(h, footprint) {
@@ -461,11 +491,31 @@ const SINGLETON_MESHES = new Set([
   'acrisure-stadium',
 ]);
 
+const CANONICAL_SITES = {
+  'us-steel': [635, -22],
+  'fifth-avenue': [-85, -67],
+  'bny-mellon': [458, 167],
+  'pnc-tower': [140, 86],
+  'oxford-centre': [297, 356],
+  'gulf-tower': [575, -178],
+  'koppers-tower': [547, -123],
+  'grant-building': [378, 373],
+  'pnc-park': [-396, -593],
+  'acrisure-stadium': [-1169, -635],
+  cathedral: [4133, -366],
+};
+
 function landmarkScore(b) {
   const bb = footprintBounds(b.f);
   let score = b.h || 0;
-  if (b.n === b.n?.toUpperCase()) score += 500;
   score += bb.w * bb.d * 0.002;
+  const site = CANONICAL_SITES[b.landmarkMesh];
+  if (site) {
+    const d = Math.hypot(bb.cx - site[0], bb.cz - site[1]);
+    score += Math.max(0, 800 - d);
+  } else if (b.n === b.n?.toUpperCase()) {
+    score += 80;
+  }
   return score;
 }
 
@@ -498,16 +548,17 @@ export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
       : yFn(cx, cz);
     try {
       const mesh = builder(b);
-      mesh.position.set(cx, baseY, cz);
+      const frame = footprintBounds(b.f);
+      mesh.position.set(frame.cx, baseY, frame.cz);
+      mesh.rotation.y = -frame.yaw;
       group.add(mesh);
     } catch (err) {
       console.warn('Landmark mesh failed:', b.n, err);
     }
   }
 
-  const fountain = buildPointFountain();
-  fountain.position.set(-864.17, yFn(-864.17, -77.92), -77.92);
-  group.add(fountain);
+  const park = buildPointStatePark(yFn);
+  group.add(park);
 
   const incline = buildIncline();
   incline.position.set(-1364.04, yFn(-1364.04, 200.38), 200.38);
