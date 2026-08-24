@@ -4,6 +4,7 @@ import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   surfaceHeight,
+  makeTerrain,
   makeWaterIndex,
   footprintCentroid,
   footprintWaterOverlap,
@@ -17,6 +18,14 @@ import {
   tintGeometry,
   applyXZUvs,
 } from './textures.js';
+import {
+  buildArticulatedBuilding,
+  buildRoofscape,
+  createRoofscapeMaterial,
+  detailTier,
+  footprintSeed,
+  trimTint,
+} from './architecture.js';
 import { buildBridges } from './bridges.js';
 import { buildLandmarkMeshes, isLandmarkMeshBuilding } from './landmarks.js';
 import { buildStreetLights, buildRooftopDetails, buildStreetLightGlows } from './details.js';
@@ -180,33 +189,36 @@ function flatPolygon(footprint, y, yFn, holes = null) {
   return geom;
 }
 
-function groundColor(x, y, z, waterIndex) {
+/**
+ * Ground tint from the real landform: flat ground reads as paved city fabric,
+ * and the steep hillsides that ring the valleys read as the woods they are.
+ */
+function groundColor(x, y, z, slope, waterIndex) {
   if (waterIndex.inside(x, z)) return [0.035, 0.055, 0.07];
   const bank = waterIndex.bankStrength(x, z);
-  if (bank > 0.15) {
-    return [0.14 + bank * 0.04, 0.11, 0.07];
-  }
+  if (bank > 0.15) return [0.14 + bank * 0.04, 0.11, 0.07];
 
-  const dist = Math.hypot(x, z);
-  const southHills = z > 680 && y > 10;
-  const northSide = z < -720 && x < 900;
-  const oakland = x > 2200 && x < 5400 && z > -1400 && z < 900;
-  const downtown = dist < 1150 && y < 10 && z > -880 && z < 560 && x > -1300 && x < 1500;
-
-  if (southHills) {
-    const t = Math.min(1, y / 90);
-    return [0.1 - t * 0.03, 0.13 - t * 0.02, 0.06];
-  }
-  if (oakland) return [0.11, 0.14, 0.09];
-  if (northSide) return [0.1, 0.11, 0.09];
-  if (downtown) return [0.1, 0.105, 0.125];
-  return [0.08, 0.09, 0.07];
+  const wooded = Math.min(1, Math.max(0, (slope - 0.11) / 0.22));
+  const paved = [0.098, 0.103, 0.118];
+  const forest = [0.055, 0.088, 0.048];
+  const grass = [0.085, 0.115, 0.062];
+  const dry = Math.min(1, Math.max(0, (y - 60) / 110));
+  const base = [
+    grass[0] * (1 - dry) + forest[0] * dry,
+    grass[1] * (1 - dry) + forest[1] * dry,
+    grass[2] * (1 - dry) + forest[2] * dry,
+  ];
+  return [
+    paved[0] * (1 - wooded) + base[0] * wooded,
+    paved[1] * (1 - wooded) + base[1] * wooded,
+    paved[2] * (1 - wooded) + base[2] * wooded,
+  ];
 }
 
 /** Covers the full data extent (Sewickley to Squirrel Hill) at ~50 m sampling. */
-const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 300, segZ: 224 };
+const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 375, segZ: 280 };
 
-function makeGround(peaks, waterIndex) {
+function makeGround(terrainFn, waterIndex) {
   const geom = new THREE.PlaneGeometry(GROUND.w, GROUND.d, GROUND.segX, GROUND.segZ);
   geom.rotateX(-Math.PI / 2);
   geom.translate(GROUND.cx, 0, GROUND.cz);
@@ -215,9 +227,14 @@ function makeGround(peaks, waterIndex) {
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i);
     const z = pos.getZ(i);
-    const y = surfaceHeight(x, z, peaks, waterIndex);
+    const y = surfaceHeight(x, z, terrainFn, waterIndex);
     pos.setY(i, y);
-    const c = groundColor(x, y, z, waterIndex);
+    const slope =
+      Math.hypot(
+        terrainFn(x + 40, z) - terrainFn(x - 40, z),
+        terrainFn(x, z + 40) - terrainFn(x, z - 40),
+      ) / 80;
+    const c = groundColor(x, y, z, slope, waterIndex);
     colors[i * 3] = c[0];
     colors[i * 3 + 1] = c[1];
     colors[i * 3 + 2] = c[2];
@@ -384,46 +401,87 @@ function buildRoadRibbons(streets, yFn, waterIndex) {
   return group;
 }
 
-function plantTrees(peaks, waterIndex, yFn) {
-  const dummy = new THREE.Object3D();
-  const positions = [];
-  const tryPlant = (x, z, minH) => {
-    if (waterIndex.inside(x, z) || waterIndex.nearBank(x, z)) return;
-    const y = yFn(x, z);
-    if (y < minH) return;
-    positions.push(x, y, z, 0.65 + hash01(x, z) * 0.7);
+/** Rasterized mask of the OSM park/greenspace polygons, for tree placement. */
+function makeParkMask(parks) {
+  const minX = -5600;
+  const minZ = -5000;
+  const res = 20;
+  const cols = 700;
+  const rows = 460;
+  const mask = new Uint8Array(cols * rows);
+  for (const p of parks) {
+    if (!p.f || p.f.length < 4) continue;
+    for (let row = 0; row < rows; row++) {
+      const zy = minZ + (row + 0.5) * res;
+      const xs = [];
+      const n = p.f.length - 1;
+      for (let i = 0; i < n; i++) {
+        const a = p.f[i];
+        const b = p.f[i + 1];
+        if (a[1] > zy !== b[1] > zy) {
+          xs.push(a[0] + ((zy - a[1]) * (b[0] - a[0])) / (b[1] - a[1] || 1e-9));
+        }
+      }
+      if (xs.length < 2) continue;
+      xs.sort((u, v) => u - v);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const c0 = Math.max(0, Math.floor((xs[k] - minX) / res));
+        const c1 = Math.min(cols - 1, Math.ceil((xs[k + 1] - minX) / res));
+        for (let c = c0; c <= c1; c++) mask[row * cols + c] = 1;
+      }
+    }
+  }
+  return (x, z) => {
+    const c = Math.floor((x - minX) / res);
+    const r = Math.floor((z - minZ) / res);
+    return c >= 0 && r >= 0 && c < cols && r < rows && mask[r * cols + c] === 1;
   };
+}
 
-  for (let x = -2000; x <= 900; x += 30) {
-    for (let z = 520; z <= 2200; z += 30) {
-      const jx = x + (hash01(x, z) - 0.5) * 22;
-      const jz = z + (hash01(z, x) - 0.5) * 22;
-      tryPlant(jx, jz, 16);
-    }
-  }
-  for (let x = 2400; x <= 5200; x += 42) {
-    for (let z = -1600; z <= 400; z += 42) {
-      const jx = x + (hash01(x, z) - 0.5) * 28;
-      const jz = z + (hash01(z, x) - 0.5) * 28;
-      tryPlant(jx, jz, 18);
-    }
-  }
-  for (let x = -800; x <= 1600; x += 40) {
-    for (let z = -2400; z <= -1400; z += 40) {
-      const jx = x + (hash01(x, z) - 0.5) * 24;
-      const jz = z + (hash01(z, x) - 0.5) * 24;
-      tryPlant(jx, jz, 14);
+/**
+ * Trees go where Pittsburgh actually has them: inside mapped parks and on the
+ * steep wooded hillsides that wall in the river valleys.
+ */
+function plantTrees(parks, terrainFn, waterIndex, yFn) {
+  const dummy = new THREE.Object3D();
+  const inPark = makeParkMask(parks);
+  const positions = [];
+
+  for (let x = -5200; x <= 7600; x += 26) {
+    for (let z = -4600; z <= 3600; z += 26) {
+      const jx = x + (hash01(x, z) - 0.5) * 20;
+      const jz = z + (hash01(z, x) - 0.5) * 20;
+      if (waterIndex.inside(jx, jz) || waterIndex.nearBank(jx, jz)) continue;
+
+      const slope =
+        Math.hypot(
+          terrainFn(jx + 40, jz) - terrainFn(jx - 40, jz),
+          terrainFn(jx, jz + 40) - terrainFn(jx, jz - 40),
+        ) / 80;
+
+      const park = inPark(jx, jz);
+      const steep = slope > 0.16;
+      if (!park && !steep) continue;
+
+      const density = park ? 0.42 : Math.min(0.72, (slope - 0.16) * 3.4);
+      if (hash01(jz * 1.7, jx * 1.3) > density) continue;
+
+      positions.push(jx, yFn(jx, jz), jz, 0.7 + hash01(jx, jz) * 0.75);
     }
   }
 
   if (!positions.length) return null;
   const count = positions.length / 4;
-  const geo = new THREE.ConeGeometry(4.2, 13, 5);
-  const mesh = new THREE.InstancedMesh(geo, materials.treeMat, count);
+  const mesh = new THREE.InstancedMesh(
+    new THREE.ConeGeometry(4.2, 13, 5),
+    materials.treeMat,
+    count,
+  );
   mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
   for (let i = 0; i < count; i++) {
-    dummy.position.set(positions[i * 4], positions[i * 4 + 1] + 6.2, positions[i * 4 + 2]);
-    dummy.scale.setScalar(positions[i * 4 + 3]);
+    const s = positions[i * 4 + 3];
+    dummy.position.set(positions[i * 4], positions[i * 4 + 1] + 6.2 * s, positions[i * 4 + 2]);
+    dummy.scale.setScalar(s);
     dummy.rotation.y = hash01(positions[i * 4], positions[i * 4 + 2]) * Math.PI * 2;
     dummy.updateMatrix();
     mesh.setMatrixAt(i, dummy.matrix);
@@ -449,11 +507,11 @@ function buildingTint(b, cx, cz) {
 }
 
 async function buildCity(data) {
-  const peaks = data.terrainPeaks || [];
+  const terrainFn = makeTerrain(data.terrain);
   const waterIndex = makeWaterIndex(data.water || [], { erosion: 12 });
-  const yFn = (x, z) => surfaceHeight(x, z, peaks, waterIndex);
+  const yFn = (x, z) => surfaceHeight(x, z, terrainFn, waterIndex);
 
-  scene.add(makeGround(peaks, waterIndex));
+  scene.add(makeGround(terrainFn, waterIndex));
 
   const parkGeoms = [];
   for (const p of data.parks) {
@@ -508,6 +566,8 @@ async function buildCity(data) {
     steelTower: [],
   };
   let buildingCount = 0;
+  const roofGeoms = [];
+  const tiers = [0, 0, 0];
 
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
@@ -516,11 +576,54 @@ async function buildCity(data) {
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
+      const height = Math.max(3, b.h || 10);
+      const [cx, cz] = footprintCentroid(b.f);
       const baseY = footprintLandBaseY(b.f, yFn, waterIndex);
-      const { geom, base, cx, cz } = extrudeBuilding(b.f, Math.max(3, b.h || 10), baseY);
-      applyFacadeUVs(geom, spec.floorH, spec.windowW, base);
-      tintGeometry(geom, buildingTint(b, cx, cz));
-      buckets[family].push(geom);
+
+      // On a slope the base is taken from the highest footprint corner, so the
+      // downhill wall needs a skirt to stay buried in the hillside.
+      let low = baseY;
+      for (const [vx, vz] of b.f) low = Math.min(low, yFn(vx, vz));
+      const skirt = Math.min(28, Math.max(0, baseY - low) + 1.2);
+
+      const seed = footprintSeed(b.f);
+      const tier = detailTier(b.f, height);
+      const tint = buildingTint(b, cx, cz);
+
+      const { wall, trim, roofRing, roofY } = buildArticulatedBuilding({
+        footprint: b.f,
+        height,
+        baseY,
+        style: family,
+        seed,
+        floorH: spec.floorH,
+        windowW: spec.windowW,
+        skirt,
+      });
+      if (!wall) continue;
+
+      tintGeometry(wall, tint);
+      buckets[family].push(wall);
+      if (trim) {
+        tintGeometry(trim, trimTint(tint));
+        buckets[family].push(trim);
+      }
+
+      if (tier > 0) {
+        const roof = buildRoofscape({
+          footprint: b.f,
+          height,
+          baseY,
+          seed,
+          tier,
+          style: family,
+          roofRing,
+          roofY,
+        });
+        if (roof) roofGeoms.push(roof);
+      }
+
+      tiers[tier] += 1;
       buildingCount += 1;
     } catch {
       /* skip degenerate */
@@ -575,7 +678,7 @@ async function buildCity(data) {
   const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel, dayMode: DAY_MODE });
   scene.add(bridgeGroup);
 
-  const trees = plantTrees(peaks, waterIndex, yFn);
+  const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn);
   if (trees) scene.add(trees);
 
   for (const lm of data.landmarks || []) {
@@ -588,34 +691,44 @@ async function buildCity(data) {
   return buildingCount;
 }
 
+/**
+ * Framing is anchored on the real projected positions: the Point fountain at
+ * (-765, -80), the Three Sisters at x = -112 / 46 / 190, the Cathedral of
+ * Learning at (4133, -369), and the Mount Washington bluff edge, which the
+ * elevation grid puts at roughly (-1000, 550) and 126 m above pool.
+ */
 const views = {
   aerial: {
-    position: new THREE.Vector3(-280, 2600, 280),
-    target: new THREE.Vector3(-280, 0, -60),
+    position: new THREE.Vector3(-300, 2500, 900),
+    target: new THREE.Vector3(-300, 0, -180),
   },
   downtown: {
-    position: new THREE.Vector3(520, 360, 520),
-    target: new THREE.Vector3(120, 45, 20),
+    position: new THREE.Vector3(880, 430, 700),
+    target: new THREE.Vector3(180, 70, 40),
   },
   point: {
-    position: new THREE.Vector3(-520, 210, 200),
-    target: new THREE.Vector3(-864, 12, -78),
+    position: new THREE.Vector3(-280, 240, 240),
+    target: new THREE.Vector3(-790, 20, -80),
   },
   bridges: {
-    position: new THREE.Vector3(320, 250, -100),
-    target: new THREE.Vector3(-60, 28, -560),
+    position: new THREE.Vector3(300, 260, -140),
+    target: new THREE.Vector3(20, 30, -540),
+  },
+  stadiums: {
+    position: new THREE.Vector3(-560, 300, -1180),
+    target: new THREE.Vector3(-900, 30, -650),
   },
   oakland: {
-    position: new THREE.Vector3(4550, 420, 150),
-    target: new THREE.Vector3(3850, 70, -280),
+    position: new THREE.Vector3(4780, 430, 260),
+    target: new THREE.Vector3(4050, 110, -320),
   },
   cathedral: {
-    position: new THREE.Vector3(4550, 360, -80),
-    target: new THREE.Vector3(4134, 110, -356),
+    position: new THREE.Vector3(4460, 300, -60),
+    target: new THREE.Vector3(4133, 150, -369),
   },
   mountwashington: {
-    position: new THREE.Vector3(-1050, 300, 1150),
-    target: new THREE.Vector3(-100, 35, -80),
+    position: new THREE.Vector3(-1010, 195, 560),
+    target: new THREE.Vector3(240, 60, -40),
   },
 };
 

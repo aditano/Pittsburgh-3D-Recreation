@@ -24,59 +24,54 @@ function distToSeg(px, pz, ax, az, bx, bz) {
   return Math.hypot(px - (ax + t * dx), pz - (az + t * dz));
 }
 
-export function terrainHeight(x, z, peaks) {
-  let h = 0;
-  for (const peak of peaks) {
-    const dx = x - peak.p[0];
-    const dz = z - peak.p[1];
-    const d = Math.hypot(dx, dz);
-    if (d < peak.r) {
-      const t = 1 - d / peak.r;
-      h += peak.h * t * t;
-    }
+function decodeBase64(b64) {
+  if (typeof atob === 'function') {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
   }
-
-  // Mount Washington / Duquesne Heights escarpment south of the Mon
-  if (z > 280) {
-    const dRidge = distToSeg(x, z, -1900, 420, 720, 1760);
-    if (dRidge < 340) {
-      const t = 1 - dRidge / 340;
-      h += 72 * t * t;
-    }
-  }
-
-  // North Side slope above Allegheny
-  if (z < -600 && x > -1200 && x < 1200) {
-    const dNorth = Math.abs(z + 900);
-    if (dNorth < 500) {
-      const t = 1 - dNorth / 500;
-      h += 28 * t;
-    }
-  }
-
-  // Oakland plateau
-  if (x > 2800 && x < 5200 && z > -1200 && z < 600) {
-    h += 18;
-  }
-
-  const downtown = Math.hypot(x, z);
-  if (downtown < 980 && z < 640) {
-    const k = Math.min(1, (980 - downtown) / 980);
-    h *= 1 - k * 0.94;
-  } else if (downtown < 980 && z >= 640) {
-    const k = Math.min(1, (980 - downtown) / 980);
-    h *= 1 - k * 0.22;
-  }
-  return h;
+  return new Uint8Array(Buffer.from(b64, 'base64'));
 }
 
-export function surfaceHeight(x, z, peaks, waterIndex) {
-  let h = terrainHeight(x, z, peaks);
+/**
+ * Sampler over the baked USGS 3DEP grid (decimetres above normal pool). Returns
+ * a bilinearly interpolated ground height in metres, so hillside streets and
+ * the Mount Washington bluff follow the real landform.
+ */
+export function makeTerrain(terrain) {
+  if (!terrain?.data) return () => 0;
+  const bytes = decodeBase64(terrain.data);
+  const grid = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 2);
+  const { minX, minZ, step, cols, rows } = terrain;
+
+  return function terrainHeight(x, z) {
+    const fx = (x - minX) / step;
+    const fz = (z - minZ) / step;
+    const x0 = Math.floor(fx);
+    const z0 = Math.floor(fz);
+    const cx0 = Math.max(0, Math.min(cols - 1, x0));
+    const cz0 = Math.max(0, Math.min(rows - 1, z0));
+    const cx1 = Math.max(0, Math.min(cols - 1, x0 + 1));
+    const cz1 = Math.max(0, Math.min(rows - 1, z0 + 1));
+    const tx = Math.max(0, Math.min(1, fx - x0));
+    const tz = Math.max(0, Math.min(1, fz - z0));
+    const a = grid[cz0 * cols + cx0];
+    const b = grid[cz0 * cols + cx1];
+    const c = grid[cz1 * cols + cx0];
+    const d = grid[cz1 * cols + cx1];
+    return ((a + (b - a) * tx) * (1 - tz) + (c + (d - c) * tx) * tz) * 0.1;
+  };
+}
+
+export function surfaceHeight(x, z, terrainFn, waterIndex) {
+  const h = terrainFn(x, z);
   if (!waterIndex) return h;
-  if (waterIndex.inside(x, z)) return -3.5;
+  if (waterIndex.inside(x, z)) return -3.2;
   const bank = waterIndex.bankStrength(x, z);
   if (bank > 0) {
-    return h * (1 - bank * 0.62) - bank * 1.35;
+    // Ease the last few metres down to the waterline so banks are not cliffs.
+    return h * (1 - bank * 0.5) - bank * 1.1;
   }
   return h;
 }
