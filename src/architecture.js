@@ -1388,19 +1388,20 @@ function pierCount(typ, det, perim) {
 const LANDMARKS = [
   // 841 ft, 64 floors. Triangular plan with truncated corners, hung on 18
   // liquid-filled Cor-Ten box columns that stand proud of the glass line.
-  { n: 'U.S. Steel Tower', at: [614.7, -39.8], r: 45, h: 256, crown: 'usSteel' },
+  { n: 'U.S. Steel Tower', at: [614.7, -39.8], r: 45, h: 256, shell: 0.95, crown: 'usSteel' },
   // 725 ft, 54 floors; stepped mechanical crown over a chamfered shaft.
   {
     n: 'BNY Mellon Center',
     at: [517.5, 150.6],
     r: 45,
     h: 221,
+    shell: 0.93,
     tiers: [[0.9, 0], [1, 3.5]],
     crown: 'steppedCap',
   },
   // 635 ft, 40 floors. Neo-gothic glass: corner turrets and a central spire
   // over a pinnacled parapet, part of the 231 spires across the six buildings.
-  { n: 'One PPG Place', at: [-150.1, 112.1], r: 45, h: 194, crown: 'ppgTower' },
+  { n: 'One PPG Place', at: [-150.1, 112.1], r: 45, h: 194, shell: 0.84, crown: 'ppgTower' },
   { n: 'Two PPG Place', at: [-112.8, 58.1], r: 40, h: 22.9, crown: 'ppgSpires' },
   { n: 'Three PPG Place', at: [-61.1, 98.9], r: 30, h: 22.9, crown: 'ppgSpires' },
   { n: 'Four PPG Place', at: [-66.5, 154.4], r: 30, h: 22.9, crown: 'ppgSpires' },
@@ -1413,12 +1414,13 @@ const LANDMARKS = [
     at: [-116.2, -111.6],
     r: 45,
     h: 188,
+    shell: 0.88,
     tiers: [[0.74, 0], [0.86, 5], [1, 4.5]],
     crown: 'obelisk',
   },
   // 615 ft, 45 floors. Five silver octagonal towers of stepped heights sharing
   // one podium, which is why the raw footprint alone reads as nothing at all.
-  { n: 'One Oxford Centre', at: [290.2, 331.0], r: 50, h: 187, crown: 'oxford' },
+  { n: 'One Oxford Centre', at: [290.2, 331.0], r: 50, h: 187, shell: 0.13, crown: 'oxford' },
   // 582 ft, 44 floors. The crown is a stepped pyramid after the Mausoleum at
   // Halicarnassus, glazed and lit, and it is the top of the 1932 skyline.
   {
@@ -1426,7 +1428,8 @@ const LANDMARKS = [
     at: [575.0, -178.3],
     r: 45,
     h: 177,
-    tiers: [[0.6, 0], [0.72, 4.5], [0.8, 4], [0.86, 3.5]],
+    shell: 0.8,
+    tiers: [[0.6, 0], [0.72, 4.5], [0.8, 4], [1, 3.5]],
     crown: 'ziggurat',
   },
   // 475 ft, 34 floors, and the only chateau roof on the skyline: a steep
@@ -1436,7 +1439,8 @@ const LANDMARKS = [
     at: [547.1, -123.4],
     r: 40,
     h: 145,
-    tiers: [[0.68, 0], [0.78, 4], [0.84, 3], [1, 0]],
+    shell: 0.76,
+    tiers: [[0.6, 0], [0.68, 4], [1, 3]],
     crown: 'chateau',
   },
   // 485 ft, 40 floors. The mast carries an aviation beacon that still spells
@@ -1446,32 +1450,43 @@ const LANDMARKS = [
     at: [377.7, 373.0],
     r: 40,
     h: 148,
-    tiers: [[0.66, 0], [0.8, 4], [0.9, 3.5], [1, 3]],
+    shell: 0.9,
+    tiers: [[0.66, 0], [0.8, 4], [0.87, 3.5], [1, 3]],
     crown: 'beacon',
   },
   // Burnham, 1902: 330 ft of granite under one very deep cornice.
-  { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, crown: 'classicalAttic' },
-  { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, crown: 'classicalAttic' },
+  { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, shell: 0.93, crown: 'classicalAttic' },
+  { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, shell: 0.88, crown: 'classicalAttic' },
   // 535 ft, 42 floors of late Gothic Revival over a four-storey Commons Room
   // block; buttressed piers run the shaft and burst into pinnacles at the top.
-  { n: 'Cathedral of Learning', at: [4135.4, -368.4], r: 55, h: 163, crown: 'gothicTower' },
+  {
+    n: 'Cathedral of Learning',
+    at: [4135.4, -368.4],
+    r: 55,
+    h: 163,
+    shell: 0.88,
+    // the Commons Room block, then the tower stepping in at roughly the 15th,
+    // 25th and 36th floors
+    tiers: [[0.16, 0], [0.5, 15], [0.74, 3], [1, 2.5]],
+    crown: 'gothicCrown',
+  },
   // Fleche tip 256 ft above ground over a 100 ft nave roof (Univ. of Pittsburgh).
-  { n: 'Heinz Memorial Chapel', at: [4247.7, -475.2], r: 40, h: 78, crown: 'chapelFleche' },
+  { n: 'Heinz Memorial Chapel', at: [4247.7, -475.2], r: 40, h: 78, shell: 0.28, crown: 'chapelFleche' },
   // The Carnegie Institute group: four monumental storeys behind one cornice,
   // roughly 26 m, against the 14 m default the dataset gives an untagged
   // building. Low hipped roofs over a deep attic.
-  { n: 'Carnegie Museum of Art', at: [4476.7, -299.8], r: 55, h: 26, crown: 'beauxArts' },
-  { n: 'Carnegie Museum of Natural History', at: [4397.5, -234.9], r: 60, h: 28, crown: 'beauxArts' },
-  { n: 'Carnegie Library, Oakland', at: [4358.7, -198.8], r: 50, h: 26, crown: 'beauxArts' },
-  { n: 'Carnegie Music Hall', at: [4319.7, -257.0], r: 45, h: 29, crown: 'beauxArts' },
+  { n: 'Carnegie Museum of Art', at: [4476.7, -299.8], r: 55, h: 26, shell: 0.8, crown: 'beauxArts' },
+  { n: 'Carnegie Museum of Natural History', at: [4397.5, -234.9], r: 60, h: 28, shell: 0.8, crown: 'beauxArts' },
+  { n: 'Carnegie Library, Oakland', at: [4358.7, -198.8], r: 50, h: 26, shell: 0.8, crown: 'beauxArts' },
+  { n: 'Carnegie Music Hall', at: [4319.7, -257.0], r: 45, h: 29, shell: 0.78, crown: 'beauxArts' },
   // Hornbostel, 1910, again after the Mausoleum: a colonnaded block under a
   // stepped pyramid whose apex stands 150 ft above the ground.
-  { n: 'Soldiers and Sailors Memorial Hall', at: [3860.5, -450.4], r: 50, h: 46, crown: 'mausoleum' },
+  { n: 'Soldiers and Sailors Memorial Hall', at: [3860.5, -450.4], r: 50, h: 46, shell: 0.5, crown: 'mausoleum' },
   // Eight floors of a 1911 terminal warehouse, not the 14 m default.
-  { n: 'The Andy Warhol Museum', at: [-42.6, -821.0], r: 35, h: 30, crown: 'classicalAttic' },
+  { n: 'The Andy Warhol Museum', at: [-42.6, -821.0], r: 35, h: 30, shell: 0.9, crown: 'classicalAttic' },
   // Carnegie Science Center, renamed Kamin in 2023; the Buhl Planetarium dome
   // is the only thing that identifies it from the far bank.
-  { n: 'Kamin Science Center', at: [-1350.1, -513.3], r: 60, h: 20, crown: 'planetarium' },
+  { n: 'Kamin Science Center', at: [-1350.1, -513.3], r: 60, h: 20, shell: 0.75, crown: 'planetarium' },
   // Vinoly's cable-stayed roof sweeps up from Penn Avenue and cantilevers out
   // over Fort Duquesne Boulevard, echoing the suspension bridges beyond it.
   {
@@ -1479,6 +1494,7 @@ const LANDMARKS = [
     at: [488.7, -515.2],
     r: 90,
     h: 48,
+    shell: 0.42,
     tiers: [[0.46, 0]],
     crown: 'cableRoof',
   },
@@ -1488,6 +1504,7 @@ const LANDMARKS = [
     at: [152.8, 82.7],
     r: 40,
     h: 166,
+    shell: 0.9,
     tiers: [[0.88, 0], [1, 2.5]],
     crown: 'shearedCap',
   },
@@ -1525,11 +1542,19 @@ function landmarkFor(ring) {
   return null;
 }
 
-/** The landmark's setback programme, in the shape the tier loop consumes. */
+/**
+ * The landmark's setback programme, in the shape the tier loop consumes.
+ *
+ * The walled shell stops at `lm.shell` of the total height and the crown fills
+ * the rest: a chateau roof or a ziggurat is a third of what people see of the
+ * building, and it cannot be modelled in the metre of headroom left over when
+ * the shaft is run all the way to the stated height.
+ */
 function landmarkTiers(lm, base, h) {
+  const shellH = h * clamp(lm.shell ?? 1, 0.08, 1);
   const steps = lm.tiers;
   if (!steps || !steps.length) {
-    return [{ ring: base, y0: 0, y1: h, archetype: 'landmark', index: 0, top: true }];
+    return [{ ring: base, y0: 0, y1: shellH, archetype: 'landmark', index: 0, top: true }];
   }
   const tiers = [];
   let ring = base;
@@ -1537,16 +1562,16 @@ function landmarkTiers(lm, base, h) {
   for (let i = 0; i < steps.length; i++) {
     const [frac, inset] = steps[i];
     const last = i === steps.length - 1;
-    const y1 = last ? h : clamp(h * frac, y0 + 3, h - 3);
+    const y1 = last ? shellH : clamp(h * frac, y0 + 3, shellH - 3);
     if (y1 - y0 < 2.5) continue;
     if (inset > 0.05) ring = insetRing(ring, inset) || ring;
     tiers.push({ ring, y0, y1, archetype: 'landmark', index: tiers.length, top: false });
     y0 = y1;
   }
   if (!tiers.length) {
-    return [{ ring: base, y0: 0, y1: h, archetype: 'landmark', index: 0, top: true }];
+    return [{ ring: base, y0: 0, y1: shellH, archetype: 'landmark', index: 0, top: true }];
   }
-  tiers[tiers.length - 1].y1 = h;
+  tiers[tiers.length - 1].y1 = shellH;
   tiers[tiers.length - 1].top = true;
   return tiers;
 }
@@ -1847,38 +1872,29 @@ const CROWNS = {
   },
 
   /**
-   * Gothic Revival tower: the four-storey Commons Room block, a shaft broken by
-   * two setbacks and run with buttress piers, and a crown of pinnacles.
+   * The Cathedral's crown: buttress piers carried up off the top setback and
+   * breaking into pinnacles, with a traceried lantern over the middle. The
+   * setbacks themselves are the shell's, so they keep the limestone facade.
    */
-  gothicTower(c) {
-    const { wall, trim, deck, y } = c;
+  gothicCrown(c) {
+    const { wall, trim, ring, deck, y, capY } = c;
     const top = c.baseY + c.h;
-    let ring = deck;
-    let yy = y;
-    for (const [frac, inset] of [[0.42, 2.6], [0.7, 2.2], [0.88, 2]]) {
-      const next = insetRing(ring, inset, 0.05);
-      const ty = yy + (top - y) * frac * 0.55;
-      if (!next) break;
-      band(trim, ring, yy, next, yy + 1.4, null, PIN_STONE);
-      band(wall, next, yy + 1.4, next, ty, null, PIN_NONE);
-      // buttress piers stand proud on every face and die into the setback above
-      alongRing(next, 9, (x, z, edgeAng) => {
-        const pier = rectRing(x, z, 2.2, 1.5, Math.cos(edgeAng), Math.sin(edgeAng));
-        band(trim, pier, yy + 1.4, pier, ty, null, PIN_STONE);
-      });
-      ring = next;
-      yy = ty;
-    }
-    band(trim, ring, yy, ring, yy + 2, null, PIN_STONE);
-    capUp(wall, ring, yy + 2, null, PIN_DARK);
-    alongRing(ring, 6, (x, z) => pinnacle(trim, x, z, 1, yy + 2, 8, c.ang, PIN_STONE));
+    const span = top - y;
+    alongRing(ring, 7, (x, z, edgeAng) => {
+      const pier = rectRing(x, z, 2.4, 1.6, Math.cos(edgeAng), Math.sin(edgeAng));
+      band(trim, pier, capY - span * 1.4, pier, capY + span * 0.14, null, PIN_STONE);
+      pinnacle(trim, x, z, 1.2, capY + span * 0.14, span * 0.4, edgeAng, PIN_STONE);
+    });
     for (const [px, pz] of ringCorners(ring, 4)) {
-      pinnacle(trim, px, pz, 1.9, yy + 2, top - yy - 6, c.ang, PIN_STONE);
+      pinnacle(trim, px, pz, 2.4, capY, span * 0.78, c.ang, PIN_STONE);
     }
-    const [cx, cz] = ringCentroid(ring);
-    const lantern = regularRing(cx, cz, Math.sqrt(polygonArea(ring)) * 0.26, 4, c.ang);
-    band(trim, lantern, yy + 2, lantern, yy + (top - yy) * 0.45, null, PIN_STONE);
-    pyramidUp(trim, lantern, yy + (top - yy) * 0.45, top, PIN_STONE);
+    // The real crown is flat-topped tracery, not a spire: a lantern stage that
+    // steps in twice and stops.
+    const lantern = insetRing(deck, Math.sqrt(polygonArea(deck)) * 0.16, 0.05) || deck;
+    band(wall, lantern, y, lantern, y + span * 0.5, null, PIN_NONE);
+    alongRing(lantern, 5.5, (x, z) => pinnacle(trim, x, z, 0.9, y + span * 0.5, span * 0.34, c.ang, PIN_STONE));
+    const cap = steppedUp(trim, lantern, y + span * 0.5, top, 2, 2.2, PIN_STONE);
+    capUp(wall, cap.ring, cap.y, null, PIN_DARK);
   },
 
   /**
@@ -1925,18 +1941,24 @@ const CROWNS = {
     }
   },
 
-  /** Colonnade under a 24-step pyramid, after the Mausoleum at Halicarnassus. */
+  /**
+   * Colonnaded storey under a stepped pyramid, after the Mausoleum at
+   * Halicarnassus: 24 steps on the original, and the apex here lands at the
+   * 150 ft the Memorial's own history gives for its roof.
+   */
   mausoleum(c) {
     const { wall, trim, deck, y } = c;
     const top = c.baseY + c.h;
-    const colonnade = insetRing(deck, 2.2, 0.1) || deck;
-    alongRing(colonnade, 4.6, (x, z) => {
-      const col = regularRing(x, z, 1.15, 6, 0);
-      band(trim, col, y - c.h * 0.16, col, y, null, PIN_STONE);
+    const colH = (top - y) * 0.36;
+    const colonnade = insetRing(deck, 1.6, 0.1) || deck;
+    alongRing(colonnade, 4.4, (x, z) => {
+      const col = regularRing(x, z, 1.2, 6, 0);
+      band(trim, col, y, col, y + colH, null, PIN_STONE);
     });
-    const podium = insetRing(deck, 1.4, 0.05) || deck;
-    band(trim, deck, y, podium, y + 1.6, null, PIN_STONE);
-    const step = steppedUp(trim, podium, y + 1.6, y + 1.6 + (top - y) * 0.62, 8, 1.9, PIN_STONE);
+    const attic = insetRing(deck, 3.4, 0.08) || deck;
+    band(wall, attic, y, attic, y + colH, null, PIN_NONE);
+    band(trim, attic, y + colH, deck, y + colH + 1.6, null, PIN_STONE);
+    const step = steppedUp(trim, deck, y + colH + 1.6, top - (top - y) * 0.1, 10, 1.5, PIN_STONE);
     pyramidUp(trim, step.ring, step.y, top, PIN_STONE);
   },
 

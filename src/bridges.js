@@ -193,10 +193,11 @@ function layout(frame, spans, waterIndex) {
   const main = [c - half, c + half];
 
   const ranges = [];
-  let cut = main[0];
+  let edge = main[0];
   for (const s of spans) {
-    cut += ((main[1] - main[0]) * s) / total;
-    ranges.push([ranges.length ? ranges[ranges.length - 1][1] : main[0], cut]);
+    const next = edge + ((main[1] - main[0]) * s) / total;
+    ranges.push([edge, next]);
+    edge = next;
   }
   ranges[ranges.length - 1][1] = main[1];
 
