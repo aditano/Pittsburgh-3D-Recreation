@@ -94,6 +94,18 @@ function cyl(rTop, rBottom, h, seg, x, y, z, ry = 0) {
   return g;
 }
 
+/**
+ * Parks the assembled venue so model point (ax, az) lands on the group origin.
+ * landmarks.js drops stadiums on the real field centroid, so the venue has to
+ * be pinned by a known point on its playing surface: centring on the whole
+ * bounding box instead would let scoreboards and light towers drag the seating
+ * off the site.
+ */
+function anchorAndAttach(core, parent, ax, az) {
+  core.position.set(-ax, 0, -az);
+  parent.add(core);
+}
+
 /** Parks the assembled venue so the group origin lands on its plan centre. */
 function centerAndAttach(core, parent) {
   core.updateMatrixWorld(true);
@@ -155,6 +167,32 @@ function superEllipse(rx, rz, power) {
     const c = Math.cos(t);
     const s = Math.sin(t);
     return [rx * Math.sign(c) * Math.abs(c) ** power, rz * Math.sign(s) * Math.abs(s) ** power];
+  };
+}
+
+/**
+ * Rounded-rectangle plan, ray-cast from the centre so `t` stays a polar angle
+ * and the curve drops into buildPath exactly like superEllipse does. Straight
+ * runs stay straight, which is what makes a football bowl read as sidelines
+ * rather than as an oval.
+ */
+function roundedRect(rx, rz, radius) {
+  const ax = Math.max(rx - radius, 0.01);
+  const az = Math.max(rz - radius, 0.01);
+  const reach = Math.hypot(rx, rz);
+  return (t) => {
+    const dx = Math.cos(t);
+    const dz = Math.sin(t);
+    let lo = 0;
+    let hi = reach;
+    for (let i = 0; i < 26; i++) {
+      const m = (lo + hi) * 0.5;
+      const qx = Math.max(Math.abs(dx * m) - ax, 0);
+      const qz = Math.max(Math.abs(dz * m) - az, 0);
+      if (Math.hypot(qx, qz) < radius) lo = m;
+      else hi = m;
+    }
+    return [dx * lo, dz * lo];
   };
 }
 
@@ -662,22 +700,26 @@ function turfMaterial(map) {
 // PNC Park
 // ---------------------------------------------------------------------------
 
-// Wall distance by angle off dead centre; negative is the left-field side.
+/**
+ * Outfield wall distance in metres by angle off dead centre, negative on the
+ * left-field side: the published 325 / 389 / 410 / 399 / 375 / 320 ft posted
+ * distances, with the 410 ft pocket sitting in the left-centre gap.
+ */
 const PNC_WALL = [
   [-45, 99.1],
-  [-38, 108],
-  [-30, 114.5],
-  [-22.5, 116.7],
-  [-17.5, 121],
-  [-14.5, 125.0],
-  [-11, 124.0],
-  [-6, 122.2],
+  [-38, 106.5],
+  [-32, 113.5],
+  [-27, 118.6],
+  [-22, 122.6],
+  [-17, 125.0],
+  [-12, 124.2],
+  [-6, 122.4],
   [0, 121.6],
-  [8, 119.5],
-  [16, 117.0],
-  [22.5, 114.3],
-  [30, 108.5],
-  [37, 102.5],
+  [8, 119.2],
+  [16, 116.6],
+  [22, 114.3],
+  [30, 107.5],
+  [38, 101.5],
   [45, 97.5],
 ];
 
@@ -698,6 +740,15 @@ const PNC_STAND_EDGE = [
   [57, -74],
 ];
 
+/**
+ * Where the OSM playing surface has its centroid, in this model's frame: home
+ * plate at the origin, +X toward dead centre, +Z the right-field side. The
+ * shipped dataset positions the venue on exactly that centroid, so anchoring
+ * here is what puts the grandstand back inside the real footprint instead of
+ * out over the Allegheny.
+ */
+const PNC_FIELD_ANCHOR = [52.8, 6.9];
+
 function pncWallPoints() {
   return PNC_WALL.map(([a, r]) => [Math.cos(a * DEG) * r, Math.sin(a * DEG) * r]);
 }
@@ -707,24 +758,27 @@ function tangentYaw(angle) {
   return Math.PI / 2 - angle;
 }
 
+/** 6 ft in left, 10 ft through centre, then the 21 ft Clemente Wall in right. */
 function pncWallHeight(angle) {
   if (angle <= -14) return lerp(1.8, 3.0, (angle + 45) / 31);
-  if (angle <= 16) return 3.0;
-  return lerp(3.0, 6.4, (angle - 16) / 29);
+  if (angle <= 18) return 3.0;
+  if (angle >= 26) return 6.4;
+  return lerp(3.0, 6.4, (angle - 18) / 8);
 }
 
 /**
  * PNC Park: two-deck, 220-degree bowl that stays open across the outfield so the
  * downtown skyline reads through it. Kasota limestone shell, navy exposed steel.
+ * Local +X runs from home plate to dead centre, +Z is the right-field side.
  */
 export function buildPncPark(spec = {}) {
   const group = new THREE.Group();
   group.name = 'pnc-park';
 
   const h = clamp(spec.h, 30, 46);
-  const hs = h / 38;
-  const s = fitScale(spec.f, 200, 190);
-  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 0.39;
+  const hs = h / 36;
+  const s = fitScale(spec.f, 280, 218);
+  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 0.2503;
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -734,9 +788,9 @@ export function buildPncPark(spec = {}) {
 
   const limestone = mat(0xc7bda6, { roughness: 0.84, metalness: 0.05 });
   const concrete = mat(0x9c988c, { roughness: 0.9, metalness: 0.04 });
-  const steel = mat(0x1c3a63, { roughness: 0.5, metalness: 0.55, envMapIntensity: 0.9 });
-  const seatLower = mat(0x1b4272, { roughness: 0.88, metalness: 0.04 });
-  const seatUpper = mat(0x16355c, { roughness: 0.88, metalness: 0.04 });
+  const steel = mat(0x2a4d7c, { roughness: 0.5, metalness: 0.55, envMapIntensity: 0.9 });
+  const seatLower = mat(0x27548c, { roughness: 0.88, metalness: 0.04 });
+  const seatUpper = mat(0x1e4372, { roughness: 0.88, metalness: 0.04 });
   const padding = mat(0x14361f, { roughness: 0.92, metalness: 0.03 });
   const board = mat(0x0b0d10, { roughness: 0.35, metalness: 0.3, emissive: 0x2a3550, emissiveIntensity: 0.55 });
   const lamp = mat(0xdfe4d8, { roughness: 0.3, metalness: 0.5, emissive: 0xfff0c0, emissiveIntensity: 0.9 });
@@ -771,101 +825,146 @@ export function buildPncPark(spec = {}) {
   });
   dark.push(sweepStrip(wallPath, [[0, 0], [0, 1], [0.6, 1], [0.6, 0]]));
 
-  // --- lower and upper decks ----------------------------------------------
+  // --- lower and upper decks: only two, which is the whole point of the park -
   const standFn = splineFn(PNC_STAND_EDGE);
-  const standPath = buildPath(standFn, 74, 0, 1);
+  const standPath = buildPath(standFn, 78, 0, 1);
   const lowerPath = offsetPath(standPath, 2.4);
-  const lower = rakedSection({ u0: 0, v0: 1.2 * hs, steps: 12, run: 1.5, rise: 0.82 * hs, fascia: 2.2 });
+  const lower = rakedSection({ u0: 0, v0: 1.3 * hs, steps: 14, run: 1.5, rise: 0.78 * hs, fascia: 2.6 });
   seatsA.push(sweepStrip(lowerPath, lower.seats));
   conc.push(sweepStrip(lowerPath, lower.shell));
 
   const upper = rakedSection({
-    u0: 12,
-    v0: 16.5 * hs,
-    steps: 13,
-    run: 1.55,
-    rise: 0.95 * hs,
-    fascia: 2.4,
+    u0: 13.5,
+    v0: 17 * hs,
+    steps: 16,
+    run: 1.6,
+    rise: 0.92 * hs,
+    fascia: 2.8,
     base: 0,
   });
   seatsB.push(sweepStrip(lowerPath, upper.seats));
   stone.push(sweepStrip(lowerPath, upper.shell));
-  for (const node of [lowerPath[0], lowerPath[lowerPath.length - 1]]) {
+  const standEnds = [lowerPath[0], lowerPath[lowerPath.length - 1]];
+  for (const node of standEnds) {
     conc.push(sectionCap(lower.closed, node));
     stone.push(sectionCap(upper.closed, node));
   }
 
   // Suite band tucked between the decks, and the canopy over the upper deck.
-  const suitePath = offsetPath(lowerPath, 10.5);
-  stone.push(sweepStrip(suitePath, [[0, 12.4 * hs], [0, 16.4 * hs]]));
+  const suitePath = offsetPath(lowerPath, 11.0);
+  stone.push(
+    sweepStrip(suitePath, [
+      [0, 16.8 * hs],
+      [1.6, 16.8 * hs],
+      [1.6, 12.6 * hs],
+      [0, 12.6 * hs],
+    ]),
+  );
   // Only the back rows and press box are sheltered; the upper deck is open air.
-  const canopyTop = upper.vTop + 4.6 * hs;
+  const canopyTop = upper.vTop + 4.4 * hs;
   steelG.push(
     sweepStrip(lowerPath, [
-      [upper.uTop - 6, canopyTop],
-      [upper.uOut + 1, canopyTop],
-      [upper.uOut + 1, canopyTop - 0.9],
-      [upper.uTop - 6, canopyTop - 0.9],
+      [upper.uTop - 7, canopyTop],
+      [upper.uOut + 1.2, canopyTop],
+      [upper.uOut + 1.2, canopyTop - 1.0],
+      [upper.uTop - 7, canopyTop - 1.0],
     ]),
   );
   stone.push(
     sweepStrip(lowerPath, [
+      [upper.uTop, canopyTop - 1.1],
       [upper.uTop, upper.vTop],
-      [upper.uTop, canopyTop - 1.0],
     ]),
   );
 
-  // --- limestone base colonnade: the rhythmic archways at street level ------
-  const facadePath = offsetPath(lowerPath, upper.uOut - 1.2);
+  // --- limestone base arcade: the rhythmic archways at street level --------
+  const facadePath = offsetPath(lowerPath, upper.uOut - 0.4);
+  const arcadeTop = 10.6 * hs;
+  stone.push(
+    sweepStrip(facadePath, [
+      [0, arcadeTop],
+      [1.9, arcadeTop],
+      [1.9, arcadeTop - 1.7],
+      [0, arcadeTop - 1.7],
+    ]),
+  );
+  stone.push(
+    sweepStrip(facadePath, [
+      [0, 1.3],
+      [1.9, 1.3],
+      [1.9, 0],
+      [0, 0],
+    ]),
+  );
   for (let i = 0; i < facadePath.length; i += 3) {
     const p = facadePath[i];
     const a = Math.atan2(p.nx, p.nz);
-    stone.push(box(2.4, 9.5 * hs, 2.0, p.x, 4.75 * hs, p.z, a));
-    if (i % 6 === 0) {
-      stone.push(box(1.4, 3.0, 1.4, p.x + p.nx * 0.4, 9.5 * hs + 1.5, p.z + p.nz * 0.4, a));
+    const pierH = arcadeTop - 3.0;
+    stone.push(box(2.2, pierH, 2.0, p.x + p.nx * 0.9, 1.3 + pierH * 0.5, p.z + p.nz * 0.9, a));
+    if (i % 6 !== 0) {
+      // Exposed navy trusswork carried up the limestone between the arches.
+      steelG.push(
+        box(0.7, upper.vTop - arcadeTop, 1.2, p.x + p.nx * 0.6, (upper.vTop + arcadeTop) * 0.5, p.z + p.nz * 0.6, a),
+      );
     }
   }
 
   // --- left-field bleachers, open right field keeps the skyline view --------
-  const bleacherSource = wall.slice(0, 7);
-  const bleacherPath = offsetPath(buildPath(splineFn(bleacherSource), 26, 0, 1), 5.0);
-  const bleach = rakedSection({ u0: 0, v0: 3.2, steps: 7, run: 1.6, rise: 0.85, fascia: 1.8 });
+  const bleacherPath = offsetPath(buildPath(splineFn(wall.slice(0, 7)), 28, 0, 1), 4.4);
+  const bleach = rakedSection({ u0: 0, v0: 3.4 * hs, steps: 9, run: 1.5, rise: 0.85 * hs, fascia: 2.2, base: 0 });
   seatsA.push(sweepStrip(bleacherPath, bleach.seats));
-  conc.push(sweepStrip(bleacherPath, bleach.shell));
+  stone.push(sweepStrip(bleacherPath, bleach.shell));
   for (const node of [bleacherPath[0], bleacherPath[bleacherPath.length - 1]]) {
-    conc.push(sectionCap(bleach.closed, node));
+    stone.push(sectionCap(bleach.closed, node));
   }
 
-  // --- right-field riverwalk terrace ---------------------------------------
-  const riverSource = wall.slice(9);
-  const riverPath = offsetPath(buildPath(splineFn(riverSource), 26, 0, 1), 2.0);
-  conc.push(
+  // --- right-field riverwalk terrace, kept low for the skyline view ---------
+  const riverPath = offsetPath(buildPath(splineFn(wall.slice(9)), 28, 0, 1), 2.2);
+  stone.push(
     sweepStrip(riverPath, [
-      [0, 3.4],
-      [10, 3.4],
-      [10, 0],
+      [0, 4.2 * hs],
+      [11, 4.2 * hs],
+      [11, 0],
+      [0, 0],
     ]),
   );
+  for (const node of [riverPath[0], riverPath[riverPath.length - 1]]) {
+    stone.push(
+      sectionCap(
+        [
+          [0, 0],
+          [0, 4.2 * hs],
+          [11, 4.2 * hs],
+          [11, 0],
+        ],
+        node,
+      ),
+    );
+  }
   for (let i = 0; i < riverPath.length; i += 2) {
     const p = riverPath[i];
-    steelG.push(box(0.25, 1.3, 0.25, p.x + p.nx * 9.5, 4.05, p.z + p.nz * 9.5));
+    steelG.push(box(0.25, 1.4, 0.25, p.x + p.nx * 10.4, 4.2 * hs + 0.7, p.z + p.nz * 10.4));
   }
   steelG.push(
-    sweepStrip(offsetPath(riverPath, 9.5), [
-      [0, 5.0],
-      [0, 4.6],
+    sweepStrip(offsetPath(riverPath, 10.4), [
+      [0, 4.2 * hs + 1.4],
+      [0, 4.2 * hs + 1.0],
     ]),
   );
 
-  // --- heptagonal ramp rotundas: left-field corner and home plate gate ------
-  for (const [rx, rz, radius, height] of [
-    [67, -81, 13, 24 * hs],
-    [-46, 0, 11, 19 * hs],
+  // --- heptagonal ramp rotundas seated on the facade -----------------------
+  for (const [idx, radius, height] of [
+    [0, 12, 26 * hs],
+    [facadePath.length - 1, 12, 26 * hs],
+    [Math.round((facadePath.length - 1) / 2), 13, 21 * hs],
   ]) {
-    stone.push(cyl(radius, radius, height, 7, rx, height * 0.5, rz, Math.PI / 7));
-    steelG.push(cyl(radius + 0.5, radius + 0.5, 0.7, 7, rx, height * 0.42, rz, Math.PI / 7));
-    steelG.push(cyl(radius + 0.5, radius + 0.5, 0.7, 7, rx, height * 0.74, rz, Math.PI / 7));
-    steelG.push(cyl(radius + 1.4, radius + 1.4, 0.8, 7, rx, height + 0.4, rz, Math.PI / 7));
+    const p = facadePath[idx];
+    const cx = p.x + p.nx * radius * 0.34;
+    const cz = p.z + p.nz * radius * 0.34;
+    stone.push(cyl(radius, radius, height, 7, cx, height * 0.5, cz, Math.PI / 7));
+    steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.45, cz, Math.PI / 7));
+    steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.76, cz, Math.PI / 7));
+    steelG.push(cyl(radius + 1.5, radius + 1.5, 0.9, 7, cx, height + 0.5, cz, Math.PI / 7));
   }
 
   // --- scoreboards ----------------------------------------------------------
@@ -935,7 +1034,7 @@ export function buildPncPark(spec = {}) {
     const mesh = meshFrom(geoms, material);
     if (mesh) core.add(mesh);
   }
-  centerAndAttach(core, oriented);
+  anchorAndAttach(core, oriented, PNC_FIELD_ANCHOR[0], PNC_FIELD_ANCHOR[1]);
   return group;
 }
 
@@ -944,18 +1043,33 @@ export function buildPncPark(spec = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Acrisure Stadium: closed lower ring with three-tier sideline grandstands that
- * stop short of the south end zone, leaving the trademark open horseshoe.
- * Local +X points out through the open end.
+ * Field-level plan taken from the OSM playing surface: 123 x 86 m, which is a
+ * 109.7 x 48.8 m football field plus its aprons. The bowl grows outward from
+ * that edge, and the generous corner radius is what keeps the sidelines
+ * straight instead of letting the bowl slump into an oval.
+ */
+const ACR_RX = 61.5;
+const ACR_RZ = 42.5;
+const ACR_CORNER = 25;
+// The club tier stops at the south corners and the upper deck stops shorter
+// still, so the whole end zone end stays open to the skyline.
+const ACR_CLUB_OPEN = 35 * DEG;
+const ACR_UPPER_OPEN = 43 * DEG;
+
+/**
+ * Acrisure Stadium: rounded-rectangle plan, a lower bowl that rings the field,
+ * three-tier sideline grandstands wrapping the closed north end, and nothing
+ * taller than a concourse terrace across the south end zone -- the open
+ * horseshoe that frames downtown. Local +X points out through the open end.
  */
 export function buildAcrisureStadium(spec = {}) {
   const group = new THREE.Group();
   group.name = 'acrisure-stadium';
 
   const h = clamp(spec.h, 42, 64);
-  const hs = h / 54;
-  const s = fitScale(spec.f, 230, 200);
-  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : Math.PI / 2;
+  const hs = h / 58;
+  const s = fitScale(spec.f, 290, 261);
+  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 1.131;
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -1141,12 +1255,12 @@ export function buildPpgArena(spec = {}) {
   const precast = mat(0xcfcabb, { roughness: 0.82, metalness: 0.06 });
   const accent = mat(0x8d8878, { roughness: 0.72, metalness: 0.12 });
   const steel = mat(0x5a6068, { roughness: 0.4, metalness: 0.68, envMapIntensity: 1.0 });
-  const roofMat = mat(0x6b7078, { roughness: 0.66, metalness: 0.3 });
-  const glass = mat(0x8fb0c4, {
+  const roofMat = mat(0x93999f, { roughness: 0.7, metalness: 0.26 });
+  const glass = mat(0x9cc0d4, {
     roughness: 0.1,
     metalness: 0.55,
     transparent: true,
-    opacity: 0.52,
+    opacity: 0.66,
     emissive: 0x2c4a63,
     emissiveIntensity: 0.5,
     envMapIntensity: 1.4,
@@ -1161,8 +1275,8 @@ export function buildPpgArena(spec = {}) {
   const glassG = [];
   const lamps = [];
 
-  const rx = 76;
-  const rz = 70;
+  const rx = 80;
+  const rz = 78;
   const plan = superEllipse(rx, rz, 0.5);
   const wallTop = 25 * hs;
   const wallPath = buildPath(plan, 96, 0, Math.PI * 2, true);
@@ -1213,9 +1327,28 @@ export function buildPpgArena(spec = {}) {
     [34, 6, 15, 22],
   ]) {
     const my = wallTop + roofRise * (1 - ((mx / rx) ** 2 + (mz / rz) ** 2) * 0.5);
-    roofG.push(box(mw, 4.6, md, mx, my + 1.4, mz));
+    steelG.push(box(mw, 4.6, md, mx, my + 1.4, mz));
     trim.push(box(mw * 0.45, 1.8, md * 0.5, mx, my + 4.6, mz));
   }
+  // Rooftop catwalk ring and stair penthouse give the shallow dome some scale.
+  const catRatio = 0.72;
+  const catwalk = buildPath((t) => {
+    const p = plan(t);
+    return [p[0] * catRatio, p[1] * catRatio];
+  }, 64, 0, Math.PI * 2, true);
+  const catY = wallTop + roofRise * (1 - catRatio * catRatio) + 1.1;
+  steelG.push(
+    sweepStrip(
+      catwalk,
+      [
+        [0.6, catY],
+        [0.6, catY - 0.9],
+      ],
+      true,
+    ),
+  );
+  const penthouseY = wallTop + roofRise * (1 - (46 / rx) ** 2 * 0.5);
+  steelG.push(box(15, 7, 12, -46, penthouseY + 2.5, 4));
 
   // --- serpentine glass curtain wall on the downtown-facing facade ---------
   const spineFn = (t) => {
@@ -1240,11 +1373,11 @@ export function buildPpgArena(spec = {}) {
       [0, glassTop],
     ]),
   );
-  for (let i = 0; i < spine.length; i += 2) {
+  for (let i = 0; i < spine.length; i += 3) {
     const p = spine[i];
     const a = Math.atan2(p.nx, p.nz);
-    steelG.push(box(0.7, glassTop - 1.5, 0.7, p.x, (glassTop + 1.5) * 0.5, p.z, a));
-    steelG.push(box(0.5, 0.5, 7.6, p.x - p.nx * 3.5, glassTop - 1.5, p.z - p.nz * 3.5, a));
+    steelG.push(box(0.9, glassTop - 1.5, 0.9, p.x, (glassTop + 1.5) * 0.5, p.z, a));
+    steelG.push(box(0.6, 0.6, 7.6, p.x - p.nx * 3.5, glassTop - 1.5, p.z - p.nz * 3.5, a));
   }
   for (const level of [0.26, 0.46, 0.66, 0.86]) {
     steelG.push(
