@@ -793,7 +793,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
   });
 
   const treeMat = new THREE.MeshStandardMaterial({
-    color: dayMode ? 0x35602f : 0x0e1c12,
+    // White in day mode because the planting supplies a per-instance tint, which
+    // three.js multiplies against this; tinting twice crushed the canopy to black.
+    color: dayMode ? 0xffffff : 0x0e1c12,
     roughness: 1,
     metalness: 0,
   });

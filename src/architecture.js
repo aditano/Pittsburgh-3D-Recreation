@@ -1457,6 +1457,21 @@ const LANDMARKS = [
   // Burnham, 1902: 330 ft of granite under one very deep cornice.
   { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, shell: 0.93, crown: 'classicalAttic' },
   { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, shell: 0.88, crown: 'classicalAttic' },
+  // Osterling, 1917: 237 ft over 15 floors. The cornice lands at about 52 m and
+  // everything above it is the terra-cotta mansard, its dormers, and the two
+  // chapel-like mechanical towers that make the roof unmistakable.
+  { n: 'Union Trust Building', at: [421.7, 118.7], r: 55, h: 72, shell: 0.72, crown: 'flemishRoof' },
+  // Richardson, 1888. Roof 100 ft, tower 250 ft (Wikipedia); the tower is also
+  // widely cited at 318 ft to the finial. Steep tiled roof, dormers at every
+  // corner, and the tower standing on the open side of the courtyard.
+  {
+    n: 'Allegheny County Courthouse',
+    at: [473.5, 245.1],
+    r: 60,
+    h: 76,
+    shell: 0.4,
+    crown: 'courthouseTower',
+  },
   // 535 ft, 42 floors of late Gothic Revival over a four-storey Commons Room
   // block; buttressed piers run the shaft and burst into pinnacles at the top.
   {
@@ -1482,6 +1497,10 @@ const LANDMARKS = [
   // Hornbostel, 1910, again after the Mausoleum: a colonnaded block under a
   // stepped pyramid whose apex stands 150 ft above the ground.
   { n: 'Soldiers and Sailors Memorial Hall', at: [3860.5, -450.4], r: 50, h: 46, shell: 0.5, crown: 'mausoleum' },
+  // Lord & Burnham, 1893. Almost nothing of it is wall: a low stone plinth
+  // carries barrel-vaulted display houses, and the Palm Court dome over the
+  // centre is the tallest thing on the ridge.
+  { n: 'Phipps Conservatory', at: [4541.5, 139.7], r: 65, h: 22, shell: 0.34, crown: 'glasshouse' },
   // Eight floors of a 1911 terminal warehouse, not the 14 m default.
   { n: 'The Andy Warhol Museum', at: [-42.6, -821.0], r: 35, h: 30, shell: 0.9, crown: 'classicalAttic' },
   // Carnegie Science Center, renamed Kamin in 2023; the Buhl Planetarium dome
@@ -1608,6 +1627,56 @@ function pinnacle(b, x, z, r, y0, height, ang, pin) {
   const neck = y0 + height * 0.4;
   band(b, foot, y0, foot, neck, null, pin);
   coneUp(b, foot, neck, x, y0 + height, z, null, pin);
+}
+
+/**
+ * Barrel vault: `steps` inset rings climbing a quarter-circle profile, so the
+ * section curves over instead of coming to a tent ridge. Returns the top ring.
+ */
+function vaultUp(b, ring, y0, halfW, rise, steps, pin) {
+  let lower = ring;
+  let lowerY = y0;
+  for (let i = 1; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 0.5;
+    const upper = insetRing(ring, halfW * (1 - Math.cos(a)), 0.02);
+    if (!upper) break;
+    const y = y0 + rise * Math.sin(a);
+    band(b, lower, lowerY, upper, y, null, pin);
+    lower = upper;
+    lowerY = y;
+  }
+  capUp(b, lower, lowerY, null, pin);
+  return { ring: lower, y: lowerY };
+}
+
+/**
+ * Midpoint of the ring edge that faces furthest along `[dx, dz]`, pulled `inward`
+ * metres back toward the centroid. Used to find a named street frontage without
+ * depending on the ring's winding.
+ */
+function frontPoint(ring, dx, dz, inward) {
+  const [cx, cz] = ringCentroid(ring);
+  let best = null;
+  let bestScore = -Infinity;
+  for (let i = 0, n = ring.length; i < n; i++) {
+    const a = ring[i];
+    const b2 = ring[(i + 1) % n];
+    const mx = (a[0] + b2[0]) * 0.5;
+    const mz = (a[1] + b2[1]) * 0.5;
+    const ox = mx - cx;
+    const oz = mz - cz;
+    const len = Math.hypot(ox, oz) || 1;
+    const score = ((ox * dx + oz * dz) / len) * Math.hypot(b2[0] - a[0], b2[1] - a[1]);
+    if (score > bestScore) {
+      bestScore = score;
+      best = [mx, mz];
+    }
+  }
+  if (!best) return [cx, cz];
+  const bx = cx - best[0];
+  const bz = cz - best[1];
+  const len = Math.hypot(bx, bz) || 1;
+  return [best[0] + (bx / len) * inward, best[1] + (bz / len) * inward];
 }
 
 /** Hemispherical dome on `segs` meridians and `rings` parallels. */
@@ -1844,6 +1913,148 @@ const CROWNS = {
       pyramidUp(trim, lantern, ridgeY + (top - ridgeY) * 0.5, top, PIN_STONE);
     } else {
       pyramidUp(wall, skirt, eave, top, PIN_DARK);
+    }
+  },
+
+  /**
+   * The Union Arcade roof: a steep terra-cotta mansard round a large flat deck,
+   * dormered the whole way along, with the two spired mechanical towers - the
+   * "chapels" of the urban legend - standing clear of the ridge.
+   */
+  flemishRoof(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const span = top - y;
+    const eave = y + span * 0.06;
+    const skirt = insetRing(deck, -1.1, 0.02) || deck;
+    band(trim, deck, y, skirt, eave, null, PIN_STONE);
+
+    // roughly 70 degrees: a mansard this steep reads as a wall, which is the
+    // whole difference between this roof and a bevelled lid
+    const ridgeY = y + span * 0.66;
+    const ridge = insetRing(skirt, span * 0.23, 0.05);
+    if (ridge) {
+      band(trim, skirt, eave, ridge, ridgeY, null, PIN_STONE);
+      capUp(wall, ridge, ridgeY, null, PIN_DARK);
+    } else {
+      capUp(wall, skirt, eave, null, PIN_DARK);
+    }
+
+    // dormers stand on the lower half of the pitch, gabled and finialled
+    const inset = span * 0.05;
+    const [gx, gz] = ringCentroid(skirt);
+    alongRing(skirt, 12, (x, z, edgeAng) => {
+      const dx = gx - x;
+      const dz = gz - z;
+      const len = Math.hypot(dx, dz) || 1;
+      const px = x + (dx / len) * inset;
+      const pz = z + (dz / len) * inset;
+      const dorm = rectRing(px, pz, 5.5, 4, Math.cos(edgeAng), Math.sin(edgeAng));
+      const dy = eave + span * 0.06;
+      band(trim, dorm, dy, dorm, dy + span * 0.3, null, PIN_STONE);
+      pyramidUp(trim, dorm, dy + span * 0.3, dy + span * 0.5, PIN_STONE);
+    });
+
+    const ext = planExtent(deck, c.ang);
+    const [cx, cz] = ringCentroid(ridge || skirt);
+    const ca = Math.cos(c.ang);
+    const sa = Math.sin(c.ang);
+    const r = Math.max(4, Math.min(ext.along, ext.across) * 0.09);
+    for (const sgn of [-1, 1]) {
+      const u = sgn * ext.along * 0.22;
+      const tx = cx + u * ca;
+      const tz = cz + u * sa;
+      const tower = regularRing(tx, tz, r, 4, c.ang);
+      const foot = ridgeY - span * 0.3;
+      const belfry = foot + (top - foot) * 0.45;
+      band(trim, tower, foot, tower, belfry, null, PIN_STONE);
+      for (const [px, pz] of tower) pinnacle(trim, px, pz, r * 0.2, belfry, span * 0.16, c.ang, PIN_STONE);
+      coneUp(trim, scaleRing(tower, tx, tz, 0.9), belfry, tx, top, tz, null, PIN_STONE);
+    }
+  },
+
+  /**
+   * Richardson's roofscape: a steep tiled hip with corner dormers over the
+   * ranges, and the bell tower rising off the Grant Street front, which is the
+   * west side of the block.
+   */
+  courthouseTower(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const blockTop = y + 9;
+    const ridge = insetRing(deck, planExtent(deck, c.ang).across * 0.26, 0.04);
+    if (ridge) {
+      band(wall, deck, y, ridge, blockTop, null, PIN_DARK);
+      capUp(wall, ridge, blockTop, null, PIN_DARK);
+    } else {
+      capUp(wall, deck, y, null, PIN_DARK);
+    }
+    // "the roof is steep with dormers placed at all the corners"
+    for (const [px, pz] of ringCorners(deck, 4)) {
+      const turret = regularRing(px, pz, 3.2, 6, c.ang);
+      band(trim, turret, y - 3, turret, y + 6, null, PIN_STONE);
+      pyramidUp(trim, turret, y + 6, y + 14, PIN_STONE);
+    }
+    alongRing(deck, 16, (x, z, edgeAng) => {
+      const dorm = rectRing(x, z, 4.4, 3.2, Math.cos(edgeAng), Math.sin(edgeAng));
+      band(trim, dorm, y + 1, dorm, y + 4.6, null, PIN_STONE);
+      pyramidUp(trim, dorm, y + 4.6, y + 7.6, PIN_STONE);
+    });
+
+    const [tx, tz] = frontPoint(deck, -1, 0, 13);
+    const r = 9.5;
+    const shaft = regularRing(tx, tz, r, 4, c.ang);
+    const belfry = y + (top - y) * 0.66;
+    band(wall, shaft, c.baseY + 4, shaft, belfry, null, PIN_NONE);
+    band(trim, shaft, belfry, shaft, belfry + 4, null, PIN_STONE);
+    const corbel = insetRing(shaft, -1.2, 0.02) || shaft;
+    band(trim, corbel, belfry + 4, corbel, belfry + 6, null, PIN_STONE);
+    for (const [px, pz] of corbel) {
+      const turret = regularRing(px, pz, 1.9, 6, c.ang);
+      band(trim, turret, belfry - 8, turret, belfry + 8, null, PIN_STONE);
+      pyramidUp(trim, turret, belfry + 8, belfry + 13, PIN_STONE);
+    }
+    pyramidUp(trim, scaleRing(corbel, tx, tz, 0.94), belfry + 6, top, PIN_STONE);
+  },
+
+  /**
+   * Barrel-vaulted display houses under the Palm Court dome. There is no
+   * parapet and no cornice on a glasshouse, so the vault springs straight off
+   * the plinth the shell leaves behind.
+   */
+  glasshouse(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const span = top - y;
+    // segmental, not semicircular: the display houses are long shallow arcs
+    vaultUp(wall, deck, y, 11, span * 0.4, 4, PIN_NONE);
+    // glazing bars, without which the vault reads as one blank shell
+    alongRing(deck, 5, (x, z, edgeAng) => {
+      const rib = rectRing(x, z, 0.5, 1.3, Math.cos(edgeAng), Math.sin(edgeAng));
+      band(trim, rib, y - span * 0.3, rib, y + span * 0.16, null, PIN_STONE);
+    });
+
+    const [cx, cz] = ringAreaCentroid(deck);
+    const ext = planExtent(deck, c.ang);
+    const ca = Math.cos(c.ang);
+    const sa = Math.sin(c.ang);
+    for (const [u, k] of [[0, 1], [-ext.along * 0.3, 0.5], [ext.along * 0.29, 0.46]]) {
+      const dx = cx + u * ca;
+      const dz = cz + u * sa;
+      if (!pointInRing(dx, dz, deck)) continue;
+      const r = Math.min(15 * k, distToRing(dx, dz, deck) - 1);
+      if (r < 3) continue;
+      // the Palm Court apex is the building's stated height; the side houses
+      // spring from the same ring and stop short of it
+      const springY = y + span * 0.26;
+      const apex = springY + (top - springY) * (k === 1 ? 0.82 : 0.5);
+      const drum = regularRing(dx, dz, r, 14, 0);
+      band(trim, drum, springY - span * 0.2, drum, springY, null, PIN_STONE);
+      domeUp(wall, dx, dz, r, springY, apex - springY, 14, 5, PIN_NONE);
+      const lantern = regularRing(dx, dz, Math.max(0.8, r * 0.15), 8, 0);
+      const lantH = (top - apex) * (k === 1 ? 0.55 : 0.3);
+      band(trim, lantern, apex - 0.3, lantern, apex + lantH, null, PIN_STONE);
+      coneUp(trim, lantern, apex + lantH, dx, apex + lantH * 2.2, dz, null, PIN_STONE);
     }
   },
 

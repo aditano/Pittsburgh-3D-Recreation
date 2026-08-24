@@ -21,7 +21,14 @@ const PAINT = {
 };
 
 const CONCRETE = 0x9a9689;
-const DECK = 0x2a2c30;
+/**
+ * Roadway. The dark value is the night palette; in daylight it made every deck
+ * and approach ramp read as a black slab laid across the ground rather than as
+ * asphalt, which was most obvious where the Fort Duquesne ramp crosses the lawn
+ * at Point State Park.
+ */
+const DECK_DAY = 0x5c5e63;
+const DECK_NIGHT = 0x2a2c30;
 const WALK = 0xb8b0a0;
 
 /**
@@ -303,7 +310,13 @@ function addBents(geoms, frame, ts, deckY, width, yFn) {
 /**
  * Approach viaducts. Every one of these bridges reaches its street grid on a
  * ramp rather than dropping off its abutment, so the deck keeps going past each
- * end at roughly a 6% grade and is carried on bents until it meets grade.
+ * end and is carried on bents until it meets grade.
+ *
+ * The ramp is kept short and tapering. At a 5.5% grade a 14 m deck needs over
+ * 250 m of run, and since the ramp is modelled as a straight continuation of the
+ * span rather than following the real curving alignment, that put a full-width
+ * roadway clean across Point State Park. An 8.5% grade capped at 150 m is still
+ * a plausible urban approach and stays close to the abutment.
  */
 function addApproach(geoms, deckGeoms, frame, deckY, width, yFn, thick) {
   for (const end of [0, 1]) {
@@ -312,8 +325,8 @@ function addApproach(geoms, deckGeoms, frame, deckY, width, yFn, thick) {
     const ground0 = Math.max(0, yFn(foot.x, foot.z));
     const drop = deckY - ground0;
     if (drop < 3) continue;
-    const rampLen = Math.min(300, Math.max(50, drop / 0.055));
-    const segs = Math.max(2, Math.round(rampLen / 30));
+    const rampLen = Math.min(150, Math.max(30, drop / 0.085));
+    const segs = Math.max(2, Math.round(rampLen / 25));
     let y = deckY;
     let s = end === 0 ? 0 : frame.len;
     for (let i = 1; i <= segs; i++) {
@@ -324,10 +337,13 @@ function addApproach(geoms, deckGeoms, frame, deckY, width, yFn, thick) {
       const ground = Math.max(0, yFn(b.x, b.z));
       const y1 = Math.max(target, i === segs ? ground : ground + 1.2);
       b.y = y1;
-      boxBetween(deckGeoms, a, b, thick, width * 0.94);
+      // Narrow as it descends so it merges into the grid instead of ending as a
+      // full-width plate dumped on the ground.
+      const taper = width * (0.94 - 0.34 * (i / segs));
+      boxBetween(deckGeoms, a, b, thick, taper);
       if (y1 - ground > 2.5) {
         for (const side of [-1, 1]) {
-          const leg = at(frame, s1 / frame.len, (y1 + ground) * 0.5, side, width * 0.34);
+          const leg = at(frame, s1 / frame.len, (y1 + ground) * 0.5, side, taper * 0.36);
           addBox(geoms, leg, new THREE.Vector3(1.6, y1 - ground, 1.4), frame.quat);
         }
       }
@@ -723,7 +739,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
     metalness: 0.03,
   });
   const deckMat = new THREE.MeshStandardMaterial({
-    color: DECK,
+    color: dayMode ? DECK_DAY : DECK_NIGHT,
     roughness: 0.86,
     metalness: 0.08,
   });

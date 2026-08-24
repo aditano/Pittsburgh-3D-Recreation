@@ -500,23 +500,58 @@ function plantTrees(parks, terrainFn, waterIndex, yFn) {
 
   if (!positions.length) return null;
   const count = positions.length / 4;
-  const mesh = new THREE.InstancedMesh(
-    new THREE.ConeGeometry(4.2, 13, 5),
-    materials.treeMat,
-    count,
-  );
-  mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+
+  // Pittsburgh's hillsides are mostly oak and maple, so a single cone read as a
+  // field of identical Christmas trees. Split the stand into rounded broadleaf
+  // canopies and a minority of conifers, and vary each instance's proportions
+  // and tint so the massed planting does not repeat.
+  const broadleaf = [];
+  const conifer = [];
   for (let i = 0; i < count; i++) {
-    const s = positions[i * 4 + 3];
-    dummy.position.set(positions[i * 4], positions[i * 4 + 1] + 6.2 * s, positions[i * 4 + 2]);
-    dummy.scale.setScalar(s);
-    dummy.rotation.y = hash01(positions[i * 4], positions[i * 4 + 2]) * Math.PI * 2;
-    dummy.updateMatrix();
-    mesh.setMatrixAt(i, dummy.matrix);
+    const x = positions[i * 4];
+    const z = positions[i * 4 + 2];
+    (hash01(x * 0.31, z * 0.29) < 0.24 ? conifer : broadleaf).push(i);
   }
-  mesh.castShadow = false;
-  mesh.receiveShadow = true;
-  return mesh;
+
+  const group = new THREE.Group();
+  const kinds = [
+    { idx: broadleaf, geom: new THREE.IcosahedronGeometry(4.6, 0), lift: 5.4, squash: 0.86 },
+    { idx: conifer, geom: new THREE.ConeGeometry(3.4, 13, 6), lift: 6.4, squash: 1 },
+  ];
+
+  for (const kind of kinds) {
+    if (!kind.idx.length) continue;
+    const mesh = new THREE.InstancedMesh(kind.geom, materials.treeMat, kind.idx.length);
+    mesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    const colors = new Float32Array(kind.idx.length * 3);
+    const tint = new THREE.Color();
+    for (let n = 0; n < kind.idx.length; n++) {
+      const i = kind.idx[n];
+      const x = positions[i * 4];
+      const y = positions[i * 4 + 1];
+      const z = positions[i * 4 + 2];
+      const s = positions[i * 4 + 3];
+      const wobble = 0.78 + hash01(z * 0.7, x * 0.9) * 0.5;
+      dummy.position.set(x, y + kind.lift * s * kind.squash, z);
+      dummy.scale.set(s * wobble, s * kind.squash * (1.9 - wobble), s * wobble);
+      dummy.rotation.y = hash01(x, z) * Math.PI * 2;
+      dummy.updateMatrix();
+      mesh.setMatrixAt(n, dummy.matrix);
+      const h = hash01(x * 1.7, z * 1.3);
+      // Instance colours are consumed in the working (linear) space, so the
+      // lightness has to be authored as sRGB and converted or the canopy comes
+      // out bleached. Foliage sits near 0.10 albedo.
+      tint.setHSL(0.24 + h * 0.07, 0.42 + h * 0.18, 0.26 + h * 0.14, THREE.SRGBColorSpace);
+      colors[n * 3] = tint.r;
+      colors[n * 3 + 1] = tint.g;
+      colors[n * 3 + 2] = tint.b;
+    }
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(colors, 3);
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
 }
 
 function buildingTint(b, cx, cz) {
