@@ -105,7 +105,7 @@ function prism(ring, y0, y1, holes = []) {
   }
   const geom = new THREE.ExtrudeGeometry(shape, { depth: y1 - y0, bevelEnabled: false });
   geom.rotateX(-Math.PI / 2);
-  geom.translate(0, y1, 0);
+  geom.translate(0, y0, 0);
   return geom;
 }
 

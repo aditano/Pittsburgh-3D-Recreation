@@ -678,8 +678,16 @@ export function createCityMaterials({ dayMode = true } = {}) {
         return normalize(vec2(-1.0, 0.17 * north - 0.32 * south));
       }
 
+      // Sine-free hash. The usual fract(sin(dot(...)) * 43758.5) breaks down
+      // here: the flow frame reaches coordinates in the hundreds, so sin() is
+      // evaluated tens of thousands of radians out where float32 resolves only
+      // a couple of hundred steps per period. The hash then correlates between
+      // neighbouring cells and the correlation reads as diagonal banding
+      // marching across the channel.
       float vhash(vec2 c) {
-        return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453);
+        vec3 p = fract(vec3(c.xyx) * 0.1031);
+        p += dot(p, p.yzx + 33.33);
+        return fract((p.x + p.y) * p.z);
       }
 
       float vnoise(vec2 p) {
@@ -705,7 +713,7 @@ export function createCityMaterials({ dayMode = true } = {}) {
         float n = vnoise(q) * 0.60;
         n += vnoise(q * 2.4 + vec2(t * 0.2, 0.0)) * 0.22;
         n += vnoise(vec2(along * 0.004 + t * 0.03, side * 0.018)) * 0.44;
-        return n;
+        return n / 1.26;
       }`;
 
     shader.fragmentShader = shader.fragmentShader
@@ -722,7 +730,7 @@ export function createCityMaterials({ dayMode = true } = {}) {
            float c0 = riverSurface(vWorldPos.xz, flow, uTime);
            float ca = riverSurface(vWorldPos.xz + flow * e, flow, uTime);
            float cb = riverSurface(vWorldPos.xz + across * e, flow, uTime);
-           vec2 grad = vec2(ca - c0, cb - c0) * 0.42;
+           vec2 grad = vec2(ca - c0, cb - c0) * 0.53;
            normal = normalize(normal + vec3(
              flow.x * grad.x + across.x * grad.y,
              0.0,
@@ -735,8 +743,10 @@ export function createCityMaterials({ dayMode = true } = {}) {
          {
            vec2 flow = riverFlow(vWorldPos.xz);
            float s = riverSurface(vWorldPos.xz, flow, uTime);
-           diffuseColor.rgb *= 0.96 + s * 0.06;
-           diffuseColor.rgb += smoothstep(1.0, 1.24, s) * vec3(0.045, 0.07, 0.085);
+           diffuseColor.rgb *= 0.94 + s * 0.12;
+           // Wide, soft ramp: keyed to the old unnormalised peak this only lit
+           // the top 1.5% of the range, so the sheen arrived as hard slivers.
+           diffuseColor.rgb += smoothstep(0.72, 0.99, s) * vec3(0.045, 0.07, 0.085);
          }`,
       );
   };
