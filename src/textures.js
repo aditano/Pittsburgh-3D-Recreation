@@ -596,15 +596,15 @@ export function createCityMaterials({ dayMode = true } = {}) {
   });
 
   const waterUniforms = { uTime: { value: 0 } };
+  // No albedo/roughness maps: at river scale a tiled texture reads as corduroy.
+  // The surface is shaded entirely from flow-aligned noise in the shader below.
   const waterMat = new THREE.MeshStandardMaterial({
-    color: dayMode ? 0x2a6a8a : 0x0a2834,
-    map: water.map,
-    roughnessMap: water.roughnessMap,
-    roughness: dayMode ? 0.18 : 0.22,
-    metalness: 0.42,
+    color: dayMode ? 0x34718c : 0x0a2834,
+    roughness: dayMode ? 0.24 : 0.28,
+    metalness: 0.34,
     transparent: true,
-    opacity: dayMode ? 0.88 : 0.94,
-    envMapIntensity: dayMode ? 1.4 : 1.15,
+    opacity: dayMode ? 0.9 : 0.95,
+    envMapIntensity: dayMode ? 1.25 : 1.05,
     polygonOffset: true,
     polygonOffsetFactor: 1,
     polygonOffsetUnits: 1,
@@ -626,6 +626,12 @@ export function createCityMaterials({ dayMode = true } = {}) {
     // All three rivers run broadly west; the Allegheny carries a slight
     // southward set and the Monongahela a northward one as they converge on
     // the Point, so blend the cross-stream term across the confluence.
+    //
+    // Surface detail is value-noise rather than summed sine waves: at a few
+    // hundred metres across, periodic wave trains alias into visible corduroy
+    // banding. The sampling frame is compressed along the flow and stretched
+    // across it, which stretches the noise into the downstream streaks a real
+    // river shows, and it is advected so the streaks travel with the current.
     const flowCommon = `
       uniform float uTime;
       varying vec3 vWorldPos;
@@ -636,36 +642,31 @@ export function createCityMaterials({ dayMode = true } = {}) {
         return normalize(vec2(-1.0, 0.17 * north - 0.32 * south));
       }
 
-      float waveBand(vec2 p, vec2 dir, float scale, float speed, float t) {
-        return sin(dot(p, dir) * scale - t * speed);
+      float vhash(vec2 c) {
+        return fract(sin(dot(c, vec2(127.1, 311.7))) * 43758.5453);
       }
 
-      // Sum of travelling wave trains advected downstream; returns height and
-      // its analytic gradient so the normal can be perturbed without a texture.
-      vec3 waterWaves(vec2 p, vec2 flow, float t) {
-        vec2 a = normalize(flow + vec2(-flow.y, flow.x) * 0.35);
-        vec2 b = normalize(flow + vec2(flow.y, -flow.x) * 0.55);
-        vec2 c = normalize(vec2(-flow.y, flow.x) + flow * 0.25);
+      float vnoise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(
+          mix(vhash(i), vhash(i + vec2(1.0, 0.0)), u.x),
+          mix(vhash(i + vec2(0.0, 1.0)), vhash(i + vec2(1.0, 1.0)), u.x),
+          u.y);
+      }
 
-        float h = 0.0;
-        vec2 g = vec2(0.0);
-
-        float s1 = 0.085;
-        float p1 = waveBand(p, a, s1, 2.6, t);
-        h += p1 * 0.55;
-        g += a * s1 * cos(dot(p, a) * s1 - t * 2.6) * 0.55;
-
-        float s2 = 0.041;
-        float p2 = waveBand(p, b, s2, 1.7, t);
-        h += p2 * 0.75;
-        g += b * s2 * cos(dot(p, b) * s2 - t * 1.7) * 0.75;
-
-        float s3 = 0.17;
-        float p3 = waveBand(p, c, s3, 3.4, t);
-        h += p3 * 0.22;
-        g += c * s3 * cos(dot(p, c) * s3 - t * 3.4) * 0.22;
-
-        return vec3(h, g);
+      // Two advected octaves in the stretched flow frame, plus the same field
+      // sampled at a small offset so the gradient can be differenced cheaply.
+      float riverSurface(vec2 p, vec2 flow, float t) {
+        vec2 across = vec2(-flow.y, flow.x);
+        float along = dot(p, flow);
+        float side = dot(p, across);
+        vec2 q = vec2(along * 0.22 - t * 1.1, side * 0.035);
+        float n = vnoise(q) * 0.62;
+        n += vnoise(q * 2.7 + vec2(t * 0.5, 0.0)) * 0.26;
+        n += vnoise(vec2(along * 0.02 + t * 0.05, side * 0.012)) * 0.5;
+        return n;
       }`;
 
     shader.fragmentShader = shader.fragmentShader
@@ -675,9 +676,16 @@ export function createCityMaterials({ dayMode = true } = {}) {
         `#include <normal_fragment_maps>
          {
            vec2 flow = riverFlow(vWorldPos.xz);
-           vec2 drift = vWorldPos.xz - flow * uTime * 5.5;
-           vec3 wv = waterWaves(drift, flow, uTime);
-           normal = normalize(normal + vec3(wv.y, 0.0, wv.z) * 2.4);
+           vec2 across = vec2(-flow.y, flow.x);
+           float e = 2.5;
+           float c0 = riverSurface(vWorldPos.xz, flow, uTime);
+           float ca = riverSurface(vWorldPos.xz + flow * e, flow, uTime);
+           float cb = riverSurface(vWorldPos.xz + across * e, flow, uTime);
+           vec2 grad = vec2(ca - c0, cb - c0) * 0.9;
+           normal = normalize(normal + vec3(
+             flow.x * grad.x + across.x * grad.y,
+             0.0,
+             flow.y * grad.x + across.y * grad.y));
          }`,
       )
       .replace(
@@ -685,12 +693,9 @@ export function createCityMaterials({ dayMode = true } = {}) {
         `#include <color_fragment>
          {
            vec2 flow = riverFlow(vWorldPos.xz);
-           vec2 drift = vWorldPos.xz - flow * uTime * 5.5;
-           float crest = waterWaves(drift, flow, uTime).x;
-           float sheen = smoothstep(0.55, 1.45, crest);
-           diffuseColor.rgb *= 0.92 + crest * 0.05;
-           diffuseColor.rgb += sheen * vec3(0.05, 0.09, 0.11);
-           diffuseColor.rgb += vec3(0.02, 0.04, 0.05);
+           float s = riverSurface(vWorldPos.xz, flow, uTime);
+           diffuseColor.rgb *= 0.94 + s * 0.09;
+           diffuseColor.rgb += smoothstep(0.86, 1.16, s) * vec3(0.05, 0.08, 0.1);
          }`,
       );
   };
