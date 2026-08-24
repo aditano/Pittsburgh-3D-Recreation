@@ -563,10 +563,13 @@ function buildingTint(b, cx, cz) {
   if (/cathedral|chapel|church/.test(n)) return new THREE.Color(0x8a8478);
   if (/carnegie|sandstone|soldiers/.test(n)) return new THREE.Color(0x8a8070);
   if (/convention/.test(n)) return new THREE.Color(0xd8dcd8);
+  // The family palette already carries the hue, so this only needs to break up
+  // the repetition: a wide spread in value plus a slight warm/cool drift, so two
+  // neighbours in the same family are not the same building twice.
   const h = hash01(cx, cz);
-  const height = b.h || 10;
-  const cool = height > 70 ? 0.62 : 0.08;
-  return new THREE.Color().setHSL(cool + h * 0.05, 0.06 + h * 0.04, 0.9 + h * 0.08);
+  const g = hash01(cz * 3.1, cx * 1.7);
+  const cool = b.h > 70 ? 0.58 : 0.07;
+  return new THREE.Color().setHSL(cool + g * 0.06, 0.03 + h * 0.07, 0.74 + h * 0.3);
 }
 
 async function buildCity(data) {

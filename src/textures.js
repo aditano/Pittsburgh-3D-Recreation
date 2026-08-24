@@ -46,17 +46,24 @@ function makeCanvases(w, h) {
 }
 
 /**
- * Every family's palette below was picked for the night scene, which leaves the
- * brickwork near 0.04 albedo where real brick sits around 0.25. In daylight that
- * flattens the buildings: with almost no tonal range, the cornices, setbacks and
- * pier bays stop reading and the stock looks like plain dark boxes. Set once by
- * `createCityMaterials` so all fourteen families lift together.
+ * Every family's palette is authored twice, because the night colours are
+ * nowhere near a daylight reflectance: the night brickwork sits around 0.04
+ * albedo where sunlit brick is nearer 0.25. Running the night set in daylight
+ * flattens the city — no tonal range, so cornices, setbacks and pier bays stop
+ * reading and the stock looks like plain dark boxes.
+ *
+ * Gamma-lifting the night colours instead was the previous approach and it does
+ * not work either: a single exponent that brings brick up to 0.25 also drags
+ * dark bronze and mirror glass up past 0.4, and it desaturates as it goes, so
+ * the whole skyline converges on the same pale blue-grey. The daylight values
+ * below are authored against the real materials instead. Set once by
+ * `createCityMaterials` so all fourteen families switch together.
  */
 let facadeDayMode = true;
 
 /**
- * Gamma lift toward daylight reflectance. Applied in sRGB so the families keep
- * their relative order — pale stone stays pale, dark glass stays dark.
+ * Gamma lift toward daylight reflectance, for the few colours that have no
+ * authored daylight counterpart. Applied in sRGB so relative order survives.
  */
 function liftForDay(hex, exponent = 0.45) {
   if (!facadeDayMode) return hex;
@@ -70,6 +77,81 @@ function liftForDay(hex, exponent = 0.45) {
   return `rgb(${out[0]},${out[1]},${out[2]})`;
 }
 
+/** sRGB hex or rgb() string -> [r, g, b] in 0..255. */
+function parseRgb(css) {
+  const hex = /^#([0-9a-f]{6})$/i.exec(css);
+  if (hex) {
+    const v = parseInt(hex[1], 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+  const fn = /rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i.exec(css);
+  return fn ? [Number(fn[1]), Number(fn[2]), Number(fn[3])] : [128, 128, 128];
+}
+
+/** Scale a colour's luminance, clamped. `k` < 1 darkens, > 1 lightens. */
+function shade(css, k) {
+  const [r, g, b] = parseRgb(css);
+  const f = (v) => Math.max(0, Math.min(255, Math.round(v * k)));
+  return `rgb(${f(r)},${f(g)},${f(b)})`;
+}
+
+/** Blend two colours in sRGB. `t` = 0 gives `a`, 1 gives `b`. */
+function mixCss(a, b, t) {
+  const A = parseRgb(a);
+  const B = parseRgb(b);
+  const f = (i) => Math.round(A[i] + (B[i] - A[i]) * t);
+  return `rgb(${f(0)},${f(1)},${f(2)})`;
+}
+
+/**
+ * Anchor swatches that `architecture.js` pins its trim triangles to, painted at
+ * both the top and the bottom edge of the canvas.
+ *
+ * Which edge UV v = 0 lands on depends on the texture's `flipY`, which is true
+ * by default for a CanvasTexture, so painting only the top-left corner - the
+ * obvious reading of the paint code - actually put the anchors in the middle of
+ * the bottom row of windows. Painting both edges makes the anchors correct
+ * either way and keeps the two files from having to agree about it.
+ *
+ * Spans in UV, matching ROOF_UV and TRIM_UV in architecture.js:
+ *   u 0     .. 0.0156   the dark anchor  (roof decks, soffits, storefront glazing)
+ *   u 0.0156.. 0.0469   the stone anchor (base courses, cornices, parapets, piers)
+ *   v within 0.0156 of either end
+ * Trim triangles have all three vertices on one UV, so they sample mip 0 at any
+ * range and hold their exact tone; the strips do not need to survive mipping.
+ */
+const PIN_DARK_U = 0.0156;
+const PIN_STONE_U = 0.0469;
+const PIN_V = 0.0156;
+
+function paintPinStrip(ctx, width, height, dark, stone) {
+  const band = Math.max(4, Math.round(height * PIN_V));
+  for (const y of [0, height - band]) {
+    ctx.fillStyle = dark;
+    ctx.fillRect(0, y, Math.round(width * PIN_DARK_U), band);
+    ctx.fillStyle = stone;
+    ctx.fillRect(
+      Math.round(width * PIN_DARK_U),
+      y,
+      Math.round(width * (PIN_STONE_U - PIN_DARK_U)),
+      band,
+    );
+  }
+}
+
+/**
+ * One texture repeat carries `cols` windows across and `rows` floors up; the
+ * caller scales UVs so a repeat covers `cols * windowW` by `rows * floorH`
+ * metres, putting one painted window on one real window.
+ *
+ * What has to read from 400-1500 m up is not the window itself - at that range
+ * a window is one or two pixels and mips to a flat average - but the horizontal
+ * and vertical BANDING between the windows: the spandrel under each sill, the
+ * pier between each bay. So those bands carry most of the tonal range here, and
+ * the window-to-wall contrast is deliberately kept low. The previous painting
+ * did the opposite, outlining every window in near-black, and the result mipped
+ * down to salt-and-pepper noise that read as a patterned box.
+ */
 function paintFacade(opts) {
   const {
     seed = 1,
@@ -83,15 +165,23 @@ function paintFacade(opts) {
     panels = false,
     tallWindows = false,
   } = opts;
-  const base = liftForDay(opts.base ?? '#3d322c');
-  const mortar = liftForDay(opts.mortar ?? '#2a2420');
-  const frame = liftForDay(opts.frame ?? '#161410');
+  const day = facadeDayMode;
+  const pal = (day && opts.day) || {};
+  const base = pal.base ?? liftForDay(opts.base ?? '#3d322c');
+  const mortar = pal.mortar ?? liftForDay(opts.mortar ?? '#2a2420');
   // Daylight glazing mirrors the sky rather than reading as a black hole, but
   // stays darker than the surrounding wall.
-  const windowDark = facadeDayMode
-    ? liftForDay(opts.windowDark ?? '#07090d', 0.62)
-    : (opts.windowDark ?? '#07090d');
+  const glazing =
+    pal.windowDark ??
+    (day ? liftForDay(opts.windowDark ?? '#07090d', 0.62) : (opts.windowDark ?? '#07090d'));
   const windowLit = opts.windowLit ?? '#e0b25a';
+  // Painted or anodised frames are lighter than the glass they hold in daylight.
+  // A dark frame is a night-time reading and it is what turned the window grid
+  // into noise.
+  const frame =
+    pal.frame ??
+    (opts.frame ? liftForDay(opts.frame) : day ? mixCss(base, '#e8e8e4', 0.35) : '#161410');
+  const sky = day ? '#a8c6e0' : '#20303c';
 
   const rand = rng(seed);
   const { color, emissive, rough, c, e, r } = makeCanvases(width, height);
@@ -106,17 +196,13 @@ function paintFacade(opts) {
   if (brick) {
     const bh = 7;
     const bw = 16;
-    c.fillStyle = mortar;
     for (let y = 0; y < height; y += bh) {
       const shift = (y / bh) % 2 === 0 ? 0 : bw * 0.5;
       for (let x = -bw; x < width + bw; x += bw) {
-        const shade = 0.88 + rand() * 0.18;
-        c.fillStyle = `rgba(0,0,0,${0.08 + rand() * 0.1})`;
+        c.fillStyle = mortar;
         c.fillRect(x + shift, y, bw - 1, bh - 1);
-        c.fillStyle = base;
-        c.globalAlpha = shade;
+        c.fillStyle = shade(base, 0.9 + rand() * 0.2);
         c.fillRect(x + shift + 1, y + 1, bw - 3, bh - 3);
-        c.globalAlpha = 1;
       }
     }
   } else if (panels) {
@@ -146,6 +232,32 @@ function paintFacade(opts) {
   const cellH = height / rows;
   const insetX = tallWindows ? 0.28 : 0.22;
   const insetY = tallWindows ? 0.1 : 0.22;
+  const reveal = Math.max(1, Math.round(cellH * 0.035));
+
+  // Spandrel under each sill and pier beside each bay. These are the bands that
+  // survive to flyover range, so they get real tonal separation: the spandrel
+  // sits in the window head's shadow, the pier catches light on one flank.
+  const spandrel = shade(base, day ? 0.82 : 0.7);
+  const sill = shade(base, day ? 1.18 : 1.3);
+  const pierLit = shade(base, day ? 1.1 : 1.16);
+  const pierShade = shade(base, day ? 0.86 : 0.78);
+
+  for (let row = 0; row < rows; row++) {
+    const y = row * cellH + cellH * insetY;
+    const h = cellH * (1 - insetY * 2);
+    c.fillStyle = spandrel;
+    c.fillRect(0, y + h, width, cellH * insetY * 2);
+    c.fillStyle = sill;
+    c.fillRect(0, y + h, width, Math.max(1, reveal * 0.7));
+  }
+  for (let col = 0; col < cols; col++) {
+    const x = col * cellW;
+    const pw = Math.max(1, Math.round(cellW * insetX));
+    c.fillStyle = pierLit;
+    c.fillRect(x, 0, pw, height);
+    c.fillStyle = pierShade;
+    c.fillRect(x + cellW - pw, 0, pw, height);
+  }
 
   for (let row = 0; row < rows; row++) {
     for (let col = 0; col < cols; col++) {
@@ -154,36 +266,55 @@ function paintFacade(opts) {
       const y = row * cellH + cellH * insetY;
       const w = cellW * (1 - insetX * 2);
       const h = cellH * (1 - insetY * 2);
+
       c.fillStyle = frame;
       c.fillRect(x - 1, y - 1, w + 2, h + 2);
+
       if (lit) {
         const glow = c.createLinearGradient(x, y, x, y + h);
         glow.addColorStop(0, windowLit);
-        glow.addColorStop(1, '#8a6230');
+        glow.addColorStop(1, shade(windowLit, 0.6));
         c.fillStyle = glow;
         e.fillStyle = windowLit;
+      } else if (day) {
+        // Sky at the head of the pane, the darker interior at the cill, and a
+        // per-pane offset so the grid does not read as one repeated stamp.
+        const jitter = 0.78 + rand() * 0.44;
+        const g = c.createLinearGradient(x, y, x, y + h);
+        g.addColorStop(0, shade(mixCss(glazing, sky, 0.5), jitter));
+        g.addColorStop(0.55, shade(mixCss(glazing, sky, 0.22), jitter));
+        g.addColorStop(1, shade(glazing, jitter * 0.92));
+        c.fillStyle = g;
+        e.fillStyle = '#000';
       } else {
-        c.fillStyle = windowDark;
+        c.fillStyle = glazing;
         e.fillStyle = '#000';
       }
       c.fillRect(x, y, w, h);
       e.fillRect(x, y, w, h);
       r.fillStyle = lit ? '#2a2a2a' : '#3a3a3a';
       r.fillRect(x, y, w, h);
+
+      // The head reveal: a real window is set back in its opening, and the
+      // shadow the head casts on the glass is the cheapest depth cue there is.
+      c.fillStyle = `rgba(0,0,0,${day ? 0.3 : 0.42})`;
+      c.fillRect(x, y, w, reveal);
+      c.fillRect(x, y, Math.max(1, reveal * 0.6), h);
+
       if (lit && rand() < 0.45) {
         c.fillStyle = 'rgba(255,230,180,0.25)';
         c.fillRect(x + 1, y + 1, w * 0.4, h * 0.35);
+      } else if (!lit && rand() < 0.3) {
+        // Blinds and curtains, which is most of what a daytime window shows.
+        c.fillStyle = day ? 'rgba(228,226,216,0.5)' : 'rgba(120,124,132,0.16)';
+        c.fillRect(x + reveal, y + reveal, w - reveal, h * (0.2 + rand() * 0.5));
       }
     }
   }
 
-  // Roof sample texel in the corner (UVs for caps point here)
-  c.fillStyle = '#1a1816';
-  c.fillRect(0, 0, 2, 2);
-  e.fillStyle = '#000';
-  e.fillRect(0, 0, 2, 2);
-  r.fillStyle = '#d0d0d0';
-  r.fillRect(0, 0, 2, 2);
+  paintPinStrip(c, width, height, day ? '#4c4a46' : '#1a1816', shade(base, day ? 1.06 : 1.15));
+  paintPinStrip(e, width, height, '#000', '#000');
+  paintPinStrip(r, width, height, '#b0b0b0', '#d0d0d0');
 
   return {
     map: canvasTexture(color),
@@ -306,263 +437,317 @@ function stdMat(maps, extras = {}) {
   });
 }
 
+/**
+ * Daylight is a different scene, not the same scene turned up.
+ *
+ * Every palette below is authored for the night view: a third of the windows
+ * lit, and emissive up around 0.7 so they glow. Run that same table in daylight
+ * and every wall in the city carries a glowing orange grid, which is precisely
+ * what makes the stock read as patterned boxes instead of buildings. In daylight
+ * the windows are glass reflecting sky, and only the odd interior light shows.
+ */
+const DAY_LIT_SCALE = 0.06;
+
 export function createCityMaterials({ dayMode = true } = {}) {
   facadeDayMode = dayMode;
+  /** Facade material for one family, with the night palette adapted to daylight. */
+  const facade = (paint, extras = {}) =>
+    stdMat(
+      paintFacade(
+        dayMode ? { ...paint, litChance: (paint.litChance ?? 0.3) * DAY_LIT_SCALE } : paint,
+      ),
+      dayMode
+        ? { ...extras, emissiveIntensity: (extras.emissiveIntensity ?? 0) * DAY_LIT_SCALE }
+        : extras,
+    );
   const families = {
+    // Pittsburgh's low-rise stock is overwhelmingly red brick.
     lowrise: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 11,
           base: '#3a322c',
           mortar: '#2a241e',
+          day: { base: '#8a6a58', mortar: '#6e5346', windowDark: '#586a76' },
           cols: 5,
           rows: 6,
-          litChance: dayMode ? 0.04 : 0.18,
+          litChance: 0.18,
           brick: true,
-        }),
-        { roughness: 0.88, metalness: 0.04, emissiveIntensity: dayMode ? 0.08 : 0.55 },
+        },
+        { roughness: 0.88, metalness: 0.04, emissiveIntensity: 0.55 },
       ),
       floorH: 3.6,
       windowW: 3.8,
     },
     brick: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 22,
           base: '#4a3028',
           mortar: '#2c1e1a',
+          day: { base: '#8f5a44', mortar: '#6b4033', windowDark: '#5a6c78' },
           cols: 6,
           rows: 8,
           litChance: 0.28,
           brick: true,
-        }),
+        },
         { roughness: 0.84, metalness: 0.05, emissiveIntensity: 0.7 },
       ),
       floorH: 3.7,
       windowW: 3.4,
     },
+    // Buff limestone and terracotta, the commercial cladding of the 1900-1930
+    // blocks that still make up most of the Golden Triangle below 30 storeys.
     limestone: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 33,
           base: '#5c584c',
           mortar: '#3a3830',
+          day: { base: '#c4bda8', mortar: '#a49c88', windowDark: '#5d6d78' },
           windowLit: '#e8c878',
           cols: 6,
           rows: 8,
           litChance: 0.3,
-        }),
+        },
         { roughness: 0.78, metalness: 0.08, emissiveIntensity: 0.72 },
       ),
       floorH: 3.8,
       windowW: 3.3,
     },
     steel: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 44,
           base: '#3a4048',
           mortar: '#2a3038',
           windowDark: '#0a1014',
+          day: { base: '#8e9aa4', mortar: '#75808a', windowDark: '#4e6472' },
           windowLit: '#d8c090',
           cols: 8,
           rows: 10,
           litChance: 0.38,
           glass: true,
-        }),
-        { roughness: 0.42, metalness: 0.38, emissiveIntensity: 0.8, envMapIntensity: 0.7 },
+        },
+        {
+          roughness: dayMode ? 0.5 : 0.42,
+          metalness: dayMode ? 0.24 : 0.38,
+          emissiveIntensity: 0.8,
+          envMapIntensity: dayMode ? 0.8 : 0.7,
+        },
       ),
       floorH: 3.5,
       windowW: 3.0,
     },
     glass: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 55,
           base: '#1a2830',
           mortar: '#0e181e',
           windowDark: '#0a1418',
+          day: { base: '#93a8b8', mortar: '#7c909e', windowDark: '#546c7c', frame: '#b6c2cb' },
           windowLit: '#c8d8e8',
           frame: '#0a1014',
           cols: 8,
           rows: 10,
           litChance: 0.42,
           glass: true,
-        }),
+        },
         {
-          roughness: 0.18,
-          metalness: 0.62,
+          roughness: dayMode ? 0.24 : 0.18,
+          metalness: dayMode ? 0.45 : 0.62,
           emissive: 0xa8c4d8,
           emissiveIntensity: 0.85,
-          envMapIntensity: 1.1,
+          envMapIntensity: dayMode ? 1.0 : 1.1,
         },
       ),
       floorH: 3.45,
       windowW: 2.7,
     },
+    // PPG Place is 19,750 panes of mirror glass over six buildings. It reads as
+    // a silver-grey mirror in daylight, not the near-black of the night palette.
     ppg: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 66,
           base: '#0c1c1c',
           mortar: '#061010',
           windowDark: '#061014',
+          day: { base: '#9fb2bb', mortar: '#8496a0', windowDark: '#5d7684', frame: '#c2ccd2' },
           windowLit: '#8ec4b0',
           frame: '#081212',
           cols: 8,
           rows: 12,
           litChance: 0.34,
           glass: true,
-        }),
+        },
         {
-          roughness: 0.14,
-          metalness: 0.7,
+          roughness: dayMode ? 0.16 : 0.14,
+          metalness: dayMode ? 0.5 : 0.7,
           emissive: 0x6aa898,
           emissiveIntensity: 0.75,
-          envMapIntensity: 1.2,
+          envMapIntensity: dayMode ? 1.15 : 1.2,
         },
       ),
       floorH: 3.4,
       windowW: 2.5,
     },
     gothic: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 77,
           base: '#6a6458',
           mortar: '#3e3a32',
           windowDark: '#0c0e12',
+          day: { base: '#bdb298', mortar: '#9a8f76', windowDark: '#4f5a62' },
           windowLit: '#e8d090',
           cols: 5,
           rows: 6,
           litChance: 0.22,
           tallWindows: true,
-        }),
+        },
         { roughness: 0.8, metalness: 0.06, emissiveIntensity: 0.6 },
       ),
       floorH: 5.4,
       windowW: 2.5,
     },
     stadium: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 88,
           base: '#3a4034',
           mortar: '#2a2c26',
           windowDark: '#121410',
+          day: { base: '#9ba1a6', mortar: '#7f858a', windowDark: '#4a5560' },
           windowLit: '#d0c080',
           cols: 4,
           rows: 4,
           litChance: 0.2,
           panels: true,
-        }),
+        },
         { roughness: 0.7, metalness: 0.16, emissiveIntensity: 0.45 },
       ),
       floorH: 8.5,
       windowW: 10,
     },
     artdeco: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 91,
           base: '#6a6458',
           mortar: '#4a4438',
           windowDark: '#0c0e10',
+          day: { base: '#c7bba0', mortar: '#a3977c', windowDark: '#54626c' },
           windowLit: '#e8d090',
           cols: 5,
           rows: 9,
           litChance: 0.26,
           tallWindows: true,
-        }),
+        },
         { roughness: 0.74, metalness: 0.1, emissiveIntensity: 0.65 },
       ),
       floorH: 4.2,
       windowW: 2.8,
     },
     chapel: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 92,
           base: '#6e6860',
           mortar: '#3e3a34',
           windowDark: '#080a0c',
+          day: { base: '#c0b6a4', mortar: '#9b9182', windowDark: '#4b555e' },
           windowLit: '#d8c878',
           cols: 4,
           rows: 5,
           litChance: 0.18,
           tallWindows: true,
-        }),
+        },
         { roughness: 0.86, metalness: 0.03, emissiveIntensity: 0.5 },
       ),
       floorH: 5.8,
       windowW: 2.2,
     },
+    // The Carnegie group in Oakland is Ohio buff sandstone.
     sandstone: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 93,
           base: '#7a7060',
           mortar: '#4a4438',
           windowDark: '#0a0c0e',
+          day: { base: '#bda98a', mortar: '#98866c', windowDark: '#525d66' },
           windowLit: '#e0c070',
           cols: 6,
           rows: 7,
           litChance: 0.2,
-        }),
+        },
         { roughness: 0.9, metalness: 0.02, emissiveIntensity: 0.45 },
       ),
       floorH: 4.5,
       windowW: 3.6,
     },
+    // Oxidised copper: the Koppers chateau roof and its kin.
     copper: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 94,
           base: '#4a6a58',
           mortar: '#2a4038',
           windowDark: '#0a1010',
+          day: { base: '#7f9c8c', mortar: '#5f7a6c', windowDark: '#4c5f5c' },
           windowLit: '#c8d8a0',
           cols: 5,
           rows: 8,
           litChance: 0.22,
-        }),
+        },
         { roughness: 0.68, metalness: 0.22, emissiveIntensity: 0.55 },
       ),
       floorH: 3.9,
       windowW: 3.2,
     },
     convention: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 95,
           base: '#c8ccc8',
           mortar: '#a0a4a0',
           windowDark: '#101418',
+          day: { base: '#ccd0d2', mortar: '#adb2b5', windowDark: '#5b6d78' },
           windowLit: '#e8ece8',
           cols: 10,
           rows: 4,
           litChance: 0.35,
           glass: true,
-        }),
+        },
         { roughness: 0.35, metalness: 0.28, emissiveIntensity: 0.6, envMapIntensity: 0.9 },
       ),
       floorH: 6.0,
       windowW: 5.0,
     },
+    // The US Steel Tower is clad in liquid-filled Cor-Ten box columns that were
+    // left to weather. It is the darkest thing on the skyline in any light.
     steelTower: {
-      mat: stdMat(
-        paintFacade({
+      mat: facade(
+        {
           seed: 96,
           base: '#5a4030',
           mortar: '#3a2818',
           windowDark: '#080808',
+          day: { base: '#6b5140', mortar: '#4f3b2c', windowDark: '#40484c' },
           windowLit: '#d0a870',
           cols: 7,
           rows: 11,
           litChance: 0.3,
           glass: true,
-        }),
-        { roughness: 0.55, metalness: 0.42, emissiveIntensity: 0.65, envMapIntensity: 0.8 },
+        },
+        {
+          roughness: dayMode ? 0.6 : 0.55,
+          metalness: dayMode ? 0.3 : 0.42,
+          emissiveIntensity: 0.65,
+          envMapIntensity: dayMode ? 0.7 : 0.8,
+        },
       ),
       floorH: 3.6,
       windowW: 3.0,
@@ -666,8 +851,28 @@ const STYLE_FAMILY = {
   glass: 'glass',
   stadium: 'stadium',
   brick: 'brick',
+  stone: 'limestone',
 };
 
+/** Stable 0..1 from a footprint centroid, so a building keeps its cladding. */
+function claddingRoll(footprint) {
+  if (!footprint || footprint.length < 3) return 0.5;
+  const [cx, cz] = footprintCentroid(footprint);
+  const s = Math.imul(Math.round(cx * 7) ^ 0x9e3779b9, Math.round(cz * 13) | 1);
+  return ((s >>> 8) & 0xffff) / 0x10000;
+}
+
+/**
+ * Cladding family for an untagged footprint.
+ *
+ * Height alone is a poor proxy, and using it as a strict ladder gave every
+ * building in a band the same cladding: the whole 28-55 m stock came out cream
+ * limestone and everything above it pale blue curtain wall, which is what made
+ * the skyline read as a set of identical pale slabs. Pittsburgh's tall stock is
+ * actually mostly pre-war masonry — Gulf, Koppers, Grant, Frick and Union Trust
+ * are all stone-clad and all over 70 m — so each band is split by a stable roll
+ * on the footprint, weighted to what the district really holds.
+ */
 export function buildingFamily(b) {
   if (b.style && STYLE_FAMILY[b.style]) return STYLE_FAMILY[b.style];
   const n = (b.n || '').toLowerCase();
@@ -686,11 +891,12 @@ export function buildingFamily(b) {
   }
   if (/u\.?s\.? steel|us steel/.test(n)) return 'steelTower';
   if (/convention/.test(n)) return 'convention';
-  if (b.landmark || h > 100) return 'glass';
-  if (h > 55) return 'steel';
-  if (h > 28) return 'limestone';
-  if (h > 14) return 'brick';
-  return 'lowrise';
+  const roll = claddingRoll(b.f);
+  if (b.landmark || h > 100) return roll < 0.68 ? 'glass' : 'artdeco';
+  if (h > 55) return roll < 0.42 ? 'steel' : roll < 0.78 ? 'limestone' : 'artdeco';
+  if (h > 28) return roll < 0.58 ? 'limestone' : roll < 0.88 ? 'brick' : 'steel';
+  if (h > 14) return roll < 0.78 ? 'brick' : 'limestone';
+  return roll < 0.86 ? 'lowrise' : 'brick';
 }
 
 export function applyFacadeUVs(geom, floorH, windowW, baseY) {

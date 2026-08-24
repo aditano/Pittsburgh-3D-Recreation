@@ -28,6 +28,7 @@
       import { createCityMaterials, buildingFamily, tintGeometry, applyXZUvs } from '/src/textures.js';
       import { buildArticulatedBuilding, buildRoofscape, footprintSeed, detailTier } from '/src/architecture.js';
       import { buildLandmarkMeshes, isLandmarkMeshBuilding } from '/src/landmarks.js';
+      import { createSkyDome, createEnvironmentMap } from '/src/sky.js';
 
       const params = new URLSearchParams(location.search);
       const want = (params.get('b') || '').toLowerCase();
@@ -57,6 +58,13 @@
       scene.add(fill);
 
       const materials = createCityMaterials({ dayMode: true });
+      // Metal and glass are almost entirely environment reflection; without this
+      // the glass families render near black and the preview lies.
+      materials.envMap = createEnvironmentMap(renderer, { day: true });
+      scene.environment = materials.envMap;
+      scene.environmentIntensity = 0.75;
+      scene.add(createSkyDome({ day: true }));
+
       const data = await (await fetch('/data/pittsburgh.json')).json();
 
       function centroid(f) {

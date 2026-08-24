@@ -47,14 +47,15 @@ import { hash01, footprintCentroid } from './geo.js';
 const EPS = 1e-7;
 
 /**
- * UV atlas anchors that match `paintFacade()` in textures.js.
- * ROOF_UV is the dark 2x2 texel painted into the top-left of every facade
- * canvas. TRIM_UV lands on the plain base-material texel just outside it, so
- * cornices and piers read as solid masonry instead of sliced-up windows.
- * Both are valid for every family in the palette (cols 4-10, rows 4-12).
+ * UV atlas anchors into the pin strip that `paintPinStrip()` in textures.js
+ * paints along both the top and the bottom edge of every facade canvas: a dark
+ * swatch out to u = 0.0156 and a stone swatch from there to u = 0.0469, each
+ * 0.0156 tall. Both are valid for every family in the palette (cols 4-10,
+ * rows 4-12), and both edges are painted so the anchors survive whichever way
+ * the texture's flipY resolves.
  */
 const ROOF_UV = [0.003, 0.003];
-const TRIM_UV = [0.012, 0.0055];
+const TRIM_UV = [0.03, 0.0055];
 
 /**
  * Surface tone, selected per triangle through the builder's `flat` channel.
