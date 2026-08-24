@@ -382,6 +382,42 @@ function makeGroundMaps() {
   };
 }
 
+/**
+ * Car park surface. One tile covers 22 m, which at 2.6 m per bay and a 6 m aisle
+ * is one double-loaded bay run - the pattern that identifies surface parking
+ * from the air more than the tone does.
+ */
+function makeParkingMaps(dayMode = true) {
+  const color = noiseCanvas(256, 256, (ctx, w, h) => {
+    ctx.fillStyle = dayMode ? '#74777c' : '#26282e';
+    ctx.fillRect(0, 0, w, h);
+    for (let i = 0; i < 900; i++) {
+      ctx.fillStyle = `rgba(0,0,0,${Math.random() * 0.14})`;
+      ctx.fillRect(Math.random() * w, Math.random() * h, 3, 3);
+    }
+    ctx.strokeStyle = dayMode ? 'rgba(226,222,206,0.5)' : 'rgba(150,146,132,0.3)';
+    ctx.lineWidth = 2;
+    // Two bay runs nose to nose, with the drive aisle between them.
+    const bay = w / 8;
+    for (const [y0, y1] of [
+      [h * 0.06, h * 0.36],
+      [h * 0.54, h * 0.84],
+    ]) {
+      for (let x = 0; x <= w; x += bay) {
+        ctx.beginPath();
+        ctx.moveTo(x, y0);
+        ctx.lineTo(x, y1);
+        ctx.stroke();
+      }
+      ctx.beginPath();
+      ctx.moveTo(0, y0);
+      ctx.lineTo(w, y0);
+      ctx.stroke();
+    }
+  });
+  return { map: canvasTexture(color, { repeat: 1 }) };
+}
+
 function makeRoadMaps(dayMode = true) {
   const color = noiseCanvas(128, 128, (ctx, w, h) => {
     // Sunlit asphalt is around 0.09 albedo once the road tint is applied; the
@@ -816,6 +852,29 @@ export function createCityMaterials({ dayMode = true } = {}) {
     metalness: 0.02,
   });
 
+  // Car parks, yards and plazas. Sunlit asphalt sits near 0.12 albedo, a little
+  // darker than the mixed ground it is cut out of, and the paint striping is
+  // what makes a lot read as a lot rather than a grey hole. The tint multiplies
+  // the map, so it has to be near white to land on 0.12 rather than on 0.04.
+  const pavingMat = new THREE.MeshStandardMaterial({
+    color: dayMode ? 0xdcdcde : 0x4a4c52,
+    map: makeParkingMaps(dayMode).map,
+    roughness: 0.9,
+    metalness: 0.06,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+
+  const sandMat = new THREE.MeshStandardMaterial({
+    color: dayMode ? 0xa89878 : 0x2e2820,
+    roughness: 0.96,
+    metalness: 0.01,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+
   const treeMat = new THREE.MeshStandardMaterial({
     // White in day mode because the planting supplies a per-instance tint, which
     // three.js multiplies against this; tinting twice crushed the canopy to black.
@@ -833,6 +892,8 @@ export function createCityMaterials({ dayMode = true } = {}) {
     roadMat,
     foamMat,
     bankMat,
+    pavingMat,
+    sandMat,
     treeMat,
     envMap: makeNightEnv(),
     dayMode,

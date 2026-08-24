@@ -218,24 +218,149 @@ const GROUND_TINTS = {
   },
 };
 
-function groundColor(x, y, z, slope, waterIndex, dayMode = true) {
+/**
+ * Coarse raster of how much of each cell is covered by building footprint.
+ *
+ * What separates downtown from Lawrenceville from the air is not the buildings,
+ * it is the ground between them: the Golden Triangle is continuous paving, and
+ * the neighbourhoods are treed heavily enough that the street grid barely shows
+ * through the canopy. Slope alone cannot tell those apart - both are flat - so
+ * tinting every flat cell as paving turned the whole valley floor into one grey
+ * plane, which is most of why the North Shore read as an empty car park.
+ *
+ * 80 m cells: coarse enough to stay cheap over 7,500 footprints and a 15 km
+ * extent, fine enough to resolve one city block.
+ */
+const DENSITY = { cell: 80, minX: -6000, minZ: -5600, w: 220, h: 160 };
+
+function makeDensityIndex(buildings) {
+  const { cell, minX, minZ, w, h } = DENSITY;
+  const acc = new Float32Array(w * h);
+  for (const b of buildings) {
+    if (!b.f || b.f.length < 4) continue;
+    const [cx, cz] = footprintCentroid(b.f);
+    let area = 0;
+    for (let i = 0; i < b.f.length - 1; i++) {
+      area += b.f[i][0] * b.f[i + 1][1] - b.f[i + 1][0] * b.f[i][1];
+    }
+    const gx = Math.floor((cx - minX) / cell);
+    const gz = Math.floor((cz - minZ) / cell);
+    if (gx < 0 || gz < 0 || gx >= w || gz >= h) continue;
+    acc[gz * w + gx] += Math.abs(area) * 0.5;
+  }
+
+  // One box pass, so a cell that happens to fall in a back alley still reads as
+  // part of its block rather than as a hole in the paving.
+  const blur = new Float32Array(w * h);
+  for (let z = 0; z < h; z++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      let n = 0;
+      for (let dz = -1; dz <= 1; dz++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const sx = x + dx;
+          const sz = z + dz;
+          if (sx < 0 || sz < 0 || sx >= w || sz >= h) continue;
+          sum += acc[sz * w + sx];
+          n++;
+        }
+      }
+      blur[z * w + x] = sum / (n * cell * cell);
+    }
+  }
+  return (x, z) => {
+    const gx = Math.floor((x - minX) / cell);
+    const gz = Math.floor((z - minZ) / cell);
+    if (gx < 0 || gz < 0 || gx >= w || gz >= h) return 0;
+    return blur[gz * w + gx];
+  };
+}
+
+function smoothstep(a, b, v) {
+  const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+/**
+ * Coverage raster of the OSM woodland polygons, over the same extent as the
+ * ground mesh.
+ *
+ * Woods are the one land cover that has to be baked into the terrain's own
+ * vertex colours rather than drawn as a flat polygon on top: they sit on the
+ * hillsides, and Pittsburgh's hillsides drop 100 m over 200 m of plan, so a flat
+ * polygon at one height either floats off the slope or buries itself in it. The
+ * raster follows the terrain for free.
+ *
+ * 24 m cells at 15 km by 11.2 km. That is finer than the 30 m ground mesh it
+ * feeds, so the mesh is the limiting resolution, which is the right way round.
+ */
+const WOOD_RASTER = { cell: 24, minX: -6300, minZ: -6000, w: 640, h: 480 };
+
+function makeWoodIndex(polys) {
+  const { cell, minX, minZ, w, h } = WOOD_RASTER;
+  const grid = new Uint8Array(w * h);
+  const xs = [];
+  for (const p of polys) {
+    if (p.c !== 2 || !p.f || p.f.length < 4) continue;
+    const ring = p.f;
+    let minZr = Infinity;
+    let maxZr = -Infinity;
+    for (const [, z] of ring) {
+      if (z < minZr) minZr = z;
+      if (z > maxZr) maxZr = z;
+    }
+    const z0 = Math.max(0, Math.floor((minZr - minZ) / cell));
+    const z1 = Math.min(h - 1, Math.ceil((maxZr - minZ) / cell));
+    for (let gz = z0; gz <= z1; gz++) {
+      const zc = minZ + (gz + 0.5) * cell;
+      xs.length = 0;
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [ax, az] = ring[i];
+        const [bx, bz] = ring[i + 1];
+        if (az === bz) continue;
+        if (zc < Math.min(az, bz) || zc >= Math.max(az, bz)) continue;
+        xs.push(ax + ((zc - az) / (bz - az)) * (bx - ax));
+      }
+      if (xs.length < 2) continue;
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        const gx0 = Math.max(0, Math.ceil((xs[k] - minX) / cell - 0.5));
+        const gx1 = Math.min(w - 1, Math.floor((xs[k + 1] - minX) / cell - 0.5));
+        for (let gx = gx0; gx <= gx1; gx++) grid[gz * w + gx] = 1;
+      }
+    }
+  }
+  return (x, z) => {
+    const gx = Math.floor((x - minX) / cell);
+    const gz = Math.floor((z - minZ) / cell);
+    if (gx < 0 || gz < 0 || gx >= w || gz >= h) return 0;
+    return grid[gz * w + gx];
+  };
+}
+
+function groundColor(x, y, z, slope, waterIndex, density, wooded, dayMode = true) {
   const tint = dayMode ? GROUND_TINTS.day : GROUND_TINTS.night;
   if (waterIndex.inside(x, z)) return tint.bed;
   const bank = waterIndex.bankStrength(x, z);
   if (bank > 0.15) return [tint.bank[0] + bank * 0.04, tint.bank[1], tint.bank[2]];
 
-  const wooded = Math.min(1, Math.max(0, (slope - 0.11) / 0.22));
   const { paved, forest, grass } = tint;
   const dry = Math.min(1, Math.max(0, (y - 60) / 110));
-  const base = [
+  const green = [
     grass[0] * (1 - dry) + forest[0] * dry,
     grass[1] * (1 - dry) + forest[1] * dry,
     grass[2] * (1 - dry) + forest[2] * dry,
   ];
+  // Mapped woodland wins outright. Failing that, steep ground is wooded whatever
+  // is built on it - these are the hillsides nobody could develop - and ground
+  // with buildings on it is paved however flat it is.
+  const green01 = wooded(x, z)
+    ? 1
+    : Math.max(smoothstep(0.13, 0.34, slope), 1 - smoothstep(0.012, 0.09, density(x, z)));
   return [
-    paved[0] * (1 - wooded) + base[0] * wooded,
-    paved[1] * (1 - wooded) + base[1] * wooded,
-    paved[2] * (1 - wooded) + base[2] * wooded,
+    paved[0] * (1 - green01) + green[0] * green01,
+    paved[1] * (1 - green01) + green[1] * green01,
+    paved[2] * (1 - green01) + green[2] * green01,
   ];
 }
 
@@ -246,7 +371,7 @@ function groundColor(x, y, z, slope, waterIndex, dayMode = true) {
  */
 const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 500, segZ: 374 };
 
-function makeGround(terrainFn, waterIndex) {
+function makeGround(terrainFn, waterIndex, density, wooded) {
   const geom = new THREE.PlaneGeometry(GROUND.w, GROUND.d, GROUND.segX, GROUND.segZ);
   geom.rotateX(-Math.PI / 2);
   geom.translate(GROUND.cx, 0, GROUND.cz);
@@ -262,7 +387,7 @@ function makeGround(terrainFn, waterIndex) {
         terrainFn(x + 40, z) - terrainFn(x - 40, z),
         terrainFn(x, z + 40) - terrainFn(x, z - 40),
       ) / 80;
-    const c = groundColor(x, y, z, slope, waterIndex, DAY_MODE);
+    const c = groundColor(x, y, z, slope, waterIndex, density, wooded, DAY_MODE);
     colors[i * 3] = c[0];
     colors[i * 3 + 1] = c[1];
     colors[i * 3 + 2] = c[2];
@@ -572,7 +697,59 @@ function buildingTint(b, cx, cz) {
   return new THREE.Color().setHSL(cool + g * 0.06, 0.03 + h * 0.07, 0.74 + h * 0.3);
 }
 
-async function buildCity(data) {
+/**
+ * Flat land-cover surfaces from OSM: car parks, yards, plazas and lawns.
+ *
+ * Drawn as polygons rather than baked into the ground mesh's vertex colours
+ * because their EDGES are what identify them from the air - a car park is a
+ * hard-edged grey rectangle against green, and the 30 m ground mesh cannot
+ * resolve an edge. Only the flat classes are drawn here; woodland goes into the
+ * ground tint instead, since it lives on slopes that a flat polygon cannot
+ * follow. Small polygons are skipped: at flyover range a single parking bay is
+ * subpixel and costs a draw's worth of triangles for nothing.
+ */
+function buildLandcover(polys, yFn, waterIndex) {
+  const group = new THREE.Group();
+  group.name = 'landcover';
+  if (!polys?.length) return group;
+
+  const byClass = { 0: [], 1: [], 3: [] };
+  for (const p of polys) {
+    const bucket = byClass[p.c];
+    if (!bucket || !p.f || p.f.length < 4) continue;
+    const [cx, cz] = footprintCentroid(p.f);
+    if (waterIndex.inside(cx, cz)) continue;
+    let span = 0;
+    for (const [x, z] of p.f) span = Math.max(span, Math.hypot(x - cx, z - cz));
+    if (span < 14) continue;
+    try {
+      const g = flatPolygon(p.f, 0.45, yFn);
+      applyXZUvs(g, 0.045);
+      bucket.push(g);
+    } catch {
+      /* self-intersecting OSM ring; the ground tint still covers it */
+    }
+  }
+
+  const surfaces = [
+    { cls: 0, mat: materials.pavingMat },
+    { cls: 3, mat: materials.sandMat },
+    { cls: 1, mat: materials.parkMat },
+  ];
+  for (const { cls, mat } of surfaces) {
+    const geoms = byClass[cls];
+    if (!geoms.length) continue;
+    const merged = mergeGeometries(geoms, false);
+    for (const g of geoms) g.dispose();
+    if (!merged) continue;
+    const mesh = new THREE.Mesh(merged, mat);
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+  return group;
+}
+
+async function buildCity(data, landcover) {
   const terrainFn = makeTerrain(data.terrain);
   // The rivers need two masks with opposite biases. Everything that shapes or
   // dresses the landform reads the true OSM water outline, so no ground is left
@@ -582,7 +759,10 @@ async function buildCity(data) {
   const waterCull = makeWaterIndex(data.water || [], { erosion: 12 });
   const yFn = (x, z) => surfaceHeight(x, z, terrainFn, waterIndex);
 
-  scene.add(makeGround(terrainFn, waterIndex));
+  const density = makeDensityIndex(data.buildings || []);
+  const wooded = makeWoodIndex(landcover?.polys || []);
+  scene.add(makeGround(terrainFn, waterIndex, density, wooded));
+  scene.add(buildLandcover(landcover?.polys, yFn, waterIndex));
 
   // Point State Park and the lawns nested inside it are drawn in full detail by
   // buildPointStatePark. Left in the generic pass as well they land within a few
@@ -919,10 +1099,16 @@ requestAnimationFrame(tick);
 
 (async () => {
   try {
-    const res = await fetch('./data/pittsburgh.json');
+    const [res, coverRes] = await Promise.all([
+      fetch('./data/pittsburgh.json'),
+      fetch('./data/landcover.json'),
+    ]);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
-    await buildCity(data);
+    // Land cover only decides ground tone, so a missing or stale file should
+    // degrade to the slope-and-density fallback rather than lose the city.
+    const landcover = coverRes.ok ? await coverRes.json() : null;
+    await buildCity(data, landcover);
     initComposer();
     const start = viewFromHash() || 'downtown';
     setView(start);
