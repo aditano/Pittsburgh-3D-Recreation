@@ -910,7 +910,12 @@ export function buildPncPark(spec = {}) {
   }
 
   // --- left-field bleachers, open right field keeps the skyline view --------
-  const bleacherPath = offsetPath(buildPath(splineFn(wall.slice(0, 7)), 28, 0, 1), 4.4);
+  // Both outfield ribbons start from the grandstand's own end node, otherwise
+  // they begin out at the foul pole and leave a hole at each corner.
+  const bleacherPath = offsetPath(
+    buildPath(splineFn([PNC_STAND_EDGE[PNC_STAND_EDGE.length - 1]].concat(wall.slice(0, 7))), 32, 0, 1),
+    4.4,
+  );
   const bleach = rakedSection({ u0: 0, v0: 3.4 * hs, steps: 9, run: 1.5, rise: 0.85 * hs, fascia: 2.2, base: 0 });
   seatsA.push(sweepStrip(bleacherPath, bleach.seats));
   stone.push(sweepStrip(bleacherPath, bleach.shell));
@@ -919,7 +924,7 @@ export function buildPncPark(spec = {}) {
   }
 
   // --- right-field riverwalk terrace, kept low for the skyline view ---------
-  const riverPath = offsetPath(buildPath(splineFn(wall.slice(9)), 28, 0, 1), 2.2);
+  const riverPath = offsetPath(buildPath(splineFn(wall.slice(9).concat([PNC_STAND_EDGE[0]])), 32, 0, 1), 2.2);
   stone.push(
     sweepStrip(riverPath, [
       [0, 4.2 * hs],
@@ -952,19 +957,33 @@ export function buildPncPark(spec = {}) {
     ]),
   );
 
-  // --- heptagonal ramp rotundas seated on the facade -----------------------
-  for (const [idx, radius, height] of [
-    [0, 12, 26 * hs],
-    [facadePath.length - 1, 12, 26 * hs],
-    [Math.round((facadePath.length - 1) / 2), 13, 21 * hs],
-  ]) {
-    const p = facadePath[idx];
+  // --- heptagonal home-plate gate rotunda ----------------------------------
+  {
+    const p = facadePath[Math.round((facadePath.length - 1) / 2)];
+    const radius = 13;
+    const height = 21 * hs;
     const cx = p.x + p.nx * radius * 0.34;
     const cz = p.z + p.nz * radius * 0.34;
     stone.push(cyl(radius, radius, height, 7, cx, height * 0.5, cz, Math.PI / 7));
     steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.45, cz, Math.PI / 7));
     steelG.push(cyl(radius + 0.6, radius + 0.6, 0.8, 7, cx, height * 0.76, cz, Math.PI / 7));
     steelG.push(cyl(radius + 1.5, radius + 1.5, 0.9, 7, cx, height + 0.5, cz, Math.PI / 7));
+  }
+
+  // The corner ramp pavilions sit back inside the facade line: the grandstand
+  // already reaches the river-side property edge there, so anything projecting
+  // out of the corners lands in the Allegheny.
+  for (const idx of [0, facadePath.length - 1]) {
+    const p = facadePath[idx];
+    const a = Math.atan2(p.nx, p.nz);
+    const height = 24 * hs;
+    const cx = p.x - p.nx * 6;
+    const cz = p.z - p.nz * 6;
+    stone.push(box(19, height, 15, cx, height * 0.5, cz, a));
+    for (let k = 1; k <= 3; k++) {
+      steelG.push(box(20, 0.7, 16, cx, (height * k) / 3.6, cz, a));
+    }
+    steelG.push(box(20, 0.9, 16, cx, height + 0.45, cz, a));
   }
 
   // --- scoreboards ----------------------------------------------------------
@@ -1043,14 +1062,16 @@ export function buildPncPark(spec = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Field-level plan taken from the OSM playing surface: 123 x 86 m, which is a
- * 109.7 x 48.8 m football field plus its aprons. The bowl grows outward from
- * that edge, and the generous corner radius is what keeps the sidelines
- * straight instead of letting the bowl slump into an oval.
+ * Field-level plan, half-extents: 128 x 76 m encloses the 109.7 x 48.8 m
+ * football field with a 6.6 m apron behind each end line and 12 m along the
+ * sidelines. The long axis matches the 123 m OSM playing surface; its traced
+ * 86 m width is far too wide for a 48.8 m field, so the short axis follows the
+ * field instead. 40 m of straight run either side of the corner radius is what
+ * keeps the sidelines reading straight rather than slumping into an oval.
  */
-const ACR_RX = 61.5;
-const ACR_RZ = 42.5;
-const ACR_CORNER = 25;
+const ACR_RX = 64;
+const ACR_RZ = 38;
+const ACR_CORNER = 24;
 // The club tier stops at the south corners and the upper deck stops shorter
 // still, so the whole end zone end stays open to the skyline.
 const ACR_CLUB_OPEN = 35 * DEG;
@@ -1069,7 +1090,7 @@ export function buildAcrisureStadium(spec = {}) {
   const h = clamp(spec.h, 42, 64);
   const hs = h / 58;
   const s = fitScale(spec.f, 290, 261);
-  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 1.131;
+  const yaw = Number.isFinite(spec.orientYaw) ? spec.orientYaw : 1.14;
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -1099,7 +1120,7 @@ export function buildAcrisureStadium(spec = {}) {
   const apron = [];
   for (let i = 0; i < 64; i++) {
     const p = plan((i / 64) * Math.PI * 2);
-    apron.push([p[0] * 0.94, p[1] * 0.94]);
+    apron.push([p[0] * 0.96, p[1] * 0.96]);
   }
   const turf = turfMaterial(footballFieldMaps());
   const fieldGeom = groundPolygon(apron, 0.3, (x, z) => [
@@ -1190,10 +1211,10 @@ export function buildAcrisureStadium(spec = {}) {
   steelG.push(box(3.0, 2.2, 33, boardX + 3.2, 34.8 * hs, 0));
   boards.push(box(1.4, 8.5, 29.3, boardX, 30 * hs, 0));
 
-  // --- smaller board carried above the closed north end -------------------
-  const northX = -(ACR_RX + 7);
-  steelG.push(box(2.8, 13, 31, northX - 2.4, club.vTop + 6.5, 0));
-  boards.push(box(1.3, 9.0, 27, northX, club.vTop + 7.5, 0));
+  // --- second board hung off the canopy over the north end bleachers -------
+  const northX = -(ACR_RX + upper.uTop - 12);
+  steelG.push(box(2.6, 8.5, 30, northX - 1.9, upper.vTop + 2.5 * hs, 0));
+  boards.push(box(1.2, 7.0, 26, northX, upper.vTop + 2.5 * hs, 0));
 
   // --- exterior ramp towers and cladding fins ------------------------------
   for (let i = 4; i < upperPath.length - 4; i += 10) {

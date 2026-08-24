@@ -872,11 +872,10 @@ function roofPlan(typ, h, seed, ring, ang) {
  * ring rather than passed between them, so the two entry points cannot drift.
  */
 function buildingProgram(ring, height, seed, style) {
-  const area = polygonArea(ring);
   const [cx, cz] = ringCentroid(ring);
   const ang = dominantAngle(ring);
-  const typ = typology(height, area, style, focusWeight(cx, cz));
-  return { area, ang, typ, roof: roofPlan(typ, height, seed, ring, ang) };
+  const typ = typology(height, polygonArea(ring), style, focusWeight(cx, cz));
+  return { ang, typ, roof: roofPlan(typ, height, seed, ring, ang) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1088,27 +1087,25 @@ function makePlacer(ring, seed, ang, taken = []) {
  */
 function roofStructures(deckRing, h, typ, seed, det) {
   const ang = dominantAngle(deckRing);
+  const inner = insetRing(deckRing, 1.1) || insetRing(deckRing, 0.5) || deckRing;
+  const area = polygonArea(inner);
   const out = {
-    inner: null,
-    area: 0,
+    inner,
+    area,
     ang,
     ca: Math.cos(ang),
     sa: Math.sin(ang),
     boxes: [],
     taken: [],
   };
-  const inner = insetRing(deckRing, 1.1) || insetRing(deckRing, 0.5) || deckRing;
-  const area = polygonArea(inner);
-  out.inner = inner;
-  out.area = area;
   if (!(area > 30) || h < 7) return out;
 
   const w = Math.sqrt(area);
   const place = makePlacer(inner, seed, ang, out.taken);
-  const add = (sx, sz, sy, kind, hint) => {
+  const add = (sx, sz, sy, hint) => {
     if (!(sx > 0.4 && sz > 0.4 && sy > 0.3)) return;
     const pt = place(sx, sz, 14, hint);
-    if (pt) out.boxes.push({ x: pt[0], z: pt[1], sx, sz, sy, kind });
+    if (pt) out.boxes.push({ x: pt[0], z: pt[1], sx, sz, sy });
   };
   const r1 = h01(seed, 21);
   const r2 = h01(seed, 22);
@@ -1117,31 +1114,27 @@ function roofStructures(deckRing, h, typ, seed, det) {
   // mill monitor: the raised clerestory that runs the length of a loft roof
   if (typ === 'warehouse' && area > 700) {
     const { along, across } = planExtent(inner, ang);
-    add(
-      clamp(along * 0.58, 6, 64),
-      clamp(across * 0.28, 2.4, 9),
-      1.8 + r1 * 1.5,
-      'monitor',
-      ringCentroid(inner),
-    );
+    add(clamp(along * 0.58, 6, 64), clamp(across * 0.28, 2.4, 9), 1.8 + r1 * 1.5, ringCentroid(inner));
   }
+  // mechanical penthouse
   if (area > 140 && h >= 9) {
     add(
       clamp(w * (0.26 + r1 * 0.16), 3, 22),
       clamp(w * (0.18 + r2 * 0.13), 2.4, 16),
       typ === 'tower' ? 4.4 + r1 * 3 : 2.8 + r1 * 2.2,
-      'penthouse',
     );
   }
+  // elevator overrun
   if (h > 26 && area > 90) {
-    add(clamp(w * 0.18, 2.8, 8), clamp(w * 0.16, 2.4, 7), 3.8 + r2 * 2.6, 'overrun');
+    add(clamp(w * 0.18, 2.8, 8), clamp(w * 0.16, 2.4, 7), 3.8 + r2 * 2.6);
   }
+  // stair bulkhead
   if (area > (det === 2 ? 45 : 90)) {
-    add(2.3 + r3 * 1.5, 2.7 + r3 * 1.3, 2.3 + r3 * 1.1, 'bulkhead');
+    add(2.3 + r3 * 1.5, 2.7 + r3 * 1.3, 2.3 + r3 * 1.1);
   }
   // brick stack: the flat-roofed rowhouse and corner-block signature
   if ((typ === 'house' || typ === 'block') && area > 40 && r3 > 0.28) {
-    add(0.85 + r1 * 0.4, 0.7 + r2 * 0.35, 1.4 + r1 * 1.3, 'stack');
+    add(0.85 + r1 * 0.4, 0.7 + r2 * 0.35, 1.4 + r1 * 1.3);
   }
   return out;
 }
@@ -1366,6 +1359,705 @@ function pierCount(typ, det, perim) {
   return det === 2 ? 28 : 10;
 }
 
+/* ------------------------------------------------------------------ */
+/* landmark crowns                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A landmark is a building whose silhouette people recognise, which is exactly
+ * what a hashed archetype cannot produce: US Steel is a plain triangular prism,
+ * Koppers is a chateau roof, Gulf is a ziggurat. Each entry below replaces the
+ * random massing with the real setback programme and hangs a modelled crown off
+ * the top, while the shell, the facade texture and the merge bucket stay
+ * exactly as they are for every other building - so a landmark still costs one
+ * building's worth of draw calls and still carries real windows.
+ *
+ * Keyed by the footprint's AREA centroid in local metres, not by name: the
+ * dataset is rebuilt from Overpass and names churn (the Carnegie Science Center
+ * is "Kamin Science Center" in OSM since 2023), but a city block does not move.
+ * The entry is claimed by the one footprint that COVERS `at`, so downtown
+ * neighbours a block apart cannot inherit each other's crowns; `r` only bounds
+ * how far a re-imported footprint's centroid may drift from the recorded point,
+ * and churn measured against Overpass is under 10 m for all of these.
+ *
+ * `h` is the real height in metres and overrides the dataset. `tiers` is the
+ * setback programme as [fraction of h at the tier top, inset from the tier
+ * below in metres], bottom-to-top, the last entry being the parapet the crown
+ * stands on.
+ */
+const LANDMARKS = [
+  // 841 ft, 64 floors. Triangular plan with truncated corners, hung on 18
+  // liquid-filled Cor-Ten box columns that stand proud of the glass line.
+  { n: 'U.S. Steel Tower', at: [614.7, -39.8], r: 45, h: 256, crown: 'usSteel' },
+  // 725 ft, 54 floors; stepped mechanical crown over a chamfered shaft.
+  {
+    n: 'BNY Mellon Center',
+    at: [517.5, 150.6],
+    r: 45,
+    h: 221,
+    tiers: [[0.9, 0], [1, 3.5]],
+    crown: 'steppedCap',
+  },
+  // 635 ft, 40 floors. Neo-gothic glass: corner turrets and a central spire
+  // over a pinnacled parapet, part of the 231 spires across the six buildings.
+  { n: 'One PPG Place', at: [-150.1, 112.1], r: 45, h: 194, crown: 'ppgTower' },
+  { n: 'Two PPG Place', at: [-112.8, 58.1], r: 40, h: 22.9, crown: 'ppgSpires' },
+  { n: 'Three PPG Place', at: [-61.1, 98.9], r: 30, h: 22.9, crown: 'ppgSpires' },
+  { n: 'Four PPG Place', at: [-66.5, 154.4], r: 30, h: 22.9, crown: 'ppgSpires' },
+  { n: 'Five PPG Place', at: [-102.9, 197.8], r: 34, h: 22.9, crown: 'ppgSpires' },
+  { n: 'Six PPG Place', at: [-156.1, 172.6], r: 40, h: 51.3, crown: 'ppgSpires' },
+  { n: 'PPG Place Wintergarden', at: [-185.8, 94.8], r: 34, h: 32, crown: 'ppgSpires' },
+  // 616 ft, 31 floors: red granite shaft tapering into a slender finial.
+  {
+    n: 'Fifth Avenue Place',
+    at: [-116.2, -111.6],
+    r: 45,
+    h: 188,
+    tiers: [[0.74, 0], [0.86, 5], [1, 4.5]],
+    crown: 'obelisk',
+  },
+  // 615 ft, 45 floors. Five silver octagonal towers of stepped heights sharing
+  // one podium, which is why the raw footprint alone reads as nothing at all.
+  { n: 'One Oxford Centre', at: [290.2, 331.0], r: 50, h: 187, crown: 'oxford' },
+  // 582 ft, 44 floors. The crown is a stepped pyramid after the Mausoleum at
+  // Halicarnassus, glazed and lit, and it is the top of the 1932 skyline.
+  {
+    n: 'Gulf Tower',
+    at: [575.0, -178.3],
+    r: 45,
+    h: 177,
+    tiers: [[0.6, 0], [0.72, 4.5], [0.8, 4], [0.86, 3.5]],
+    crown: 'ziggurat',
+  },
+  // 475 ft, 34 floors, and the only chateau roof on the skyline: a steep
+  // copper pyramid, green with age, dormered on all four faces.
+  {
+    n: 'Koppers Building',
+    at: [547.1, -123.4],
+    r: 40,
+    h: 145,
+    tiers: [[0.68, 0], [0.78, 4], [0.84, 3], [1, 0]],
+    crown: 'chateau',
+  },
+  // 485 ft, 40 floors. The mast carries an aviation beacon that still spells
+  // PITTSBURGH in Morse code.
+  {
+    n: 'Grant Building',
+    at: [377.7, 373.0],
+    r: 40,
+    h: 148,
+    tiers: [[0.66, 0], [0.8, 4], [0.9, 3.5], [1, 3]],
+    crown: 'beacon',
+  },
+  // Burnham, 1902: 330 ft of granite under one very deep cornice.
+  { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, crown: 'classicalAttic' },
+  { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, crown: 'classicalAttic' },
+  // 535 ft, 42 floors of late Gothic Revival over a four-storey Commons Room
+  // block; buttressed piers run the shaft and burst into pinnacles at the top.
+  { n: 'Cathedral of Learning', at: [4135.4, -368.4], r: 55, h: 163, crown: 'gothicTower' },
+  // Fleche tip 256 ft above ground over a 100 ft nave roof (Univ. of Pittsburgh).
+  { n: 'Heinz Memorial Chapel', at: [4247.7, -475.2], r: 40, h: 78, crown: 'chapelFleche' },
+  // The Carnegie Institute group: four monumental storeys behind one cornice,
+  // roughly 26 m, against the 14 m default the dataset gives an untagged
+  // building. Low hipped roofs over a deep attic.
+  { n: 'Carnegie Museum of Art', at: [4476.7, -299.8], r: 55, h: 26, crown: 'beauxArts' },
+  { n: 'Carnegie Museum of Natural History', at: [4397.5, -234.9], r: 60, h: 28, crown: 'beauxArts' },
+  { n: 'Carnegie Library, Oakland', at: [4358.7, -198.8], r: 50, h: 26, crown: 'beauxArts' },
+  { n: 'Carnegie Music Hall', at: [4319.7, -257.0], r: 45, h: 29, crown: 'beauxArts' },
+  // Hornbostel, 1910, again after the Mausoleum: a colonnaded block under a
+  // stepped pyramid whose apex stands 150 ft above the ground.
+  { n: 'Soldiers and Sailors Memorial Hall', at: [3860.5, -450.4], r: 50, h: 46, crown: 'mausoleum' },
+  // Eight floors of a 1911 terminal warehouse, not the 14 m default.
+  { n: 'The Andy Warhol Museum', at: [-42.6, -821.0], r: 35, h: 30, crown: 'classicalAttic' },
+  // Carnegie Science Center, renamed Kamin in 2023; the Buhl Planetarium dome
+  // is the only thing that identifies it from the far bank.
+  { n: 'Kamin Science Center', at: [-1350.1, -513.3], r: 60, h: 20, crown: 'planetarium' },
+  // Vinoly's cable-stayed roof sweeps up from Penn Avenue and cantilevers out
+  // over Fort Duquesne Boulevard, echoing the suspension bridges beyond it.
+  {
+    n: 'David L. Lawrence Convention Center',
+    at: [488.7, -515.2],
+    r: 90,
+    h: 48,
+    tiers: [[0.46, 0]],
+    crown: 'cableRoof',
+  },
+  // 545 ft; the shaft is sheared off at an angle above the double-skin facade.
+  {
+    n: 'Tower at PNC Plaza',
+    at: [152.8, 82.7],
+    r: 40,
+    h: 166,
+    tiers: [[0.88, 0], [1, 2.5]],
+    crown: 'shearedCap',
+  },
+];
+
+/** Area centroid, which unlike the vertex mean does not drift when a ring is re-simplified. */
+function ringAreaCentroid(ring) {
+  let a = 0;
+  let cx = 0;
+  let cz = 0;
+  for (let i = 0, n = ring.length; i < n; i++) {
+    const [x0, z0] = ring[i];
+    const [x1, z1] = ring[(i + 1) % n];
+    const cr = x0 * z1 - x1 * z0;
+    a += cr;
+    cx += (x0 + x1) * cr;
+    cz += (z0 + z1) * cr;
+  }
+  if (Math.abs(a) < EPS) return ringCentroid(ring);
+  return [cx / (3 * a), cz / (3 * a)];
+}
+
+function landmarkFor(ring) {
+  if (!ring || ring.length < 3) return null;
+  const [cx, cz] = ringAreaCentroid(ring);
+  for (let i = 0; i < LANDMARKS.length; i++) {
+    const lm = LANDMARKS[i];
+    const dx = cx - lm.at[0];
+    if (dx > lm.r || dx < -lm.r) continue;
+    const dz = cz - lm.at[1];
+    if (dz > lm.r || dz < -lm.r) continue;
+    if (dx * dx + dz * dz > lm.r * lm.r) continue;
+    if (pointInRing(lm.at[0], lm.at[1], ring)) return lm;
+  }
+  return null;
+}
+
+/** The landmark's setback programme, in the shape the tier loop consumes. */
+function landmarkTiers(lm, base, h) {
+  const steps = lm.tiers;
+  if (!steps || !steps.length) {
+    return [{ ring: base, y0: 0, y1: h, archetype: 'landmark', index: 0, top: true }];
+  }
+  const tiers = [];
+  let ring = base;
+  let y0 = 0;
+  for (let i = 0; i < steps.length; i++) {
+    const [frac, inset] = steps[i];
+    const last = i === steps.length - 1;
+    const y1 = last ? h : clamp(h * frac, y0 + 3, h - 3);
+    if (y1 - y0 < 2.5) continue;
+    if (inset > 0.05) ring = insetRing(ring, inset) || ring;
+    tiers.push({ ring, y0, y1, archetype: 'landmark', index: tiers.length, top: false });
+    y0 = y1;
+  }
+  if (!tiers.length) {
+    return [{ ring: base, y0: 0, y1: h, archetype: 'landmark', index: 0, top: true }];
+  }
+  tiers[tiers.length - 1].y1 = h;
+  tiers[tiers.length - 1].top = true;
+  return tiers;
+}
+
+/* -- crown primitives ---------------------------------------------- */
+
+function pyramidUp(b, ring, y0, apexY, pin) {
+  const [cx, cz] = ringCentroid(ring);
+  coneUp(b, ring, y0, cx, apexY, cz, null, pin);
+}
+
+/** Ziggurat: `steps` shrinking prisms between y0 and y1. Returns the top ring. */
+function steppedUp(b, ring, y0, y1, steps, inset, pin) {
+  let cur = ring;
+  const dy = (y1 - y0) / steps;
+  let y = y0;
+  for (let i = 0; i < steps; i++) {
+    band(b, cur, y, cur, y + dy, null, pin);
+    y += dy;
+    const next = insetRing(cur, inset, 0.02);
+    if (!next) {
+      capUp(b, cur, y, null, pin);
+      return { ring: cur, y };
+    }
+    band(b, cur, y, next, y, null, pin);
+    cur = next;
+  }
+  return { ring: cur, y };
+}
+
+/** Square spire: a short prism dying into a four-sided point. */
+function pinnacle(b, x, z, r, y0, height, ang, pin) {
+  const foot = regularRing(x, z, r, 4, ang);
+  const neck = y0 + height * 0.4;
+  band(b, foot, y0, foot, neck, null, pin);
+  coneUp(b, foot, neck, x, y0 + height, z, null, pin);
+}
+
+/** Hemispherical dome on `segs` meridians and `rings` parallels. */
+function domeUp(b, cx, cz, r, y0, rise, segs, rings, pin) {
+  let lower = regularRing(cx, cz, r, segs, 0);
+  let lowerY = y0;
+  for (let i = 1; i <= rings; i++) {
+    const t = i / rings;
+    const a = t * Math.PI * 0.5;
+    const ry = Math.max(0.15, r * Math.cos(a));
+    const y = y0 + rise * Math.sin(a);
+    const upper = regularRing(cx, cz, ry, segs, 0);
+    band(b, lower, lowerY, upper, y, null, pin);
+    lower = upper;
+    lowerY = y;
+  }
+  capUpConvex(b, lower, lowerY, null, pin);
+}
+
+/** Tapered mast, optionally with a lit finial ball at the tip. */
+function mastUp(b, x, z, r, y0, y1, ang, pin, ball = 0) {
+  const foot = regularRing(x, z, r, 6, ang);
+  const tip = scaleRing(foot, x, z, 0.34);
+  band(b, foot, y0, tip, y1, null, pin);
+  if (ball > 0) domeUp(b, x, z, ball, y1, ball * 1.6, 8, 3, pin);
+  else capUpConvex(b, tip, y1, null, pin);
+}
+
+/** Walk a ring's edges dropping a callback every `spacing` metres. */
+function alongRing(ring, spacing, fn) {
+  for (let i = 0, n = ring.length; i < n; i++) {
+    const a = ring[i];
+    const bb = ring[(i + 1) % n];
+    const dx = bb[0] - a[0];
+    const dz = bb[1] - a[1];
+    const len = Math.hypot(dx, dz);
+    if (len < spacing * 0.4) continue;
+    const count = Math.max(1, Math.round(len / spacing));
+    for (let k = 0; k < count; k++) {
+      const t = (k + 0.5) / count;
+      fn(a[0] + dx * t, a[1] + dz * t, Math.atan2(dz, dx), len);
+    }
+  }
+}
+
+/** Corners of a ring, taken as the vertices that turn hardest. */
+function ringCorners(ring, want) {
+  const n = ring.length;
+  const turns = [];
+  for (let i = 0; i < n; i++) {
+    const p = ring[(i - 1 + n) % n];
+    const q = ring[i];
+    const r = ring[(i + 1) % n];
+    const a0 = Math.atan2(q[1] - p[1], q[0] - p[0]);
+    const a1 = Math.atan2(r[1] - q[1], r[0] - q[0]);
+    let d = Math.abs(a1 - a0);
+    if (d > Math.PI) d = Math.PI * 2 - d;
+    turns.push({ p: q, d });
+  }
+  turns.sort((a, b) => b.d - a.d);
+  return turns.slice(0, want).map((t) => t.p);
+}
+
+/* -- crowns --------------------------------------------------------- */
+
+const CROWNS = {
+  /**
+   * Recessed mechanical top hat plus the corner columns. The columns are the
+   * whole point of the building: they carry the frame outside the glass, so
+   * they read as three sharp vertical arrises from anywhere in the Triangle.
+   */
+  usSteel(c) {
+    const { wall, trim, ring, deck, y, capY } = c;
+    for (const [px, pz] of ringCorners(ring, 3)) {
+      const col = regularRing(px, pz, 3.4, 4, c.ang);
+      band(trim, col, c.baseY, col, capY + 3, null, PIN_STONE);
+      capUpConvex(trim, col, capY + 3, null, PIN_STONE);
+    }
+    const hat = insetRing(deck, 7) || deck;
+    band(trim, hat, y, hat, y + 5.5, null, PIN_STONE);
+    capUp(wall, hat, y + 5.5, null, PIN_DARK);
+    const [cx, cz] = ringCentroid(hat);
+    mastUp(trim, cx, cz, 1.1, y + 5.5, y + 22, c.ang, PIN_STONE);
+  },
+
+  /** Two shrinking mechanical decks, the modern flat-top crown. */
+  steppedCap(c) {
+    const { wall, trim, deck, y } = c;
+    const step = steppedUp(trim, deck, y, y + c.h * 0.035, 2, 3.2, PIN_STONE);
+    capUp(wall, step.ring, step.y, null, PIN_DARK);
+    const [cx, cz] = ringCentroid(step.ring);
+    mastUp(trim, cx, cz, 1.2, step.y, step.y + c.h * 0.06, c.ang, PIN_STONE);
+  },
+
+  /** Shaft sheared off on the diagonal above the double-skin facade. */
+  shearedCap(c) {
+    const { wall, trim, deck, y } = c;
+    const ext = planExtent(deck, c.ang);
+    const rise = Math.max(6, ext.across * 0.5);
+    const ca = Math.cos(c.ang);
+    const sa = Math.sin(c.ang);
+    const [cx, cz] = ringCentroid(deck);
+    const lift = deck.map(([x, z]) => {
+      const v = (z - cz) * ca - (x - cx) * sa;
+      return [x, z, y + clamp(0.5 + (v / Math.max(1, ext.across) + 0.5) * rise, 0.4, rise)];
+    });
+    for (let i = 0, n = lift.length; i < n; i++) {
+      const a = lift[i];
+      const b = lift[(i + 1) % n];
+      wall.quad([a[0], y, a[1]], [a[0], a[2], a[1]], [b[0], b[2], b[1]], [b[0], y, b[1]], null, PIN_NONE);
+    }
+    const top = lift.map(([x, , z]) => [x, z]);
+    const faces = triangulateRing(top);
+    if (faces) {
+      for (const f of faces) {
+        const p0 = lift[f[0]];
+        const p1 = lift[f[1]];
+        const p2 = lift[f[2]];
+        if (!p0 || !p1 || !p2) continue;
+        trim.tri([p0[0], p0[2], p0[1]], [p2[0], p2[2], p2[1]], [p1[0], p1[2], p1[1]], null, PIN_STONE);
+        trim.tri([p0[0], p0[2], p0[1]], [p1[0], p1[2], p1[1]], [p2[0], p2[2], p2[1]], null, PIN_STONE);
+      }
+    }
+  },
+
+  /**
+   * Neo-gothic crown: a turret on each corner, a taller central spire, and
+   * pinnacles marching round the parapet.
+   */
+  ppgTower(c) {
+    const { trim, ring, deck, y, capY } = c;
+    const w = Math.sqrt(polygonArea(deck));
+    alongRing(ring, 7.5, (x, z) => pinnacle(trim, x, z, 0.85, capY, 6.5, c.ang, PIN_STONE));
+    for (const [px, pz] of ringCorners(deck, 4)) {
+      const turret = regularRing(px, pz, w * 0.11, 4, c.ang);
+      band(trim, turret, y, turret, y + c.h * 0.05, null, PIN_STONE);
+      alongRing(turret, 3.2, (x, z) =>
+        pinnacle(trim, x, z, 0.7, y + c.h * 0.05, 5, c.ang, PIN_STONE));
+      pyramidUp(trim, turret, y + c.h * 0.05, y + c.h * 0.115, PIN_STONE);
+    }
+    const [cx, cz] = ringCentroid(deck);
+    const core = regularRing(cx, cz, w * 0.2, 4, c.ang);
+    band(trim, core, y, core, y + c.h * 0.055, null, PIN_STONE);
+    pyramidUp(trim, core, y + c.h * 0.055, c.baseY + c.h, PIN_STONE);
+  },
+
+  /** The low blocks of the complex carry the same pinnacled parapet. */
+  ppgSpires(c) {
+    const { trim, ring, capY } = c;
+    alongRing(ring, 6.5, (x, z) => pinnacle(trim, x, z, 0.7, capY, 5, c.ang, PIN_STONE));
+    for (const [px, pz] of ringCorners(ring, 4)) {
+      pinnacle(trim, px, pz, 1.15, capY, 9.5, c.ang, PIN_STONE);
+    }
+  },
+
+  /** Tapered setbacks dying into a slender finial. */
+  obelisk(c) {
+    const { wall, trim, deck, y } = c;
+    const step = steppedUp(trim, deck, y, y + c.h * 0.045, 4, 2.4, PIN_STONE);
+    capUp(wall, step.ring, step.y, null, PIN_DARK);
+    const [cx, cz] = ringCentroid(step.ring);
+    const w = Math.sqrt(polygonArea(step.ring));
+    const shaft = regularRing(cx, cz, w * 0.2, 4, c.ang);
+    band(trim, shaft, step.y, shaft, step.y + c.h * 0.03, null, PIN_STONE);
+    pyramidUp(trim, shaft, step.y + c.h * 0.03, c.baseY + c.h * 1.06, PIN_STONE);
+  },
+
+  /**
+   * Five octagons of stepped height on one podium. The dataset holds a single
+   * ring for the whole site, so the towers are laid out across its own frame:
+   * the tall one over the centre, the rest stepping down to the corners.
+   */
+  oxford(c) {
+    const { wall, trim, deck, y } = c;
+    const ext = planExtent(deck, c.ang);
+    const [cx, cz] = ringCentroid(deck);
+    const ca = Math.cos(c.ang);
+    const sa = Math.sin(c.ang);
+    const r = Math.min(ext.along, ext.across) * 0.29;
+    const towers = [
+      [0, 0, 1, 1],
+      [-ext.along * 0.26, ext.across * 0.1, 0.62, 0.72],
+      [ext.along * 0.27, -ext.across * 0.08, 0.55, 0.66],
+      [ext.along * 0.05, ext.across * 0.3, 0.42, 0.58],
+      [-ext.along * 0.3, -ext.across * 0.24, 0.34, 0.5],
+    ];
+    for (const [u, v, rs, hs] of towers) {
+      const x = cx + u * ca - v * sa;
+      const z = cz + u * sa + v * ca;
+      const ring = regularRing(x, z, r * rs + 6, 8, c.ang);
+      const top = y + (c.baseY + c.h - y) * hs;
+      band(wall, ring, c.baseY + 2, ring, top - 2.2, null, PIN_NONE);
+      band(trim, ring, top - 2.2, ring, top, null, PIN_STONE);
+      capUp(wall, ring, top, null, PIN_DARK);
+    }
+  },
+
+  /** Stepped pyramid crown, glazed lantern at the apex. */
+  ziggurat(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const step = steppedUp(trim, deck, y, y + (top - y) * 0.72, 7, 2.6, PIN_STONE);
+    const [cx, cz] = ringCentroid(step.ring);
+    const w = Math.sqrt(polygonArea(step.ring));
+    const lantern = regularRing(cx, cz, Math.max(3, w * 0.34), 4, c.ang);
+    band(wall, lantern, step.y, lantern, step.y + (top - step.y) * 0.45, null, PIN_NONE);
+    pyramidUp(trim, lantern, step.y + (top - step.y) * 0.45, top, PIN_STONE);
+  },
+
+  /** Steep dormered pyramid: the copper chateau roof, plus its lantern. */
+  chateau(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const eave = y + 1.5;
+    const skirt = insetRing(deck, -1.2, 0.02) || deck;
+    band(trim, deck, y, skirt, eave, null, PIN_STONE);
+    const ridge = insetRing(skirt, Math.sqrt(polygonArea(skirt)) * 0.34, 0.05);
+    const ridgeY = eave + (top - eave) * 0.78;
+    if (ridge) {
+      band(wall, skirt, eave, ridge, ridgeY, null, PIN_DARK);
+      // dormers, one to a face, sitting on the lower third of the pitch
+      alongRing(skirt, 11, (x, z, edgeAng) => {
+        const t = 0.3;
+        const dx = (ringCentroid(skirt)[0] - x) * t;
+        const dz = (ringCentroid(skirt)[1] - z) * t;
+        const dorm = rectRing(x + dx * 0.25, z + dz * 0.25, 3.4, 2.6, Math.cos(edgeAng), Math.sin(edgeAng));
+        const dy = eave + (ridgeY - eave) * 0.22;
+        band(trim, dorm, dy, dorm, dy + 3.2, null, PIN_STONE);
+        pyramidUp(trim, dorm, dy + 3.2, dy + 5.4, PIN_STONE);
+      });
+      const [lx, lz] = ringCentroid(ridge);
+      const lantern = regularRing(lx, lz, Math.max(2, Math.sqrt(polygonArea(ridge)) * 0.3), 4, c.ang);
+      band(trim, lantern, ridgeY, lantern, ridgeY + (top - ridgeY) * 0.5, null, PIN_STONE);
+      pyramidUp(trim, lantern, ridgeY + (top - ridgeY) * 0.5, top, PIN_STONE);
+    } else {
+      pyramidUp(wall, skirt, eave, top, PIN_DARK);
+    }
+  },
+
+  /** Setback crown carrying the beacon mast. */
+  beacon(c) {
+    const { wall, trim, deck, y } = c;
+    const step = steppedUp(trim, deck, y, y + c.h * 0.03, 2, 2.6, PIN_STONE);
+    capUp(wall, step.ring, step.y, null, PIN_DARK);
+    const [cx, cz] = ringCentroid(step.ring);
+    mastUp(trim, cx, cz, 2.2, step.y, c.baseY + c.h, c.ang, PIN_STONE, 2.4);
+  },
+
+  /** Deep cornice, blind attic storey and a balustrade: the Burnham top. */
+  classicalAttic(c) {
+    const { wall, trim, deck, y } = c;
+    const atticH = clamp(c.h * 0.045, 1.8, 4.5);
+    const flare = insetRing(deck, -1.1, 0.02) || deck;
+    band(trim, deck, y, flare, y + atticH * 0.4, null, PIN_STONE);
+    band(trim, flare, y + atticH * 0.4, deck, y + atticH * 0.75, null, PIN_STONE);
+    band(trim, deck, y + atticH * 0.75, deck, y + atticH, null, PIN_STONE);
+    capUp(wall, deck, y + atticH, null, PIN_DARK);
+    alongRing(deck, 9, (x, z, edgeAng) => {
+      const post = rectRing(x, z, 1.4, 0.7, Math.cos(edgeAng), Math.sin(edgeAng));
+      extrudeConvex(trim, post, y + atticH, y + atticH + 1.3, null, PIN_STONE);
+    });
+  },
+
+  /**
+   * Gothic Revival tower: the four-storey Commons Room block, a shaft broken by
+   * two setbacks and run with buttress piers, and a crown of pinnacles.
+   */
+  gothicTower(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    let ring = deck;
+    let yy = y;
+    for (const [frac, inset] of [[0.42, 2.6], [0.7, 2.2], [0.88, 2]]) {
+      const next = insetRing(ring, inset, 0.05);
+      const ty = yy + (top - y) * frac * 0.55;
+      if (!next) break;
+      band(trim, ring, yy, next, yy + 1.4, null, PIN_STONE);
+      band(wall, next, yy + 1.4, next, ty, null, PIN_NONE);
+      // buttress piers stand proud on every face and die into the setback above
+      alongRing(next, 9, (x, z, edgeAng) => {
+        const pier = rectRing(x, z, 2.2, 1.5, Math.cos(edgeAng), Math.sin(edgeAng));
+        band(trim, pier, yy + 1.4, pier, ty, null, PIN_STONE);
+      });
+      ring = next;
+      yy = ty;
+    }
+    band(trim, ring, yy, ring, yy + 2, null, PIN_STONE);
+    capUp(wall, ring, yy + 2, null, PIN_DARK);
+    alongRing(ring, 6, (x, z) => pinnacle(trim, x, z, 1, yy + 2, 8, c.ang, PIN_STONE));
+    for (const [px, pz] of ringCorners(ring, 4)) {
+      pinnacle(trim, px, pz, 1.9, yy + 2, top - yy - 6, c.ang, PIN_STONE);
+    }
+    const [cx, cz] = ringCentroid(ring);
+    const lantern = regularRing(cx, cz, Math.sqrt(polygonArea(ring)) * 0.26, 4, c.ang);
+    band(trim, lantern, yy + 2, lantern, yy + (top - yy) * 0.45, null, PIN_STONE);
+    pyramidUp(trim, lantern, yy + (top - yy) * 0.45, top, PIN_STONE);
+  },
+
+  /**
+   * Steep slate nave roof with the octagonal lead fleche over the crossing.
+   * The fleche is what makes the chapel legible from Oakland, and it stands
+   * more than twice as high as the ridge it springs from.
+   */
+  chapelFleche(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const ridgeY = c.baseY + c.h * 0.385;
+    const ridge = insetRing(deck, planExtent(deck, c.ang).across * 0.42, 0.02);
+    let crossing = deck;
+    if (ridge) {
+      band(wall, deck, y, ridge, ridgeY, null, PIN_DARK);
+      capUp(wall, ridge, ridgeY, null, PIN_DARK);
+      crossing = ridge;
+    } else {
+      pyramidUp(wall, deck, y, ridgeY, PIN_DARK);
+    }
+    alongRing(deck, 7, (x, z) => pinnacle(trim, x, z, 0.8, y, 5, c.ang, PIN_STONE));
+    const [cx, cz] = ringCentroid(crossing);
+    const r = Math.max(2.6, Math.sqrt(polygonArea(deck)) * 0.14);
+    const base = regularRing(cx, cz, r, 8, 0);
+    const neck = ridgeY + (top - ridgeY) * 0.3;
+    band(trim, base, ridgeY - 2, base, neck, null, PIN_STONE);
+    alongRing(base, 2.6, (x, z) => pinnacle(trim, x, z, 0.42, neck, 3, 0, PIN_STONE));
+    coneUp(trim, scaleRing(base, cx, cz, 0.82), neck, cx, top, cz, null, PIN_STONE);
+  },
+
+  /** Deep attic over the cornice, then a low hipped roof, Beaux-Arts fashion. */
+  beauxArts(c) {
+    const { wall, trim, deck, y } = c;
+    const atticH = 3.4;
+    const flare = insetRing(deck, -1.3, 0.02) || deck;
+    band(trim, deck, y, flare, y + 1.4, null, PIN_STONE);
+    band(trim, flare, y + 1.4, deck, y + atticH, null, PIN_STONE);
+    const ridge = insetRing(deck, planExtent(deck, c.ang).across * 0.3, 0.03);
+    if (ridge) {
+      band(wall, deck, y + atticH, ridge, y + atticH + 4.5, null, PIN_DARK);
+      capUp(wall, ridge, y + atticH + 4.5, null, PIN_DARK);
+    } else {
+      capUp(wall, deck, y + atticH, null, PIN_DARK);
+    }
+  },
+
+  /** Colonnade under a 24-step pyramid, after the Mausoleum at Halicarnassus. */
+  mausoleum(c) {
+    const { wall, trim, deck, y } = c;
+    const top = c.baseY + c.h;
+    const colonnade = insetRing(deck, 2.2, 0.1) || deck;
+    alongRing(colonnade, 4.6, (x, z) => {
+      const col = regularRing(x, z, 1.15, 6, 0);
+      band(trim, col, y - c.h * 0.16, col, y, null, PIN_STONE);
+    });
+    const podium = insetRing(deck, 1.4, 0.05) || deck;
+    band(trim, deck, y, podium, y + 1.6, null, PIN_STONE);
+    const step = steppedUp(trim, podium, y + 1.6, y + 1.6 + (top - y) * 0.62, 8, 1.9, PIN_STONE);
+    pyramidUp(trim, step.ring, step.y, top, PIN_STONE);
+  },
+
+  /** Buhl Planetarium dome over the riverfront block. */
+  planetarium(c) {
+    const { wall, trim, deck, y } = c;
+    capUp(wall, deck, y, null, PIN_DARK);
+    const [cx, cz] = ringAreaCentroid(deck);
+    // a 127 x 74 m riverfront bar: the drum can only be as wide as the
+    // clearance it has where it stands, or it cantilevers off the long side
+    const room = pointInRing(cx, cz, deck) ? distToRing(cx, cz, deck) - 0.8 : 0;
+    const r = Math.min(clamp(Math.sqrt(polygonArea(deck)) * 0.2, 5, 14), room);
+    if (r < 3) return;
+    const drum = regularRing(cx, cz, r, 14, 0);
+    band(trim, drum, y, drum, y + 2.4, null, PIN_STONE);
+    domeUp(trim, cx, cz, r, y + 2.4, r * 0.85, 14, 5, PIN_STONE);
+  },
+
+  /**
+   * The suspended roof: a shell that springs off the Penn Avenue edge, peaks
+   * about two thirds of the way across and cantilevers over Fort Duquesne
+   * Boulevard, carried on a row of masts and back-stay cables.
+   */
+  cableRoof(c) {
+    const { wall, trim, deck, y } = c;
+    const ext = planExtent(deck, c.ang);
+    const [cx, cz] = ringCentroid(deck);
+    const ca = Math.cos(c.ang);
+    const sa = Math.sin(c.ang);
+    // travel across the plan toward the river, which is north (-Z) of the site
+    const across = [-sa, ca];
+    const sign = across[1] > 0 ? -1 : 1;
+    const half = ext.across * 0.5;
+    const halfU = ext.along * 0.5;
+    const rise = c.h * 0.72;
+    const segs = 14;
+    const at = (u, t) => {
+      const v = (t - 0.5) * ext.across * sign;
+      return [cx + u * ca - v * sa, cz + u * sa + v * ca];
+    };
+    // parabola peaking at t = 0.66, still 40% up at the cantilevered lip
+    const profile = (t) => y + Math.max(0.6, rise * (1 - ((t - 0.66) / 0.72) ** 2));
+    const thick = 1.8;
+    for (let i = 0; i < segs; i++) {
+      const t0 = i / segs;
+      const t1 = (i + 1) / segs;
+      const y0 = profile(t0);
+      const y1 = profile(t1);
+      const a0 = at(-halfU, t0);
+      const b0 = at(halfU, t0);
+      const a1 = at(-halfU, t1);
+      const b1 = at(halfU, t1);
+      wall.quad([a0[0], y0, a0[1]], [b0[0], y0, b0[1]], [b1[0], y1, b1[1]], [a1[0], y1, a1[1]], null, PIN_DARK);
+      trim.quad(
+        [a0[0], y0 - thick, a0[1]],
+        [a1[0], y1 - thick, a1[1]],
+        [b1[0], y1 - thick, b1[1]],
+        [b0[0], y0 - thick, b0[1]],
+        null,
+        PIN_STONE,
+      );
+      trim.quad(
+        [a0[0], y0, a0[1]],
+        [a1[0], y1, a1[1]],
+        [a1[0], y1 - thick, a1[1]],
+        [a0[0], y0 - thick, a0[1]],
+        null,
+        PIN_STONE,
+      );
+      trim.quad(
+        [b0[0], y0 - thick, b0[1]],
+        [b1[0], y1 - thick, b1[1]],
+        [b1[0], y1, b1[1]],
+        [b0[0], y0, b0[1]],
+        null,
+        PIN_STONE,
+      );
+    }
+    // glazed end walls under the sweep
+    for (const u of [-halfU, halfU]) {
+      for (let i = 0; i < segs; i++) {
+        const t0 = i / segs;
+        const t1 = (i + 1) / segs;
+        const p0 = at(u, t0);
+        const p1 = at(u, t1);
+        wall.quad(
+          [p0[0], y, p0[1]],
+          [p0[0], profile(t0) - thick, p0[1]],
+          [p1[0], profile(t1) - thick, p1[1]],
+          [p1[0], y, p1[1]],
+          null,
+          PIN_NONE,
+        );
+      }
+    }
+    // masts along the springing edge, with a stay running back to the peak
+    const peak = profile(0.66);
+    for (let i = 0; i < 5; i++) {
+      const u = (i / 4 - 0.5) * ext.along * 0.86;
+      const foot = at(u, 0.06);
+      const head = at(u, 0.1);
+      mastUp(trim, foot[0], foot[1], 1.1, y - c.h * 0.4, peak + c.h * 0.24, c.ang, PIN_STONE);
+      const anchor = at(u, 0.66);
+      const cable = [
+        [head[0], peak + c.h * 0.22, head[1]],
+        [anchor[0], profile(0.66), anchor[1]],
+      ];
+      const w = 0.35;
+      trim.quad(
+        [cable[0][0] - w, cable[0][1], cable[0][2]],
+        [cable[1][0] - w, cable[1][1], cable[1][2]],
+        [cable[1][0] + w, cable[1][1], cable[1][2]],
+        [cable[0][0] + w, cable[0][1], cable[0][2]],
+        null,
+        PIN_STONE,
+      );
+    }
+    capUp(wall, deck, y, null, PIN_DARK);
+  },
+};
+
 /**
  * Full articulated shell for one building.
  *
@@ -1412,9 +2104,10 @@ export function buildArticulatedBuilding(opts) {
   const raw = ringFromFootprint(footprint);
   if (!raw) return empty;
 
-  const h = clamp(finite(height, 10), 2, 800);
+  const lm = landmarkFor(raw);
+  const h = clamp(finite(lm ? lm.h : height, 10), 2, 800);
   const s = Number.isFinite(seed) ? seed : footprintSeed(footprint);
-  const det = tier === 0 || tier === 1 || tier === 2 ? tier : tierForRing(raw, h);
+  const det = lm ? 2 : tier === 0 || tier === 1 || tier === 2 ? tier : tierForRing(raw, h);
   const y0 = baseY - Math.max(0, skirt);
   const grid = FACADE_GRID[style] || DEFAULT_GRID;
 
@@ -1444,13 +2137,17 @@ export function buildArticulatedBuilding(opts) {
     return finish(null, baseY + h);
   }
 
-  const tiers = massingProfile(footprint, h, s, { style, maxVerts: MAX_RING_VERTS[det] });
+  const tiers = lm
+    ? landmarkTiers(lm, simplifyRing(raw, SIMPLIFY_TOL, MAX_RING_VERTS[2]), h)
+    : massingProfile(footprint, h, s, { style, maxVerts: MAX_RING_VERTS[det] });
   if (!tiers.length) return empty;
 
   const baseRing = tiers[0].ring;
   const prog = buildingProgram(baseRing, h, s, style);
+  // a landmark's silhouette is the crown's business, never a hashed hip roof
+  if (lm) prog.roof = { form: 'flat', rise: 0 };
   const p = trimProportions(s, style, h, prog.typ);
-  const budget = det === 2 ? 1900 : 420;
+  const budget = lm ? 2600 : det === 2 ? 1900 : 420;
   let deck = null;
   let pitch = null;
 
@@ -1510,6 +2207,27 @@ export function buildArticulatedBuilding(opts) {
   // downhill side of a footprint sits above the terrain
   capDown(wall, baseRing, y0, null, PIN_DARK);
 
+  if (lm && deck && CROWNS[lm.crown]) {
+    const last = tiers[tiers.length - 1];
+    try {
+      CROWNS[lm.crown]({
+        wall,
+        trim,
+        ring: last.ring,
+        deck: deck.ring,
+        y: deck.y,
+        capY: baseY + last.y1,
+        baseY,
+        h,
+        ang: prog.ang,
+        s,
+      });
+    } catch {
+      /* a crown that cannot be built leaves the plain shell standing */
+    }
+    return finish(null, deck.y);
+  }
+
   if (pitch) {
     // brick stack, sized to clear the ridge wherever on the pitch it lands
     if (h01(s, 9) < 0.72) {
@@ -1549,8 +2267,6 @@ export function buildArticulatedBuilding(opts) {
 /* ------------------------------------------------------------------ */
 
 const ROOF_COLORS = {
-  deck: [0.3, 0.3, 0.31],
-  housing: [0.4, 0.4, 0.41],
   duct: [0.46, 0.47, 0.5],
   metal: [0.52, 0.53, 0.55],
   rail: [0.24, 0.25, 0.27],
@@ -1598,6 +2314,8 @@ export function buildRoofscape(opts) {
 
   const raw = ringFromFootprint(footprint);
   if (!raw) return null;
+  // a landmark's roof is its crown; generic plant would sit inside the spire
+  if (landmarkFor(raw)) return null;
   const h = clamp(finite(height, 10), 2, 800);
   const s = Number.isFinite(seed) ? seed : footprintSeed(footprint);
   const det = tier === 0 || tier === 1 || tier === 2 ? tier : tierForRing(raw, h);

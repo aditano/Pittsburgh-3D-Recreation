@@ -171,13 +171,15 @@ function noiseCanvas(w, h, paint) {
   return canvas;
 }
 
-function makeGrassMaps() {
+function makeGrassMaps(dayMode = true) {
   const color = noiseCanvas(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#1c3a22';
+    // Sunlit turf sits near 0.13 albedo; the darker base is the night palette.
+    ctx.fillStyle = dayMode ? '#416b39' : '#1c3a22';
     ctx.fillRect(0, 0, w, h);
+    const lift = dayMode ? 78 : 0;
     for (let i = 0; i < 2200; i++) {
-      const g = 70 + Math.random() * 50;
-      ctx.fillStyle = `rgba(${30 + Math.random() * 20},${g},${40 + Math.random() * 20},${0.18 + Math.random() * 0.25})`;
+      const g = 70 + lift + Math.random() * 50;
+      ctx.fillStyle = `rgba(${30 + lift + Math.random() * 20},${g},${40 + lift * 0.5 + Math.random() * 20},${0.18 + Math.random() * 0.25})`;
       ctx.fillRect(Math.random() * w, Math.random() * h, 1 + Math.random() * 2, 2 + Math.random() * 4);
     }
   });
@@ -262,9 +264,11 @@ function makeWaterMaps() {
   };
 }
 
-function makeRoadMaps() {
+function makeRoadMaps(dayMode = true) {
   const color = noiseCanvas(128, 128, (ctx, w, h) => {
-    ctx.fillStyle = '#2a2c32';
+    // Sunlit asphalt is around 0.09 albedo once the road tint is applied; the
+    // near-black base below is the night palette.
+    ctx.fillStyle = dayMode ? '#6e7076' : '#2a2c32';
     ctx.fillRect(0, 0, w, h);
     ctx.fillStyle = 'rgba(210,200,160,0.35)';
     ctx.fillRect(w * 0.48, 0, 2, h);
@@ -577,19 +581,21 @@ export function createCityMaterials({ dayMode = true } = {}) {
     },
   };
 
-  const grass = makeGrassMaps();
+  const grass = makeGrassMaps(dayMode);
   const ground = makeGroundMaps();
   const water = makeWaterMaps();
-  const road = makeRoadMaps();
+  const road = makeRoadMaps(dayMode);
 
   const parkMat = new THREE.MeshStandardMaterial({
-    color: 0x2a5a34,
+    // The grass map already carries the green, so tinting it again in daylight
+    // multiplied two dark values together and parks came out near black.
+    color: dayMode ? 0xffffff : 0x2a5a34,
     map: grass.map,
     roughnessMap: grass.roughnessMap,
     roughness: 1,
     metalness: 0,
     emissive: 0x041208,
-    emissiveIntensity: 0.2,
+    emissiveIntensity: dayMode ? 0 : 0.2,
     polygonOffset: true,
     polygonOffsetFactor: -1,
     polygonOffsetUnits: -1,
@@ -729,11 +735,11 @@ export function createCityMaterials({ dayMode = true } = {}) {
   });
 
   const foamMat = new THREE.MeshStandardMaterial({
-    color: 0x3a4a46,
+    color: dayMode ? 0x8d8f86 : 0x3a4a46,
     roughness: 0.72,
     metalness: 0.12,
     emissive: 0x102018,
-    emissiveIntensity: 0.15,
+    emissiveIntensity: dayMode ? 0 : 0.15,
     side: THREE.DoubleSide,
     polygonOffset: true,
     polygonOffsetFactor: -4,
@@ -741,13 +747,13 @@ export function createCityMaterials({ dayMode = true } = {}) {
   });
 
   const bankMat = new THREE.MeshStandardMaterial({
-    color: 0x2a2418,
+    color: dayMode ? 0x6d6250 : 0x2a2418,
     roughness: 0.95,
     metalness: 0.02,
   });
 
   const treeMat = new THREE.MeshStandardMaterial({
-    color: 0x0e1c12,
+    color: dayMode ? 0x35602f : 0x0e1c12,
     roughness: 1,
     metalness: 0,
   });

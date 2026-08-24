@@ -635,9 +635,11 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
           });
           break;
         case 'decked-arch':
+          // The tie chord is the lower deck, so the rib springs there and the
+          // upper deck rides inside the arch rather than under it.
           ranges.forEach(([a, c], i) => {
             if (i === archIndex)
-              addArchRib(steel, lines, frame, a, c, upperY - 1, upperY + rec.rise, upperY + 1, width * 0.42);
+              addArchRib(steel, lines, frame, a, c, deckY + 1, deckY + rec.rise, deckY + 1.2, width * 0.54, 18);
             else addPonyTruss(steel, frame, a, c, deckY + 1, width, 3.4);
           });
           for (const [a, c] of ranges) {

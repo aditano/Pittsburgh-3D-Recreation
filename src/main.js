@@ -194,15 +194,38 @@ function flatPolygon(footprint, y, yFn, holes = null) {
  * Ground tint from the real landform: flat ground reads as paved city fabric,
  * and the steep hillsides that ring the valleys read as the woods they are.
  */
-function groundColor(x, y, z, slope, waterIndex) {
-  if (waterIndex.inside(x, z)) return [0.035, 0.055, 0.07];
+/**
+ * Vertex tints for the ground, which multiply an albedo map whose base sits near
+ * 0.25 linear. The night-time set below leaves paved ground at roughly 0.024
+ * albedo; asphalt in daylight is nearer 0.11, so the day set is scaled to land
+ * on believable albedos (paved ~0.11, mown grass ~0.14, woods ~0.07) instead of
+ * reading as tarmac at midnight.
+ */
+const GROUND_TINTS = {
+  day: {
+    bed: [0.2, 0.3, 0.34],
+    bank: [0.68, 0.56, 0.4],
+    paved: [0.4, 0.42, 0.46],
+    forest: [0.2, 0.34, 0.18],
+    grass: [0.36, 0.56, 0.28],
+  },
+  night: {
+    bed: [0.035, 0.055, 0.07],
+    bank: [0.14, 0.11, 0.07],
+    paved: [0.098, 0.103, 0.118],
+    forest: [0.055, 0.088, 0.048],
+    grass: [0.085, 0.115, 0.062],
+  },
+};
+
+function groundColor(x, y, z, slope, waterIndex, dayMode = true) {
+  const tint = dayMode ? GROUND_TINTS.day : GROUND_TINTS.night;
+  if (waterIndex.inside(x, z)) return tint.bed;
   const bank = waterIndex.bankStrength(x, z);
-  if (bank > 0.15) return [0.14 + bank * 0.04, 0.11, 0.07];
+  if (bank > 0.15) return [tint.bank[0] + bank * 0.04, tint.bank[1], tint.bank[2]];
 
   const wooded = Math.min(1, Math.max(0, (slope - 0.11) / 0.22));
-  const paved = [0.098, 0.103, 0.118];
-  const forest = [0.055, 0.088, 0.048];
-  const grass = [0.085, 0.115, 0.062];
+  const { paved, forest, grass } = tint;
   const dry = Math.min(1, Math.max(0, (y - 60) / 110));
   const base = [
     grass[0] * (1 - dry) + forest[0] * dry,
@@ -239,7 +262,7 @@ function makeGround(terrainFn, waterIndex) {
         terrainFn(x + 40, z) - terrainFn(x - 40, z),
         terrainFn(x, z + 40) - terrainFn(x, z - 40),
       ) / 80;
-    const c = groundColor(x, y, z, slope, waterIndex);
+    const c = groundColor(x, y, z, slope, waterIndex, DAY_MODE);
     colors[i * 3] = c[0];
     colors[i * 3 + 1] = c[1];
     colors[i * 3 + 2] = c[2];
@@ -799,6 +822,17 @@ for (const btn of navEl.querySelectorAll('button[data-view]')) {
   });
 }
 
+/** `#point`, `#stadiums`, ... jumps straight to a preset, so a viewpoint is linkable. */
+function viewFromHash() {
+  const name = location.hash.replace(/^#/, '').toLowerCase();
+  return views[name] ? name : null;
+}
+
+window.addEventListener('hashchange', () => {
+  const name = viewFromHash();
+  if (name) setView(name);
+});
+
 function onResize() {
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -852,7 +886,19 @@ requestAnimationFrame(tick);
     const data = await res.json();
     await buildCity(data);
     initComposer();
-    setView('downtown');
+    const start = viewFromHash() || 'downtown';
+    setView(start);
+    // Land on a hash-selected view immediately rather than flying in, so a
+    // screenshot taken right after load shows the requested framing.
+    if (anim && viewFromHash()) {
+      camera.position.copy(anim.toPos);
+      controls.target.copy(anim.toTarget);
+      anim = null;
+      controls.enabled = true;
+    }
+    for (const btn of navEl.querySelectorAll('button[data-view]')) {
+      btn.classList.toggle('active', btn.dataset.view === start);
+    }
     loaderEl.classList.add('hide');
   } catch (err) {
     console.error(err);

@@ -4,6 +4,18 @@ import { footprintCentroid, footprintWaterOverlap, footprintLandBaseY } from './
 import { buildPointStatePark } from './point.js';
 import { buildPncPark, buildAcrisureStadium, buildPpgArena } from './stadiums.js';
 
+/**
+ * Landmarks that cannot be an extruded footprint.
+ *
+ * Everything that IS a footprint - US Steel, PPG Place, the Cathedral of
+ * Learning, Gulf, Koppers, the Convention Center and the rest - is built by
+ * `architecture.js` instead, so it keeps the city's facade textures, its tint
+ * and its merge bucket while still getting a modelled crown. What is left here
+ * is the work that has no footprint to extrude: the three venues, Point State
+ * Park, the two inclines, and the handful of major buildings that the shipped
+ * dataset is simply missing.
+ */
+
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
     color,
@@ -13,6 +25,7 @@ function mat(color, opts = {}) {
     emissiveIntensity: opts.emissiveIntensity ?? 0,
     transparent: opts.transparent ?? false,
     opacity: opts.opacity ?? 1,
+    side: opts.side ?? THREE.FrontSide,
     envMapIntensity: opts.envMapIntensity ?? 0.6,
   });
 }
@@ -60,346 +73,449 @@ function footprintBounds(f) {
   };
 }
 
-function buildPPGTower(h, footprint) {
+/**
+ * World ring into the frame `buildLandmarkMeshes` places a group in: translated
+ * to the footprint centroid and turned by the plan's principal axis.
+ */
+function localRing(f, frame) {
+  const c = Math.cos(frame.yaw);
+  const s = Math.sin(frame.yaw);
+  const out = [];
+  const n = f.length - 1;
+  for (let i = 0; i < n; i++) {
+    const dx = f[i][0] - frame.cx;
+    const dz = f[i][1] - frame.cz;
+    out.push([dx * c + dz * s, -dx * s + dz * c]);
+  }
+  return out;
+}
+
+/** Prism over an arbitrary local ring, standing on y0. */
+function prism(ring, y0, y1, holes = []) {
+  const shape = new THREE.Shape();
+  shape.moveTo(ring[0][0], -ring[0][1]);
+  for (let i = 1; i < ring.length; i++) shape.lineTo(ring[i][0], -ring[i][1]);
+  shape.closePath();
+  for (const hole of holes) {
+    const path = new THREE.Path();
+    path.moveTo(hole[0][0], -hole[0][1]);
+    for (let i = 1; i < hole.length; i++) path.lineTo(hole[i][0], -hole[i][1]);
+    path.closePath();
+    shape.holes.push(path);
+  }
+  const geom = new THREE.ExtrudeGeometry(shape, { depth: y1 - y0, bevelEnabled: false });
+  geom.rotateX(-Math.PI / 2);
+  geom.translate(0, y1, 0);
+  return geom;
+}
+
+/** Ring scaled about its own centroid, used for setbacks and roof ridges. */
+function shrinkRing(ring, k) {
+  let cx = 0;
+  let cz = 0;
+  for (const [x, z] of ring) {
+    cx += x;
+    cz += z;
+  }
+  cx /= ring.length;
+  cz /= ring.length;
+  return ring.map(([x, z]) => [cx + (x - cx) * k, cz + (z - cz) * k]);
+}
+
+/** Closed skirt between two rings at different heights - a mansard or a hip. */
+function slopeGeometry(lower, upper, yLo, yHi) {
+  const pos = [];
+  const n = lower.length;
+  for (let i = 0; i < n; i++) {
+    const a = lower[i];
+    const b = lower[(i + 1) % n];
+    const c = upper[(i + 1) % n];
+    const d = upper[i];
+    pos.push(a[0], yLo, a[1], d[0], yHi, d[1], c[0], yHi, c[1]);
+    pos.push(a[0], yLo, a[1], c[0], yHi, c[1], b[0], yLo, b[1]);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.computeVertexNormals();
+  return geom;
+}
+
+/**
+ * Storey bands cut into a wall as thin recessed strips. These buildings are
+ * missing from the dataset, so they do not get the city's facade texture and
+ * have to carry their fenestration in geometry or read as blank slabs.
+ */
+function windowBands(ring, y0, y1, floorH, inset) {
+  const geoms = [];
+  const inner = shrinkRing(ring, 1 - inset / Math.max(12, ringRadius(ring)));
+  for (let y = y0 + floorH * 0.55; y < y1 - floorH * 0.4; y += floorH) {
+    geoms.push(bandGeometry(inner, y, Math.min(floorH * 0.5, y1 - y - 0.4)));
+  }
+  return geoms.length ? mergeGeometries(geoms, false) : null;
+}
+
+function ringRadius(ring) {
+  let cx = 0;
+  let cz = 0;
+  for (const [x, z] of ring) {
+    cx += x;
+    cz += z;
+  }
+  cx /= ring.length;
+  cz /= ring.length;
+  let r = 0;
+  for (const [x, z] of ring) r = Math.max(r, Math.hypot(x - cx, z - cz));
+  return r;
+}
+
+function bandGeometry(ring, y, h) {
+  const pos = [];
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    pos.push(a[0], y, a[1], a[0], y + h, a[1], b[0], y + h, b[1]);
+    pos.push(a[0], y, a[1], b[0], y + h, b[1], b[0], y, b[1]);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.computeVertexNormals();
+  return geom;
+}
+
+function addMerged(group, geoms, material, { cast = true, receive = true } = {}) {
+  const usable = geoms.filter(Boolean);
+  if (!usable.length) return;
+  const merged = mergeGeometries(usable, false);
+  if (!merged) return;
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.castShadow = cast;
+  mesh.receiveShadow = receive;
+  group.add(mesh);
+  for (const g of usable) g.dispose();
+}
+
+/* ------------------------------------------------------------------ */
+/* landmarks the shipped dataset does not contain                      */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Footprints lifted straight from Overpass and projected with the same
+ * transform as the rest of the city (scripts/osm.mjs), so they land on their
+ * real blocks. Each is skipped the moment a building of that name appears in
+ * public/data/pittsburgh.json, which is where they belong.
+ */
+const MISSING = [
+  {
+    n: 'Union Trust Building',
+    match: /union trust/i,
+    // OSM way 121046649. Osterling, 1917: 237 ft to the roof over 15 floors,
+    // Flemish-Gothic, with a terra-cotta mansard, dormers on every face and
+    // two chapel-like mechanical towers standing on the ridge.
+    f: [
+      [465.72, 105.45], [467.53, 101.71], [466.81, 99.17], [458.45, 94.43], [411.07, 71.14],
+      [408.34, 71.93], [393, 102.28], [375.85, 136.02], [376.41, 138.53], [399.93, 150.34],
+      [432.32, 166.59], [435.02, 165.14], [454.01, 128.41], [465.72, 105.45],
+    ],
+    h: 72,
+    build: buildUnionTrust,
+  },
+  {
+    n: 'Allegheny County Courthouse',
+    match: /allegheny county courthouse/i,
+    // OSM relation 2730675, outer way 203445067, simplified to the four main
+    // corners. Richardson, 1888: a granite block round a courtyard, hipped
+    // roofs and dormers, and a 300 ft tower on the Grant Street front.
+    f: [[419.26, 253.26], [447.03, 197], [527.95, 236.04], [500.35, 293.5], [419.26, 253.26]],
+    h: 30.5,
+    build: buildCourthouse,
+  },
+  {
+    n: 'Phipps Conservatory',
+    match: /phipps conservatory/i,
+    // OSM way 207207952, the historic Lord & Burnham glasshouse of 1893: a
+    // domed Palm Court with barrel-vaulted display houses running off it.
+    f: [
+      [4560.42, 92.62], [4573.42, 124.7], [4586.02, 151.9], [4563.42, 169.7],
+      [4547.52, 179.74], [4527.32, 199.33], [4510.66, 183.02], [4517.12, 85.56],
+      [4531.5, 89.53], [4560.42, 92.62],
+    ],
+    h: 20,
+    build: buildPhipps,
+  },
+];
+
+function buildUnionTrust(ring, h) {
   const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 42);
-  const d = Math.max(b.d, 42);
-  const bodyH = h * 0.82;
-  const glass = mat(0xb8d4d0, { roughness: 0.12, metalness: 0.72, emissive: 0x4a8a78, emissiveIntensity: 0.35, envMapIntensity: 1.4 });
-  const spireMat = mat(0xd8ece8, { roughness: 0.1, metalness: 0.8, emissive: 0x6aa898, emissiveIntensity: 0.5, envMapIntensity: 1.5 });
+  const stone = mat(0xb4a892, { roughness: 0.82, metalness: 0.05 });
+  const terracotta = mat(0x4e5a50, { roughness: 0.68, metalness: 0.14 });
+  const glass = mat(0x1c2630, { roughness: 0.3, metalness: 0.5, emissive: 0x24303c, emissiveIntensity: 0.35 });
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, bodyH, d), glass);
-  body.position.y = bodyH * 0.5;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
+  // shaft to the eaves, then the mansard occupying the top four storeys
+  const eave = h * 0.72;
+  const shaft = shrinkRing(ring, 0.985);
+  addMerged(g, [prism(ring, 0, eave)], stone);
+  addMerged(g, [windowBands(shaft, 5, eave - 3, 4.6, 0.5)], glass, { cast: false });
 
-  const mullionMat = mat(0x9ac8bc, { roughness: 0.18, metalness: 0.6, emissive: 0x3a7868, emissiveIntensity: 0.2 });
-  for (let i = -2; i <= 2; i++) {
-    const vert = new THREE.Mesh(new THREE.BoxGeometry(0.35, bodyH * 0.96, d + 0.2), mullionMat);
-    vert.position.set(i * (w / 5), bodyH * 0.5, 0);
-    g.add(vert);
-    const horiz = new THREE.Mesh(new THREE.BoxGeometry(w + 0.2, 0.3, 0.35), mullionMat);
-    horiz.position.set(0, bodyH * (0.25 + ((i + 2) / 4) * 0.5), d * 0.5 + 0.1);
-    g.add(horiz);
-    const horiz2 = horiz.clone();
-    horiz2.position.z = -d * 0.5 - 0.1;
-    g.add(horiz2);
+  const ridge = shrinkRing(ring, 0.7);
+  addMerged(g, [slopeGeometry(shrinkRing(ring, 1.01), ridge, eave, h)], terracotta);
+  addMerged(g, [prism(ridge, h - 0.4, h)], terracotta);
+
+  // dormers along the mansard, and the two "little chapels" over the ridge
+  const dormers = [];
+  const n = ring.length;
+  for (let i = 0; i < n; i++) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    const dx = b[0] - a[0];
+    const dz = b[1] - a[1];
+    const len = Math.hypot(dx, dz);
+    if (len < 12) continue;
+    const count = Math.max(1, Math.round(len / 11));
+    for (let k = 0; k < count; k++) {
+      const t = (k + 0.5) / count;
+      const px = a[0] + dx * t;
+      const pz = a[1] + dz * t;
+      const box = new THREE.BoxGeometry(4.2, 5, 3.4);
+      box.rotateY(-Math.atan2(dz, dx));
+      box.translate(px * 0.94, eave + 3.4, pz * 0.94);
+      dormers.push(box);
+      const cap = new THREE.ConeGeometry(2.9, 3.2, 4);
+      cap.rotateY(Math.PI / 4);
+      cap.translate(px * 0.94, eave + 7.4, pz * 0.94);
+      dormers.push(cap);
+    }
   }
+  addMerged(g, dormers, terracotta);
 
-  const spireH = h * 0.18;
-  for (const [ox, oz] of [
-    [-w * 0.42, -d * 0.42],
-    [w * 0.42, -d * 0.42],
-    [-w * 0.42, d * 0.42],
-    [w * 0.42, d * 0.42],
-  ]) {
-    const spire = new THREE.Mesh(new THREE.ConeGeometry(2.8, spireH, 4), spireMat);
-    spire.position.set(ox, bodyH + spireH * 0.5, oz);
-    spire.rotation.y = Math.PI / 4;
-    spire.castShadow = true;
-    g.add(spire);
+  const chapels = [];
+  for (const side of [-1, 1]) {
+    const cx = side * ringRadius(ring) * 0.3;
+    const tower = new THREE.BoxGeometry(9, 13, 9);
+    tower.translate(cx, h + 6.5, 0);
+    chapels.push(tower);
+    const spire = new THREE.ConeGeometry(6.4, 14, 4);
+    spire.rotateY(Math.PI / 4);
+    spire.translate(cx, h + 20, 0);
+    chapels.push(spire);
+    for (let i = 0; i < 4; i++) {
+      const t = (i / 4) * Math.PI * 2 + Math.PI / 4;
+      const pin = new THREE.ConeGeometry(1, 5, 4);
+      pin.translate(cx + Math.cos(t) * 5, h + 15, Math.sin(t) * 5);
+      chapels.push(pin);
+    }
   }
-
-  const crown = new THREE.Mesh(new THREE.ConeGeometry(w * 0.12, spireH * 0.6, 4), spireMat);
-  crown.position.y = bodyH + spireH * 0.3;
-  crown.rotation.y = Math.PI / 4;
-  crown.castShadow = true;
-  g.add(crown);
+  addMerged(g, chapels, stone);
   return g;
 }
 
-function buildPPGLow(h, footprint, scale = 1) {
+function buildCourthouse(ring, h) {
   const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 28);
-  const d = Math.max(b.d, 28);
-  const totalH = h * scale;
-  const glass = mat(0xc0d8d4, { roughness: 0.14, metalness: 0.68, emissive: 0x5a9888, emissiveIntensity: 0.3, envMapIntensity: 1.2 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, totalH * 0.88, d), glass);
-  body.position.y = totalH * 0.44;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
+  const granite = mat(0x87806f, { roughness: 0.88, metalness: 0.04 });
+  const slate = mat(0x38403f, { roughness: 0.7, metalness: 0.12 });
+  const glass = mat(0x1a222a, { roughness: 0.35, metalness: 0.45, emissive: 0x202832, emissiveIntensity: 0.3 });
 
-  for (let i = 0; i < 6; i++) {
-    const t = (i / 6) * Math.PI * 2;
-    const spire = new THREE.Mesh(new THREE.ConeGeometry(1.2, totalH * 0.22, 4), glass);
-    spire.position.set(Math.cos(t) * w * 0.38, totalH * 0.88 + totalH * 0.11, Math.sin(t) * d * 0.38);
-    spire.rotation.y = Math.PI / 4;
-    spire.castShadow = true;
-    g.add(spire);
+  const court = shrinkRing(ring, 0.44);
+  addMerged(g, [prism(ring, 0, h, [court.slice().reverse()])], granite);
+  addMerged(g, [windowBands(shrinkRing(ring, 0.99), 4, h - 4, 6.2, 0.55)], glass, { cast: false });
+
+  // hipped roofs over the four ranges, with dormers picking out the attic
+  const eave = h;
+  addMerged(g, [slopeGeometry(shrinkRing(ring, 1.015), shrinkRing(ring, 0.78), eave, eave + 7)], slate);
+  addMerged(g, [slopeGeometry(court, shrinkRing(court, 1.18), eave + 7, eave)], slate);
+
+  const corners = [];
+  for (const [x, z] of shrinkRing(ring, 0.9)) {
+    const turret = new THREE.CylinderGeometry(3.4, 3.8, 12, 8);
+    turret.translate(x, h + 2, z);
+    corners.push(turret);
+    const cap = new THREE.ConeGeometry(4.1, 8, 8);
+    cap.translate(x, h + 12, z);
+    corners.push(cap);
   }
-  return g;
-}
+  addMerged(g, corners, granite);
 
-function buildCathedral(h, footprint) {
-  const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 55);
-  const d = Math.max(b.d, 55);
-  const stone = mat(0x8a8478, { roughness: 0.82, metalness: 0.04 });
-  const towerW = Math.min(w, d) * 0.35;
-  const towerH = h * 0.88;
-
-  const base = new THREE.Mesh(new THREE.BoxGeometry(w * 0.88, h * 0.32, d * 0.88), stone);
-  base.position.y = h * 0.16;
-  base.castShadow = true;
-  g.add(base);
-
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(towerW, towerH, towerW), stone);
-  tower.position.y = towerH * 0.5;
-  tower.castShadow = true;
-  g.add(tower);
-
-  for (let i = 0; i < 8; i++) {
-    const t = (i / 8) * Math.PI * 2;
-    const cren = new THREE.Mesh(new THREE.BoxGeometry(towerW * 0.14, h * 0.035, towerW * 0.1), stone);
-    cren.position.set(Math.cos(t) * towerW * 0.48, towerH + h * 0.018, Math.sin(t) * towerW * 0.48);
-    cren.rotation.y = -t;
-    g.add(cren);
-  }
-
-  const spire = new THREE.Mesh(new THREE.ConeGeometry(towerW * 0.22, h * 0.14, 4), mat(0x6a6458, { roughness: 0.75 }));
-  spire.position.y = towerH + h * 0.07;
-  spire.rotation.y = Math.PI / 4;
-  g.add(spire);
-
-  for (let i = 0; i < 4; i++) {
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(w * 0.28, h * 0.22, d * 0.52), stone);
-    const side = i < 2 ? -1 : 1;
-    if (i % 2 === 0) wing.position.set(side * w * 0.4, h * 0.11, 0);
-    else wing.position.set(0, h * 0.11, side * d * 0.4);
-    wing.castShadow = true;
-    g.add(wing);
-  }
-
+  // The Grant Street tower: 300 ft, square, with a steep pyramidal cap and a
+  // corner turret at each shoulder. Grant Street runs along the west front,
+  // between the ring's first two corners.
+  const west = [(ring[0][0] + ring[1][0]) * 0.5, (ring[0][1] + ring[1][1]) * 0.5];
+  const inward = [-west[0] * 0.16, -west[1] * 0.16];
+  const tx = west[0] + inward[0];
+  const tz = west[1] + inward[1];
+  const TOWER_H = 91;
+  const tower = [];
+  const shaft = new THREE.BoxGeometry(17, TOWER_H, 17);
+  shaft.translate(tx, TOWER_H * 0.5, tz);
+  tower.push(shaft);
+  const belfry = new THREE.BoxGeometry(19, 9, 19);
+  belfry.translate(tx, TOWER_H + 4.5, tz);
+  tower.push(belfry);
   for (let i = 0; i < 4; i++) {
     const t = (i / 4) * Math.PI * 2 + Math.PI / 4;
-    const mini = new THREE.Mesh(new THREE.ConeGeometry(2.5, h * 0.06, 4), stone);
-    mini.position.set(Math.cos(t) * w * 0.38, h * 0.25, Math.sin(t) * d * 0.38);
-    mini.rotation.y = Math.PI / 4;
-    g.add(mini);
+    const turret = new THREE.CylinderGeometry(2.4, 2.6, 22, 8);
+    turret.translate(tx + Math.cos(t) * 9.4, TOWER_H - 3, tz + Math.sin(t) * 9.4);
+    tower.push(turret);
+    const cap = new THREE.ConeGeometry(3, 7, 8);
+    cap.translate(tx + Math.cos(t) * 9.4, TOWER_H + 11.5, tz + Math.sin(t) * 9.4);
+    tower.push(cap);
   }
+  addMerged(g, tower, granite);
+
+  const roof = new THREE.ConeGeometry(14, 22, 4);
+  roof.rotateY(Math.PI / 4);
+  roof.translate(tx, TOWER_H + 20, tz);
+  addMerged(g, [roof], slate);
   return g;
 }
 
-function buildUSSteel(h, footprint) {
+function buildPhipps(ring, h) {
   const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 50);
-  const d = Math.max(b.d, 50);
-  const corten = mat(0x6a4a38, { roughness: 0.78, metalness: 0.35, emissive: 0x1a0c08, emissiveIntensity: 0.08 });
-  const bodyH = h * 0.96;
+  const frame = mat(0xe4e8e4, { roughness: 0.5, metalness: 0.18 });
+  const glass = mat(0xbcd8d0, {
+    roughness: 0.1,
+    metalness: 0.25,
+    transparent: true,
+    opacity: 0.62,
+    emissive: 0x87b8a8,
+    emissiveIntensity: 0.3,
+    side: THREE.DoubleSide,
+    envMapIntensity: 1.3,
+  });
 
-  const shape = new THREE.Shape();
-  shape.moveTo(-w * 0.5, -d * 0.35);
-  shape.lineTo(w * 0.5, -d * 0.35);
-  shape.lineTo(0, d * 0.5);
-  shape.closePath();
-  const geom = new THREE.ExtrudeGeometry(shape, { depth: bodyH, bevelEnabled: false });
-  geom.rotateX(-Math.PI / 2);
-  const body = new THREE.Mesh(geom, corten);
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
+  const wallH = h * 0.32;
+  addMerged(g, [prism(ring, 0, 1.2)], frame);
+  addMerged(g, [prism(shrinkRing(ring, 0.995), 1.2, wallH)], glass, { cast: false });
 
-  const crown = new THREE.Mesh(new THREE.BoxGeometry(w * 0.7, h * 0.025, d * 0.45), mat(0x4a3828, { roughness: 0.7, metalness: 0.4 }));
-  crown.position.set(0, bodyH + h * 0.012, -d * 0.05);
-  crown.castShadow = true;
-  g.add(crown);
+  // barrel-vaulted display houses running the length of the plan
+  const ridge = shrinkRing(ring, 0.4);
+  addMerged(g, [slopeGeometry(ring, ridge, wallH, wallH + h * 0.2)], glass, { cast: false });
+  addMerged(g, [prism(ridge, wallH + h * 0.2, wallH + h * 0.2 + 0.5)], frame);
+
+  // Palm Court dome over the centre, with two smaller houses flanking it
+  const r = ringRadius(ring);
+  const domes = [];
+  for (const [ox, oz, k] of [[0, 0, 1], [-r * 0.36, r * 0.3, 0.52], [r * 0.3, -r * 0.34, 0.46]]) {
+    const dome = new THREE.SphereGeometry(r * 0.3 * k, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    dome.translate(ox, wallH + h * 0.1, oz);
+    domes.push(dome);
+    const lantern = new THREE.ConeGeometry(r * 0.06 * k, h * 0.16 * k, 8);
+    lantern.translate(ox, wallH + h * 0.1 + r * 0.3 * k + h * 0.06 * k, oz);
+    domes.push(lantern);
+  }
+  addMerged(g, domes, glass, { cast: false });
+
+  // glazing bars, without which the domes read as soap bubbles
+  const bars = [];
+  for (let i = 0; i < 12; i++) {
+    const t = (i / 12) * Math.PI * 2;
+    const rib = new THREE.TorusGeometry(r * 0.3, 0.18, 4, 14, Math.PI);
+    rib.rotateY(t);
+    rib.translate(0, wallH + h * 0.1, 0);
+    bars.push(rib);
+  }
+  addMerged(g, bars, frame, { receive: false });
   return g;
 }
 
-function buildArtDecoTower(h, footprint, roofType) {
-  const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 30);
-  const d = Math.max(b.d, 30);
-  const bodyMat = mat(0x9a9488, { roughness: 0.72, metalness: 0.12 });
-  const bodyH = h * 0.78;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, bodyH, d), bodyMat);
-  body.position.y = bodyH * 0.5;
-  body.castShadow = true;
-  g.add(body);
+/* ------------------------------------------------------------------ */
+/* the inclines                                                        */
+/* ------------------------------------------------------------------ */
 
-  if (roofType === 'stepped') {
-    for (let i = 0; i < 4; i++) {
-      const shrink = 1 - i * 0.14;
-      const stepH = h * 0.06;
-      const step = new THREE.Mesh(new THREE.BoxGeometry(w * shrink, stepH, d * shrink), bodyMat);
-      step.position.y = bodyH + stepH * (i + 0.5);
-      step.castShadow = true;
-      g.add(step);
+/**
+ * The two surviving funiculars, from the OSM `railway=funicular` alignments.
+ * Endpoints are the real track ends; the station houses at each end are
+ * ordinary OSM buildings and are drawn by the normal pass, so only the
+ * trestle, the track and the cars belong here.
+ *
+ *   Duquesne Incline    793 ft of track, 400 ft of rise, opened 1877
+ *   Monongahela Incline 635 ft of track, 369 ft of rise, opened 1870
+ */
+const INCLINES = [
+  { n: 'Duquesne Incline', lower: [-1326.2, 128.5], upper: [-1419.3, 294.7], gauge: 5.2, cars: 2 },
+  { n: 'Monongahela Incline', lower: [-246.5, 952.3], upper: [-330.2, 1069.4], gauge: 4.4, cars: 2 },
+];
+
+function buildIncline(spec, yFn) {
+  const g = new THREE.Group();
+  g.name = spec.n;
+  const timber = mat(0x4a4038, { roughness: 0.86, metalness: 0.05 });
+  const steel = mat(0x50565a, { roughness: 0.6, metalness: 0.55 });
+  const carMat = mat(0x7a2622, { roughness: 0.52, metalness: 0.15, emissive: 0x180806, emissiveIntensity: 0.12 });
+
+  const [x0, z0] = spec.lower;
+  const [x1, z1] = spec.upper;
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  const run = Math.hypot(dx, dz);
+  if (!(run > 20)) return g;
+  const ux = dx / run;
+  const uz = dz / run;
+  const px = -uz;
+  const pz = ux;
+
+  // The deck is a straight line between the two station platforms; the bents
+  // below it are what follow the hillside.
+  const yLo = yFn(x0, z0) + 4.5;
+  const yHi = yFn(x1, z1) + 3;
+  const deckAt = (t) => yLo + (yHi - yLo) * t;
+  const posAt = (t) => [x0 + dx * t, z0 + dz * t];
+
+  const bents = [];
+  const steps = Math.max(6, Math.round(run / 13));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const [bx, bz] = posAt(t);
+    const deckY = deckAt(t);
+    const groundY = yFn(bx, bz);
+    const drop = deckY - groundY;
+    if (drop < 1) continue;
+    for (const side of [-1, 1]) {
+      const leg = new THREE.BoxGeometry(0.9, drop, 0.9);
+      leg.translate(bx + px * side * spec.gauge * 0.5, groundY + drop * 0.5, bz + pz * side * spec.gauge * 0.5);
+      bents.push(leg);
     }
-    const finial = new THREE.Mesh(new THREE.ConeGeometry(2, h * 0.05, 6), mat(0xc8b878, { metalness: 0.5 }));
-    finial.position.y = h * 0.97;
-    g.add(finial);
-  } else if (roofType === 'globe') {
-    const top = new THREE.Mesh(new THREE.BoxGeometry(w * 0.75, h * 0.12, d * 0.75), bodyMat);
-    top.position.y = bodyH + h * 0.06;
-    g.add(top);
-    const globe = new THREE.Mesh(new THREE.SphereGeometry(Math.min(w, d) * 0.18, 16, 12), mat(0xc0a050, { metalness: 0.55, emissive: 0x302008, emissiveIntensity: 0.2 }));
-    globe.position.y = h * 0.92;
-    g.add(globe);
-  } else if (roofType === 'dome') {
-    const dome = new THREE.Mesh(
-      new THREE.SphereGeometry(Math.min(w, d) * 0.35, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.5),
-      mat(0x2a6a48, { roughness: 0.55, metalness: 0.35, emissive: 0x0a2018, emissiveIntensity: 0.1 }),
+    const cap = new THREE.BoxGeometry(spec.gauge + 1.6, 0.8, 1);
+    cap.rotateY(-Math.atan2(pz, px));
+    cap.translate(bx, deckY - 0.9, bz);
+    bents.push(cap);
+  }
+  addMerged(g, bents, timber);
+
+  const rails = [];
+  const pitch = Math.atan2(yHi - yLo, run);
+  for (const side of [-1, 1]) {
+    const rail = new THREE.BoxGeometry(0.34, 0.34, run);
+    rail.rotateX(-pitch);
+    rail.rotateY(Math.atan2(ux, uz));
+    rail.translate(
+      (x0 + x1) * 0.5 + px * side * spec.gauge * 0.42,
+      (yLo + yHi) * 0.5,
+      (z0 + z1) * 0.5 + pz * side * spec.gauge * 0.42,
     );
-    dome.position.y = bodyH;
-    g.add(dome);
+    rails.push(rail);
   }
-  return g;
-}
+  addMerged(g, rails, steel);
 
-function buildConventionCenter(h, footprint) {
-  const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 120);
-  const d = Math.max(b.d, 80);
-  const white = mat(0xe8ece8, { roughness: 0.55, metalness: 0.08, emissive: 0x182018, emissiveIntensity: 0.05 });
-  const base = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.35, d), white);
-  base.position.y = h * 0.175;
-  base.castShadow = true;
-  g.add(base);
-
-  const curveSegs = 24;
-  const roofGeoms = [];
-  for (let i = 0; i < curveSegs; i++) {
-    const t0 = i / curveSegs;
-    const t1 = (i + 1) / curveSegs;
-    const arch0 = Math.sin(t0 * Math.PI) * h * 0.45;
-    const arch1 = Math.sin(t1 * Math.PI) * h * 0.45;
-    const sliceW = w / curveSegs + 1;
-    const slice = new THREE.BoxGeometry(sliceW, 2, d * 0.92);
-    const midX = -w * 0.5 + w * ((t0 + t1) * 0.5);
-    const midY = h * 0.35 + (arch0 + arch1) * 0.5;
-    slice.translate(midX, midY, 0);
-    roofGeoms.push(slice);
+  // The two cars counterbalance, so they are always the same distance from
+  // opposite ends of the run.
+  const cars = [];
+  for (let i = 0; i < spec.cars; i++) {
+    const t = i === 0 ? 0.28 : 0.72;
+    const [bx, bz] = posAt(t);
+    const y = deckAt(t);
+    const body = new THREE.BoxGeometry(spec.gauge * 0.86, 5.4, 8.4);
+    body.rotateX(-pitch);
+    body.rotateY(Math.atan2(ux, uz));
+    body.translate(bx, y + 2.4, bz);
+    cars.push(body);
   }
-  const roof = new THREE.Mesh(mergeGeometries(roofGeoms, false), white);
-  roof.castShadow = true;
-  g.add(roof);
-  for (const rg of roofGeoms) rg.dispose();
+  addMerged(g, cars, carMat);
   return g;
 }
 
-function buildHeinzChapel(h) {
-  const g = new THREE.Group();
-  const stone = mat(0x7a7468, { roughness: 0.85, metalness: 0.03 });
-  const chapelH = Math.max(h, 28);
-  const body = new THREE.Mesh(new THREE.BoxGeometry(22, chapelH * 0.55, 36), stone);
-  body.position.y = chapelH * 0.275;
-  body.castShadow = true;
-  g.add(body);
-
-  const tower = new THREE.Mesh(new THREE.BoxGeometry(10, chapelH * 0.65, 10), stone);
-  tower.position.set(0, chapelH * 0.55 + chapelH * 0.325, -8);
-  tower.castShadow = true;
-  g.add(tower);
-
-  const spire = new THREE.Mesh(new THREE.ConeGeometry(3.5, chapelH * 0.35, 4), mat(0x5a5448, { roughness: 0.8 }));
-  spire.position.set(0, chapelH * 0.55 + chapelH * 0.65 + chapelH * 0.175, -8);
-  g.add(spire);
-  return g;
-}
-
-function buildGlassTower(h, footprint, variant = 'default') {
-  const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, 35);
-  const d = Math.max(b.d, 35);
-  const glass = mat(0x88a0b0, { roughness: 0.15, metalness: 0.65, emissive: 0x406080, emissiveIntensity: 0.4, envMapIntensity: 1.2 });
-  const bodyH = h * 0.9;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, bodyH, d), glass);
-  body.position.y = bodyH * 0.5;
-  body.castShadow = true;
-  body.receiveShadow = true;
-  g.add(body);
-
-  if (variant === 'pnc') {
-    const crown = new THREE.Mesh(new THREE.BoxGeometry(w * 0.55, h * 0.06, d * 0.55), mat(0x6a8090, { roughness: 0.2, metalness: 0.55 }));
-    crown.position.y = bodyH + h * 0.03;
-    g.add(crown);
-    const spire = new THREE.Mesh(new THREE.ConeGeometry(w * 0.08, h * 0.12, 4), mat(0x788898, { metalness: 0.6 }));
-    spire.position.y = bodyH + h * 0.09;
-    spire.rotation.y = Math.PI / 4;
-    g.add(spire);
-  } else if (variant === 'fifth') {
-    const steps = 5;
-    for (let i = 0; i < steps; i++) {
-      const shrink = 1 - i * 0.12;
-      const stepH = h * 0.028;
-      const step = new THREE.Mesh(new THREE.BoxGeometry(w * shrink, stepH, d * shrink), glass);
-      step.position.y = bodyH + stepH * (i + 0.5);
-      g.add(step);
-    }
-  } else if (variant === 'bny') {
-    const crown = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.22, w * 0.28, h * 0.08, 8), mat(0x708898, { metalness: 0.5 }));
-    crown.position.y = bodyH + h * 0.04;
-    g.add(crown);
-    for (let i = 0; i < 4; i++) {
-      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.5, h * 0.05, w * 0.35), mat(0x8090a0, { metalness: 0.45 }));
-      fin.position.set(0, bodyH + h * 0.075, (i < 2 ? 1 : -1) * d * 0.3);
-      fin.rotation.y = i % 2 === 0 ? 0 : Math.PI / 2;
-      g.add(fin);
-    }
-  }
-
-  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.55, h * 0.07, 6), mat(0x888888, { metalness: 0.7 }));
-  antenna.position.y = h * 0.97;
-  g.add(antenna);
-  return g;
-}
-
-function buildIncline() {
-  const g = new THREE.Group();
-  const track = mat(0x4a4a4a, { roughness: 0.7, metalness: 0.3 });
-  const car = mat(0x8a2020, { roughness: 0.5, metalness: 0.2 });
-
-  const rail = new THREE.Mesh(new THREE.BoxGeometry(3, 1.2, 180), track);
-  rail.position.set(0, 40, 0);
-  rail.rotation.x = -0.38;
-  rail.castShadow = true;
-  g.add(rail);
-
-  const lower = new THREE.Mesh(new THREE.BoxGeometry(14, 10, 18), mat(0x6a5a48, { roughness: 0.8 }));
-  lower.position.set(0, 5, 70);
-  g.add(lower);
-
-  const upper = new THREE.Mesh(new THREE.BoxGeometry(14, 10, 18), mat(0x6a5a48, { roughness: 0.8 }));
-  upper.position.set(-30, 75, -50);
-  g.add(upper);
-
-  const inclineCar = new THREE.Mesh(new THREE.BoxGeometry(5, 4, 8), car);
-  inclineCar.position.set(-10, 35, 10);
-  inclineCar.rotation.x = -0.38;
-  g.add(inclineCar);
-  return g;
-}
-
-const BUILDERS = {
-  'ppg-tower': (b) => buildPPGTower(b.h, b.f),
-  'ppg-low': (b) => buildPPGLow(b.h, b.f),
-  'ppg-mid': (b) => buildPPGLow(b.h, b.f, 1.6),
-  cathedral: (b) => buildCathedral(b.h, b.f),
-  'us-steel': (b) => buildUSSteel(b.h, b.f),
-  'gulf-tower': (b) => buildArtDecoTower(b.h, b.f, 'stepped'),
-  'grant-building': (b) => buildArtDecoTower(b.h, b.f, 'globe'),
-  'koppers-tower': (b) => buildArtDecoTower(b.h, b.f, 'dome'),
-  'convention-center': (b) => buildConventionCenter(b.h, b.f),
-  'heinz-chapel': (b) => buildHeinzChapel(b.h),
-  'pnc-tower': (b) => buildGlassTower(b.h, b.f, 'pnc'),
-  'fifth-avenue': (b) => buildGlassTower(b.h, b.f, 'fifth'),
-  'bny-mellon': (b) => buildGlassTower(b.h, b.f, 'bny'),
-  'oxford-centre': (b) => buildGlassTower(b.h, b.f),
-  'pnc-park': (b) => buildPncPark({ h: b.h, f: b.f, orientYaw: b.field?.open }),
-  'acrisure-stadium': (b) => buildAcrisureStadium({ h: b.h, f: b.f, orientYaw: b.field?.open }),
-  'ppg-arena': (b, frame) =>
-    buildPpgArena({ h: b.h, f: b.f, orientYaw: downtownBearing(frame.cx, frame.cz) }),
-};
+/* ------------------------------------------------------------------ */
+/* venues                                                              */
+/* ------------------------------------------------------------------ */
 
 /**
  * Bearing from a point to the Golden Triangle, used to aim the features that
@@ -411,6 +527,13 @@ function downtownBearing(x, z) {
   return Math.atan2(DOWNTOWN[1] - z, DOWNTOWN[0] - x);
 }
 
+const BUILDERS = {
+  'pnc-park': (b) => buildPncPark({ h: b.h, f: b.f, orientYaw: b.field?.open }),
+  'acrisure-stadium': (b) => buildAcrisureStadium({ h: b.h, f: b.f, orientYaw: b.field?.open }),
+  'ppg-arena': (b, frame) =>
+    buildPpgArena({ h: b.h, f: b.f, orientYaw: downtownBearing(frame.cx, frame.cz) }),
+};
+
 /**
  * Venues carry a `field` record solved from the real OSM playing surface: the
  * bowl is centred on the field rather than the footprint, and `open` is the
@@ -419,23 +542,6 @@ function downtownBearing(x, z) {
  */
 const STADIUM_MESHES = new Set(['pnc-park', 'acrisure-stadium', 'ppg-arena']);
 
-const SINGLETON_MESHES = new Set([
-  'us-steel',
-  'fifth-avenue',
-  'bny-mellon',
-  'pnc-tower',
-  'oxford-centre',
-  'gulf-tower',
-  'koppers-tower',
-  'grant-building',
-  'convention-center',
-  'cathedral',
-  'heinz-chapel',
-  'pnc-park',
-  'acrisure-stadium',
-  'ppg-arena',
-]);
-
 function landmarkScore(b) {
   const bb = footprintBounds(b.f);
   return (b.h || 0) + bb.w * bb.d * 0.002;
@@ -443,17 +549,12 @@ function landmarkScore(b) {
 
 function dedupeLandmarkBuildings(buildings) {
   const singletons = new Map();
-  const multi = [];
   for (const b of buildings) {
-    if (!b.landmarkMesh || !b.f) continue;
-    if (SINGLETON_MESHES.has(b.landmarkMesh)) {
-      const prev = singletons.get(b.landmarkMesh);
-      if (!prev || landmarkScore(b) > landmarkScore(prev)) singletons.set(b.landmarkMesh, b);
-    } else {
-      multi.push(b);
-    }
+    if (!b.f || !BUILDERS[b.landmarkMesh]) continue;
+    const prev = singletons.get(b.landmarkMesh);
+    if (!prev || landmarkScore(b) > landmarkScore(prev)) singletons.set(b.landmarkMesh, b);
   }
-  return [...singletons.values(), ...multi];
+  return [...singletons.values()];
 }
 
 export function buildLandmarkMeshes(
@@ -470,37 +571,43 @@ export function buildLandmarkMeshes(
   // one so riverfront venues are not thrown away for overhanging a bank.
   const cull = waterCull || waterIndex;
 
+  const place = (b, mesh, seated) => {
+    const [cx, cz] = footprintCentroid(b.f);
+    const baseY = waterIndex ? footprintLandBaseY(b.f, yFn, waterIndex) : yFn(cx, cz);
+    const frame = footprintBounds(b.f);
+    const [px, pz] = seated && b.field?.c ? b.field.c : [frame.cx, frame.cz];
+    mesh.position.set(px, baseY, pz);
+    if (!seated) mesh.rotation.y = -frame.yaw;
+    group.add(mesh);
+  };
+
   for (const b of dedupeLandmarkBuildings(buildings)) {
     if (cull && footprintWaterOverlap(b.f, cull) > 0.35) continue;
-    const builder = BUILDERS[b.landmarkMesh];
-    if (!builder) continue;
-    const [cx, cz] = footprintCentroid(b.f);
-    const baseY = waterIndex
-      ? footprintLandBaseY(b.f, yFn, waterIndex)
-      : yFn(cx, cz);
     try {
-      const frame = footprintBounds(b.f);
-      const mesh = builder(b, frame);
-      const seated = STADIUM_MESHES.has(b.landmarkMesh);
-      const [px, pz] = seated && b.field?.c ? b.field.c : [frame.cx, frame.cz];
-      mesh.position.set(px, baseY, pz);
-      if (!seated) mesh.rotation.y = -frame.yaw;
-      group.add(mesh);
+      place(b, BUILDERS[b.landmarkMesh](b, footprintBounds(b.f)), STADIUM_MESHES.has(b.landmarkMesh));
     } catch (err) {
       console.warn('Landmark mesh failed:', b.n, err);
     }
   }
 
-  group.add(buildPointStatePark(yFn, pointPark));
+  for (const lm of MISSING) {
+    if (buildings.some((b) => b.n && lm.match.test(b.n))) continue;
+    try {
+      const frame = footprintBounds(lm.f);
+      const mesh = lm.build(localRing(lm.f, frame), lm.h);
+      mesh.name = lm.n;
+      place({ f: lm.f }, mesh, false);
+    } catch (err) {
+      console.warn('Landmark mesh failed:', lm.n, err);
+    }
+  }
 
-  // Duquesne Incline lower station, from OSM: 40.44012 N, 80.01784 W.
-  const incline = buildIncline();
-  incline.position.set(-1341, yFn(-1341, 98), 98);
-  group.add(incline);
+  group.add(buildPointStatePark(yFn, pointPark));
+  for (const spec of INCLINES) group.add(buildIncline(spec, yFn));
 
   return group;
 }
 
 export function isLandmarkMeshBuilding(b) {
-  return Boolean(b.landmarkMesh);
+  return Boolean(b.landmarkMesh && BUILDERS[b.landmarkMesh]);
 }

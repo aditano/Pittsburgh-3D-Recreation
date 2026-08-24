@@ -1,0 +1,113 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>landmark preview</title>
+    <style>
+      body { margin: 0; background: #9ec8e8; }
+      canvas { display: block; }
+      #hud { position: fixed; left: 8px; top: 8px; font: 13px monospace; color: #fff; text-shadow: 0 1px 2px #000; }
+    </style>
+  </head>
+  <body>
+    <div id="hud"></div>
+    <script type="module">
+      import * as THREE from 'three';
+      import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+      import { createCityMaterials, buildingFamily, tintGeometry } from '/src/textures.js';
+      import { buildArticulatedBuilding, buildRoofscape, footprintSeed, detailTier } from '/src/architecture.js';
+      import { buildLandmarkMeshes } from '/src/landmarks.js';
+
+      const params = new URLSearchParams(location.search);
+      const want = (params.get('b') || 'U.S. Steel Tower').toLowerCase();
+      const az = Number(params.get('az') ?? 0.9);
+      const el = Number(params.get('el') ?? 0.28);
+      const zoom = Number(params.get('zoom') ?? 1.5);
+
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(innerWidth, innerHeight);
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x9ec8e8);
+      scene.add(new THREE.HemisphereLight(0xd8e8ff, 0x6a7a58, 1.1));
+      const sun = new THREE.DirectionalLight(0xffffff, 1.7);
+      sun.position.set(400, 700, 260);
+      scene.add(sun);
+
+      const materials = createCityMaterials({ dayMode: true });
+      const data = await (await fetch('/data/pittsburgh.json')).json();
+
+      const hits = data.buildings.filter((b) => (b.n || '').toLowerCase().includes(want));
+      const target = hits.sort((a, b) => (b.h || 0) - (a.h || 0))[0];
+      const anchor = target ? centroid(target.f) : [Number(params.get('x') || 0), Number(params.get('z') || 0)];
+      const radius = Number(params.get('r') || 220);
+
+      function centroid(f) {
+        let cx = 0, cz = 0;
+        const n = f.length - 1;
+        for (let i = 0; i < n; i++) { cx += f[i][0]; cz += f[i][1]; }
+        return [cx / n, cz / n];
+      }
+
+      const yFn = () => 0;
+      const buckets = {};
+      const roofGeoms = [];
+      let count = 0;
+      let maxY = 40;
+      for (const b of data.buildings) {
+        if (!b.f || b.f.length < 4) continue;
+        const c = centroid(b.f);
+        if (Math.hypot(c[0] - anchor[0], c[1] - anchor[1]) > radius) continue;
+        const family = buildingFamily(b);
+        const height = Math.max(3, b.h || 10);
+        const { wall, trim, roofRing, roofY } = buildArticulatedBuilding({
+          footprint: b.f, height, baseY: 0, style: family, seed: footprintSeed(b.f),
+          floorH: materials.families[family].floorH, windowW: materials.families[family].windowW,
+        });
+        if (!wall) continue;
+        (buckets[family] ||= []).push(wall);
+        if (trim) buckets[family].push(trim);
+        const roof = buildRoofscape({ footprint: b.f, height, baseY: 0, seed: footprintSeed(b.f), tier: detailTier(b.f, height), style: family, roofRing, roofY });
+        if (roof) roofGeoms.push(roof);
+        wall.computeBoundingBox();
+        maxY = Math.max(maxY, wall.boundingBox.max.y);
+        count++;
+      }
+      for (const [name, geoms] of Object.entries(buckets)) {
+        const merged = mergeGeometries(geoms, false);
+        if (!merged) continue;
+        for (const g of geoms) if (!g.attributes.color) tintGeometry(g, new THREE.Color(0xffffff));
+        const m = new THREE.Mesh(mergeGeometries(geoms.map((g) => { if (!g.attributes.color) tintGeometry(g, new THREE.Color(0xffffff)); return g; }), false), materials.families[name].mat);
+        scene.add(m);
+      }
+      if (roofGeoms.length) {
+        scene.add(new THREE.Mesh(mergeGeometries(roofGeoms, false), new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6 })));
+      }
+
+      const near = data.buildings.filter((b) => b.f && Math.hypot(centroid(b.f)[0] - anchor[0], centroid(b.f)[1] - anchor[1]) < radius + 400);
+      scene.add(buildLandmarkMeshes(near, yFn, null, null, null));
+
+      const ground = new THREE.Mesh(new THREE.PlaneGeometry(4000, 4000), new THREE.MeshStandardMaterial({ color: 0x4a5a48 }));
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.set(anchor[0], -0.5, anchor[1]);
+      scene.add(ground);
+
+      const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 12000);
+      const dist = maxY * zoom + 120;
+      camera.position.set(
+        anchor[0] + Math.cos(az) * dist * Math.cos(el),
+        maxY * 0.62 + dist * Math.sin(el),
+        anchor[1] + Math.sin(az) * dist * Math.cos(el),
+      );
+      camera.lookAt(anchor[0], maxY * 0.5, anchor[1]);
+      renderer.render(scene, camera);
+      document.getElementById('hud').textContent =
+        `${target ? target.n : want} | ${count} buildings | topY ${maxY.toFixed(1)} m`;
+      window.__ready = true;
+    </script>
+  </body>
+</html>
