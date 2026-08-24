@@ -5,6 +5,7 @@
  * Prints the gaps so a coverage regression is obvious rather than subtle.
  */
 import { overpass, project, readData } from './osm.mjs';
+import { nameKey } from './osm-features.mjs';
 
 const BBOX = '40.360,-80.120,40.500,-79.860';
 const CLIP = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
@@ -13,24 +14,37 @@ const CLIP = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
  * Buildings that are unambiguously on land, as a guard against water sprawl.
  * Probed at their own footprint centroid so the check follows the dataset
  * rather than a hand-typed coordinate.
+ *
+ * Names must be the names the dataset actually stores. Four of these used to be
+ * spelled the way a person would say them — "PPG Place" for the six separate
+ * PPG records, "Duquesne Incline" for the two station houses, "US Steel Tower"
+ * without its stops, "Carnegie Science Center" for what OSM renamed Kamin in
+ * 2023 — and every one reported a false "NOT IN DATASET" while the building
+ * stood right where it belongs. Alternates are listed so a future rename shows
+ * up as a rename rather than as a missing landmark.
  */
 const DRY_BUILDINGS = [
-  'PNC Park',
-  'Acrisure Stadium',
-  'Alcoa Corporate Center',
-  'Microsoft Engineering Office',
-  'Riverside Center for Innovation North',
-  'Morgan at North Shore',
-  'The Andy Warhol Museum',
-  'Carnegie Science Center',
-  'Sheraton Pittsburgh Hotel at Station Square',
-  'Station Square Parking Garage',
-  'US Steel Tower',
-  'PPG Place',
-  'David L. Lawrence Convention Center',
-  'Cathedral of Learning',
-  'PPG Paints Arena',
-  'Duquesne Incline',
+  ['PNC Park'],
+  ['Acrisure Stadium'],
+  ['Alcoa Corporate Center'],
+  ['Microsoft Engineering Office'],
+  ['Riverside Center for Innovation North'],
+  ['Morgan at North Shore'],
+  ['The Andy Warhol Museum'],
+  ['Kamin Science Center', 'Carnegie Science Center'],
+  ['Sheraton Pittsburgh Hotel at Station Square'],
+  ['Station Square Parking Garage'],
+  ['U.S. Steel Tower', 'US Steel Tower'],
+  ['One PPG Place', 'PPG Place'],
+  ['David L. Lawrence Convention Center'],
+  ['Cathedral of Learning'],
+  ['PPG Paints Arena'],
+  ['Duquesne Lower Station'],
+  ['Duquesne Upper Station'],
+  ['Monongahela Lower Station'],
+  ['Monongahela Upper Station'],
+  ['Fort Pitt Block House'],
+  ['Senator John Heinz History Center'],
 ];
 
 function pointInRing(x, z, ring) {
@@ -148,13 +162,21 @@ for (const [nm, segs] of lines) {
 // -------------------------------------------------------- dry-land guard
 
 console.log('\nknown-dry probes (at each footprint centroid):');
+const byKey = new Map();
+for (const b of data.buildings) if (b.n) byKey.set(nameKey(b.n), b);
+
 let wrong = 0;
 let missing = 0;
-for (const nm of DRY_BUILDINGS) {
-  const b = data.buildings.find((q) => q.n && q.n.toLowerCase() === nm.toLowerCase());
+for (const names of DRY_BUILDINGS) {
+  const nm = names[0];
+  let b = null;
+  for (const cand of names) {
+    b = byKey.get(nameKey(cand));
+    if (b) break;
+  }
   if (!b) {
     missing++;
-    console.log(`  NOT IN DATASET    ${nm}`);
+    console.log(`  NOT IN DATASET    ${names.join(' / ')}`);
     continue;
   }
   let cx = 0;
