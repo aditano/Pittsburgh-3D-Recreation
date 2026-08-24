@@ -1,5 +1,19 @@
 import * as THREE from 'three';
-import { POINT_PARK_RING } from './geo.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { hash01 } from './geo.js';
+
+/**
+ * Point State Park, driven by the real OSM park outline in the city data.
+ *
+ * Real-world anchors, projected into local metres:
+ *   fountain basin centre  40.441717 N, 80.011028 W  ->  (-765, -80)
+ *   Fort Duquesne trace     ~40.44230 N, 80.01000 W  ->  (-678, -145)
+ * The Fort Pitt Museum and Block House are real OSM buildings and are drawn by
+ * the normal building pass, so they are deliberately absent here.
+ */
+const FOUNTAIN = [-765, -80];
+const FOUNTAIN_R = 30.5;
+const FORT_TRACE = [-678, -145];
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -8,193 +22,239 @@ function mat(color, opts = {}) {
     metalness: opts.metalness ?? 0.04,
     emissive: opts.emissive ?? 0x000000,
     emissiveIntensity: opts.emissiveIntensity ?? 0,
-    flatShading: opts.flatShading ?? false,
+    transparent: opts.transparent ?? false,
+    opacity: opts.opacity ?? 1,
+    depthWrite: opts.depthWrite ?? true,
+    side: opts.side ?? THREE.FrontSide,
   });
 }
 
-function ringMesh(pts, y, width, material) {
+function openRing(ring) {
+  const n = ring.length;
+  const closed = Math.hypot(ring[0][0] - ring[n - 1][0], ring[0][1] - ring[n - 1][1]) < 0.5;
+  return closed ? ring.slice(0, -1) : ring.slice();
+}
+
+function centroidOf(pts) {
+  let cx = 0;
+  let cz = 0;
+  for (const [x, z] of pts) {
+    cx += x;
+    cz += z;
+  }
+  return [cx / pts.length, cz / pts.length];
+}
+
+/** Scale a ring toward its centroid; enough for the park's convex outline. */
+function insetRing(pts, metres) {
+  const [cx, cz] = centroidOf(pts);
+  let mean = 0;
+  for (const [x, z] of pts) mean += Math.hypot(x - cx, z - cz);
+  mean /= pts.length;
+  const k = Math.max(0.05, 1 - metres / Math.max(mean, 1));
+  return pts.map(([x, z]) => [cx + (x - cx) * k, cz + (z - cz) * k]);
+}
+
+function shapeFrom(pts, holes = []) {
   const shape = new THREE.Shape();
   shape.moveTo(pts[0][0], -pts[0][1]);
   for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i][0], -pts[i][1]);
   shape.closePath();
-  const hole = new THREE.Path();
-  const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
-  const cz = pts.reduce((s, p) => s + p[1], 0) / pts.length;
-  const scale = 1 - width / 80;
-  hole.moveTo(cx + (pts[0][0] - cx) * scale, -(cz + (pts[0][1] - cz) * scale));
-  for (let i = 1; i < pts.length; i++) {
-    hole.lineTo(cx + (pts[i][0] - cx) * scale, -(cz + (pts[i][1] - cz) * scale));
+  for (const hole of holes) {
+    const path = new THREE.Path();
+    path.moveTo(hole[0][0], -hole[0][1]);
+    for (let i = 1; i < hole.length; i++) path.lineTo(hole[i][0], -hole[i][1]);
+    path.closePath();
+    shape.holes.push(path);
   }
-  hole.closePath();
-  shape.holes.push(hole);
-  const geom = new THREE.ShapeGeometry(shape);
-  geom.rotateX(-Math.PI / 2);
-  geom.translate(0, y, 0);
-  return new THREE.Mesh(geom, material);
+  return shape;
 }
 
-function polyMesh(pts, y, material) {
-  const shape = new THREE.Shape();
-  shape.moveTo(pts[0][0], -pts[0][1]);
-  for (let i = 1; i < pts.length; i++) {
-    if (i === pts.length - 1 && Math.hypot(pts[i][0] - pts[0][0], pts[i][1] - pts[0][1]) < 0.5) break;
-    shape.lineTo(pts[i][0], -pts[i][1]);
-  }
-  shape.closePath();
-  const geom = new THREE.ShapeGeometry(shape);
+function flat(pts, y, holes = []) {
+  const geom = new THREE.ShapeGeometry(shapeFrom(pts, holes));
   geom.rotateX(-Math.PI / 2);
   geom.translate(0, y, 0);
-  return new THREE.Mesh(geom, material);
+  return geom;
 }
 
-/** Iconic Point State Park: triangular lawn, fountain at the western tip, fort traces. */
-export function buildPointStatePark(yFn) {
+function pointInRing(x, z, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; i++) {
+    const [xi, zi] = pts[i];
+    const [xj, zj] = pts[j];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi || 1e-12) + xi) inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+/** Closed band between two rings, used for the seawall and perimeter walk. */
+function bandGeometry(outer, inner, y) {
+  const pos = [];
+  const n = outer.length;
+  for (let i = 0; i < n; i++) {
+    const a = outer[i];
+    const b = outer[(i + 1) % n];
+    const c = inner[(i + 1) % n];
+    const d = inner[i];
+    pos.push(a[0], y, a[1], d[0], y, d[1], c[0], y, c[1]);
+    pos.push(a[0], y, a[1], c[0], y, c[1], b[0], y, b[1]);
+  }
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geom.computeVertexNormals();
+  return geom;
+}
+
+export function buildPointStatePark(yFn, pointPark) {
   const g = new THREE.Group();
   g.name = 'point-state-park';
-  const lawnY = yFn(-800, -80) + 0.9;
+  if (!pointPark?.f || pointPark.f.length < 8) return g;
 
-  const lawn = polyMesh(POINT_PARK_RING, lawnY, mat(0x3d6a3a, { roughness: 0.95 }));
+  const ring = openRing(pointPark.f);
+  const baseY = Math.max(0.6, yFn(FOUNTAIN[0], FOUNTAIN[1]));
+  const lawnY = baseY + 0.9;
+
+  const seawallOuter = ring;
+  const walkOuter = insetRing(ring, 2.5);
+  const walkInner = insetRing(ring, 13);
+
+  const wall = new THREE.Mesh(
+    bandGeometry(seawallOuter, walkOuter, lawnY + 0.28),
+    mat(0x8d8578, { roughness: 0.82 }),
+  );
+  wall.receiveShadow = true;
+  g.add(wall);
+
+  const walk = new THREE.Mesh(
+    bandGeometry(walkOuter, walkInner, lawnY + 0.16),
+    mat(0xbdb7a8, { roughness: 0.72, metalness: 0.05 }),
+  );
+  walk.receiveShadow = true;
+  g.add(walk);
+
+  const fountainCut = [];
+  for (let i = 0; i < 40; i++) {
+    const a = (i / 40) * Math.PI * 2;
+    fountainCut.push([
+      FOUNTAIN[0] + Math.cos(a) * (FOUNTAIN_R + 9),
+      FOUNTAIN[1] + Math.sin(a) * (FOUNTAIN_R + 9),
+    ]);
+  }
+  const lawn = new THREE.Mesh(
+    flat(walkInner, lawnY, [fountainCut]),
+    mat(0x3f6f3c, { roughness: 0.96 }),
+  );
   lawn.receiveShadow = true;
   g.add(lawn);
 
-  const walk = mat(0xc8c2b4, { roughness: 0.7, metalness: 0.05 });
-  const promenade = [
-    [-940, -70],
-    [-900, -40],
-    [-820, -20],
-    [-720, 10],
-    [-640, 40],
-    [-620, 20],
-    [-700, -20],
-    [-820, -50],
-    [-900, -90],
-    [-940, -100],
-    [-960, -82],
-    [-940, -70],
-  ];
-  g.add(polyMesh(promenade, lawnY + 0.12, walk));
+  const plaza = new THREE.Mesh(
+    flat(fountainCut, lawnY + 0.1),
+    mat(0xc4beb0, { roughness: 0.7, metalness: 0.05 }),
+  );
+  plaza.receiveShadow = true;
+  g.add(plaza);
 
-  const northWalk = [
-    [-930, -110],
-    [-860, -130],
-    [-760, -150],
-    [-660, -140],
-    [-650, -120],
-    [-750, -128],
-    [-850, -110],
-    [-920, -92],
-    [-930, -110],
-  ];
-  g.add(polyMesh(northWalk, lawnY + 0.12, walk));
+  // Fountain: 200 ft granite basin with a single high central jet.
+  const basinMat = mat(0x9aa4a8, { roughness: 0.38, metalness: 0.22 });
+  const coping = new THREE.Mesh(
+    new THREE.CylinderGeometry(FOUNTAIN_R, FOUNTAIN_R + 1.4, 1.6, 56),
+    basinMat,
+  );
+  coping.position.set(FOUNTAIN[0], lawnY + 0.8, FOUNTAIN[1]);
+  coping.castShadow = true;
+  coping.receiveShadow = true;
+  g.add(coping);
 
-  const fountainX = -864.17;
-  const fountainZ = -77.92;
-  const fountainY = lawnY + 0.2;
-  const basin = new THREE.Mesh(new THREE.CylinderGeometry(22, 24, 1.1, 48), mat(0x8a9aa0, { roughness: 0.35, metalness: 0.25 }));
-  basin.position.set(fountainX, fountainY + 0.4, fountainZ);
-  g.add(basin);
-  const water = new THREE.Mesh(
-    new THREE.CylinderGeometry(19.5, 19.5, 0.4, 48),
-    new THREE.MeshStandardMaterial({
-      color: 0x4aa0c8,
-      roughness: 0.12,
-      metalness: 0.35,
-      transparent: true,
-      opacity: 0.85,
-      emissive: 0x1a4060,
-      emissiveIntensity: 0.2,
+  const pool = new THREE.Mesh(
+    new THREE.CylinderGeometry(FOUNTAIN_R - 2.2, FOUNTAIN_R - 2.2, 0.6, 56),
+    mat(0x2f7d9e, {
+      roughness: 0.1,
+      metalness: 0.4,
+      emissive: 0x123a4e,
+      emissiveIntensity: 0.25,
     }),
   );
-  water.position.set(fountainX, fountainY + 0.85, fountainZ);
-  g.add(water);
+  pool.position.set(FOUNTAIN[0], lawnY + 1.35, FOUNTAIN[1]);
+  g.add(pool);
 
-  const jetMat = new THREE.MeshStandardMaterial({
-    color: 0xd8eef8,
+  const nozzle = new THREE.Mesh(
+    new THREE.CylinderGeometry(2.6, 4.2, 2.4, 20),
+    basinMat,
+  );
+  nozzle.position.set(FOUNTAIN[0], lawnY + 2.1, FOUNTAIN[1]);
+  g.add(nozzle);
+
+  const sprayMat = mat(0xe4f2fa, {
+    roughness: 0.15,
+    metalness: 0.02,
     transparent: true,
-    opacity: 0.45,
-    roughness: 0.2,
-    metalness: 0.05,
+    opacity: 0.34,
     depthWrite: false,
+    side: THREE.DoubleSide,
   });
-  const jet = new THREE.Mesh(new THREE.ConeGeometry(2.4, 28, 10, 1, true), jetMat);
-  jet.position.set(fountainX, fountainY + 16, fountainZ);
-  g.add(jet);
-  const spray = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.6, 22, 8, 1, true), jetMat);
-  spray.position.set(fountainX, fountainY + 12, fountainZ);
-  g.add(spray);
+  const plume = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 3.4, 46, 16, 1, true), sprayMat);
+  plume.position.set(FOUNTAIN[0], lawnY + 25, FOUNTAIN[1]);
+  g.add(plume);
+  const crown = new THREE.Mesh(new THREE.ConeGeometry(9, 16, 20, 1, true), sprayMat);
+  crown.position.set(FOUNTAIN[0], lawnY + 50, FOUNTAIN[1]);
+  g.add(crown);
+  const mist = new THREE.Mesh(new THREE.ConeGeometry(FOUNTAIN_R - 4, 12, 28, 1, true), sprayMat);
+  mist.position.set(FOUNTAIN[0], lawnY + 6, FOUNTAIN[1]);
+  g.add(mist);
 
-  for (let i = 0; i < 3; i++) {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(6 + i * 4.2, 0.22, 6, 32),
-      mat(0xb8b0a4, { metalness: 0.3, roughness: 0.45 }),
-    );
-    ring.rotation.x = Math.PI / 2;
-    ring.position.set(fountainX, fountainY + 1.3 + i * 0.35, fountainZ);
-    g.add(ring);
+  // Granite trace of the original Fort Duquesne outline.
+  const traceGeoms = [];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 + 0.4;
+    for (let k = 0; k < 7; k++) {
+      const b = a + (k / 7) * ((Math.PI * 2) / 5);
+      const r = 34;
+      const gx = FORT_TRACE[0] + Math.cos(b) * r;
+      const gz = FORT_TRACE[1] + Math.sin(b) * r * 0.82;
+      const marker = new THREE.BoxGeometry(3.2, 0.5, 1.4);
+      marker.rotateY(-b);
+      marker.translate(gx, lawnY + 0.25, gz);
+      traceGeoms.push(marker);
+    }
   }
+  const trace = new THREE.Mesh(mergeGeometries(traceGeoms, false), mat(0xa8a29a, { roughness: 0.68 }));
+  trace.receiveShadow = true;
+  g.add(trace);
+  for (const t of traceGeoms) t.dispose();
 
-  const stone = mat(0x8a8478, { roughness: 0.88 });
-  const bastion = [
-    [-700, 20],
-    [-660, 55],
-    [-620, 40],
-    [-610, 5],
-    [-640, -20],
-    [-680, -10],
-    [-700, 20],
-  ];
-  const outline = ringMesh(bastion, lawnY + 0.18, 4.5, stone);
-  g.add(outline);
-
-  const museum = new THREE.Mesh(new THREE.BoxGeometry(38, 9, 22), mat(0x6a5848, { roughness: 0.82 }));
-  museum.position.set(-647, lawnY + 4.5, 30);
-  museum.rotation.y = 0.35;
-  museum.castShadow = true;
-  museum.receiveShadow = true;
-  g.add(museum);
-  const roof = new THREE.Mesh(new THREE.BoxGeometry(40, 0.6, 24), mat(0x4a4038, { roughness: 0.7 }));
-  roof.position.set(-647, lawnY + 9.2, 30);
-  roof.rotation.y = 0.35;
-  g.add(roof);
-
-  const block = new THREE.Mesh(new THREE.BoxGeometry(9, 7, 9), mat(0x7a6a58, { roughness: 0.9 }));
-  block.position.set(-662, lawnY + 3.5, -21);
-  block.castShadow = true;
-  g.add(block);
-  const blockRoof = new THREE.Mesh(new THREE.ConeGeometry(7.2, 3.2, 4), mat(0x5a4030, { roughness: 0.75 }));
-  blockRoof.position.set(-662, lawnY + 8.6, -21);
-  blockRoof.rotation.y = Math.PI / 4;
-  g.add(blockRoof);
-
-  const portal = new THREE.Mesh(new THREE.BoxGeometry(90, 4.5, 18), mat(0x3a3a38, { roughness: 0.65, metalness: 0.2 }));
-  portal.position.set(-700, lawnY + 2.4, -40);
-  portal.rotation.y = 0.55;
-  g.add(portal);
-
-  const treeMat = mat(0x1a3a1c, { roughness: 1 });
-  const treeGeo = new THREE.ConeGeometry(3.4, 9, 6);
+  // Allée of trees along the lawn edges, kept clear of the fountain plaza.
   const dummy = new THREE.Object3D();
-  const spots = [
-    [-780, -40],
-    [-750, -90],
-    [-720, -20],
-    [-690, -80],
-    [-760, 10],
-    [-820, -20],
-    [-800, -110],
-    [-730, 40],
-    [-670, -50],
-    [-710, -130],
-  ];
-  const trees = new THREE.InstancedMesh(treeGeo, treeMat, spots.length);
-  spots.forEach((p, i) => {
-    dummy.position.set(p[0], lawnY + 5.2, p[1]);
-    dummy.rotation.y = i * 0.7;
-    dummy.updateMatrix();
-    trees.setMatrixAt(i, dummy.matrix);
-  });
-  trees.castShadow = true;
-  g.add(trees);
+  const spots = [];
+  for (let x = -960; x <= -420; x += 26) {
+    for (let z = -260; z <= 150; z += 26) {
+      const jx = x + (hash01(x, z) - 0.5) * 18;
+      const jz = z + (hash01(z, x) - 0.5) * 18;
+      if (!pointInRing(jx, jz, insetRing(ring, 20))) continue;
+      if (Math.hypot(jx - FOUNTAIN[0], jz - FOUNTAIN[1]) < FOUNTAIN_R + 26) continue;
+      if (Math.hypot(jx - FORT_TRACE[0], jz - FORT_TRACE[1]) < 44) continue;
+      if (hash01(jz, jx) < 0.45) continue;
+      spots.push([jx, jz]);
+    }
+  }
+  if (spots.length) {
+    const trees = new THREE.InstancedMesh(
+      new THREE.ConeGeometry(4.4, 12, 7),
+      mat(0x21421f, { roughness: 1 }),
+      spots.length,
+    );
+    spots.forEach((p, i) => {
+      const s = 0.75 + hash01(p[0], p[1]) * 0.6;
+      dummy.position.set(p[0], lawnY + 6 * s, p[1]);
+      dummy.scale.setScalar(s);
+      dummy.rotation.y = hash01(p[1], p[0]) * Math.PI * 2;
+      dummy.updateMatrix();
+      trees.setMatrixAt(i, dummy.matrix);
+    });
+    trees.castShadow = true;
+    trees.receiveShadow = true;
+    g.add(trees);
+  }
 
   return g;
 }

@@ -9,7 +9,6 @@ import {
   footprintWaterOverlap,
   footprintLandBaseY,
   hash01,
-  insidePointPark,
 } from './geo.js';
 import {
   createCityMaterials,
@@ -136,14 +135,23 @@ focusGlow.rotation.x = -Math.PI / 2;
 focusGlow.position.y = 0.6;
 scene.add(focusGlow);
 
-function footprintShape(footprint) {
-  const shape = new THREE.Shape();
-  const first = footprint[0];
-  shape.moveTo(first[0], -first[1]);
-  for (let i = 1; i < footprint.length - 1; i++) {
-    shape.lineTo(footprint[i][0], -footprint[i][1]);
+function traceRing(path, ring) {
+  path.moveTo(ring[0][0], -ring[0][1]);
+  for (let i = 1; i < ring.length - 1; i++) {
+    path.lineTo(ring[i][0], -ring[i][1]);
   }
-  shape.closePath();
+  path.closePath();
+}
+
+function footprintShape(footprint, holes = null) {
+  const shape = new THREE.Shape();
+  traceRing(shape, footprint);
+  for (const hole of holes || []) {
+    if (!hole || hole.length < 4) continue;
+    const path = new THREE.Path();
+    traceRing(path, hole);
+    shape.holes.push(path);
+  }
   return shape;
 }
 
@@ -159,8 +167,8 @@ function extrudeBuilding(footprint, height, baseY) {
   return { geom, base: baseY, cx, cz };
 }
 
-function flatPolygon(footprint, y, yFn) {
-  const shape = footprintShape(footprint);
+function flatPolygon(footprint, y, yFn, holes = null) {
+  const shape = footprintShape(footprint, holes);
   const geom = new THREE.ShapeGeometry(shape);
   geom.rotateX(-Math.PI / 2);
   let lift = y;
@@ -195,11 +203,13 @@ function groundColor(x, y, z, waterIndex) {
   return [0.08, 0.09, 0.07];
 }
 
+/** Covers the full data extent (Sewickley to Squirrel Hill) at ~50 m sampling. */
+const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 300, segZ: 224 };
+
 function makeGround(peaks, waterIndex) {
-  const size = 7000;
-  const segs = 160;
-  const geom = new THREE.PlaneGeometry(size, size, segs, segs);
+  const geom = new THREE.PlaneGeometry(GROUND.w, GROUND.d, GROUND.segX, GROUND.segZ);
   geom.rotateX(-Math.PI / 2);
+  geom.translate(GROUND.cx, 0, GROUND.cz);
   const pos = geom.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
@@ -218,14 +228,6 @@ function makeGround(peaks, waterIndex) {
   const mesh = new THREE.Mesh(geom, materials.groundMat);
   mesh.receiveShadow = true;
   return mesh;
-}
-
-function makeGrid() {
-  const helper = new THREE.GridHelper(5000, 100, 0x8aa0b8, 0xa8b8c8);
-  helper.position.y = 0.4;
-  helper.material.transparent = true;
-  helper.material.opacity = DAY_MODE ? 0.03 : 0.1;
-  return helper;
 }
 
 function addLabel(text, position) {
@@ -448,12 +450,10 @@ function buildingTint(b, cx, cz) {
 
 async function buildCity(data) {
   const peaks = data.terrainPeaks || [];
-  const waterPolys = (data.water || []).map((w) => w.f);
-  const waterIndex = makeWaterIndex(waterPolys, { erosion: 12 });
+  const waterIndex = makeWaterIndex(data.water || [], { erosion: 12 });
   const yFn = (x, z) => surfaceHeight(x, z, peaks, waterIndex);
 
   scene.add(makeGround(peaks, waterIndex));
-  scene.add(makeGrid());
 
   const parkGeoms = [];
   for (const p of data.parks) {
@@ -476,7 +476,7 @@ async function buildCity(data) {
   for (const w of data.water) {
     if (w.f.length < 4) continue;
     try {
-      const g = flatPolygon(w.f, 0.15, null);
+      const g = flatPolygon(w.f, 0.15, null, w.holes);
       applyXZUvs(g, 0.004);
       waterGeoms.push(g);
     } catch {
@@ -513,10 +513,6 @@ async function buildCity(data) {
     if (!b.f || b.f.length < 4) continue;
     if (isLandmarkMeshBuilding(b)) continue;
     if (footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
-    const [cx0, cz0] = footprintCentroid(b.f);
-    if (insidePointPark(cx0, cz0)) continue;
-    const n = (b.n || '').toLowerCase();
-    if (/point state park|fort pitt museum|fort pitt block house/.test(n)) continue;
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
@@ -550,7 +546,7 @@ async function buildCity(data) {
     addChunks(geoms, materials.families[name].mat);
   }
 
-  scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex));
+  scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex, data.pointPark));
   scene.add(buildRooftopDetails(data.buildings, yFn));
   scene.add(buildStreetLights(data.streets || [], yFn, waterIndex, { dayMode: DAY_MODE }));
   if (!DAY_MODE) buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);

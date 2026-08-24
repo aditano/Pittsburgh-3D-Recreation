@@ -615,45 +615,83 @@ export function createCityMaterials({ dayMode = true } = {}) {
       .replace(
         '#include <common>',
         `#include <common>
-         varying vec3 vWorldPos;
-         varying vec2 vFlowUv;`,
+         varying vec3 vWorldPos;`,
       )
       .replace(
         '#include <worldpos_vertex>',
         `#include <worldpos_vertex>
-         vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
-         vFlowUv = vWorldPos.xz * 0.0018;`,
+         vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
       );
+
+    // All three rivers run broadly west; the Allegheny carries a slight
+    // southward set and the Monongahela a northward one as they converge on
+    // the Point, so blend the cross-stream term across the confluence.
+    const flowCommon = `
+      uniform float uTime;
+      varying vec3 vWorldPos;
+
+      vec2 riverFlow(vec2 p) {
+        float north = 1.0 - smoothstep(-260.0, -40.0, p.y);
+        float south = smoothstep(-20.0, 200.0, p.y);
+        return normalize(vec2(-1.0, 0.17 * north - 0.32 * south));
+      }
+
+      float waveBand(vec2 p, vec2 dir, float scale, float speed, float t) {
+        return sin(dot(p, dir) * scale - t * speed);
+      }
+
+      // Sum of travelling wave trains advected downstream; returns height and
+      // its analytic gradient so the normal can be perturbed without a texture.
+      vec3 waterWaves(vec2 p, vec2 flow, float t) {
+        vec2 a = normalize(flow + vec2(-flow.y, flow.x) * 0.35);
+        vec2 b = normalize(flow + vec2(flow.y, -flow.x) * 0.55);
+        vec2 c = normalize(vec2(-flow.y, flow.x) + flow * 0.25);
+
+        float h = 0.0;
+        vec2 g = vec2(0.0);
+
+        float s1 = 0.085;
+        float p1 = waveBand(p, a, s1, 2.6, t);
+        h += p1 * 0.55;
+        g += a * s1 * cos(dot(p, a) * s1 - t * 2.6) * 0.55;
+
+        float s2 = 0.041;
+        float p2 = waveBand(p, b, s2, 1.7, t);
+        h += p2 * 0.75;
+        g += b * s2 * cos(dot(p, b) * s2 - t * 1.7) * 0.75;
+
+        float s3 = 0.17;
+        float p3 = waveBand(p, c, s3, 3.4, t);
+        h += p3 * 0.22;
+        g += c * s3 * cos(dot(p, c) * s3 - t * 3.4) * 0.22;
+
+        return vec3(h, g);
+      }`;
+
     shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>${flowCommon}`)
       .replace(
-        '#include <common>',
-        `#include <common>
-         uniform float uTime;
-         varying vec3 vWorldPos;
-         varying vec2 vFlowUv;`,
+        '#include <normal_fragment_maps>',
+        `#include <normal_fragment_maps>
+         {
+           vec2 flow = riverFlow(vWorldPos.xz);
+           vec2 drift = vWorldPos.xz - flow * uTime * 5.5;
+           vec3 wv = waterWaves(drift, flow, uTime);
+           normal = normalize(normal + vec3(wv.y, 0.0, wv.z) * 2.4);
+         }`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-         float allegheny = smoothstep(-1400.0, 200.0, vWorldPos.x) * (1.0 - smoothstep(-900.0, 300.0, vWorldPos.z));
-         float monongahela = smoothstep(-1200.0, 4200.0, vWorldPos.x) * smoothstep(-200.0, 1600.0, vWorldPos.z);
-         float ohio = smoothstep(-1600.0, -500.0, vWorldPos.x) * (1.0 - smoothstep(-200.0, 200.0, abs(vWorldPos.z + 78.0)));
-         vec2 flowDir = normalize(vec2(
-           mix(-0.85, 0.65, allegheny) + mix(0.55, 0.95, monongahela) + mix(0.95, -0.35, ohio),
-           mix(0.45, 0.75, allegheny) + mix(0.35, 0.95, monongahela) + mix(-0.15, 0.55, ohio)
-         ) + 1e-5);
-         vec2 scrollUv = vFlowUv + flowDir * uTime * 0.06;
-         float streak = sin(scrollUv.x * 3.2 + scrollUv.y * 1.1) * 0.5 + 0.5;
-         float rippleA = sin(dot(vWorldPos.xz, vec2(0.006, 0.0035)) + uTime * 0.55) * 0.5 + 0.5;
-         float rippleB = sin(dot(vWorldPos.xz, vec2(-0.004, 0.007)) - uTime * 0.4) * 0.5 + 0.5;
-         float flow = streak * 0.45 + rippleA * 0.3 + rippleB * 0.25;
-         float pointT = clamp((-560.0 - vWorldPos.x) / 420.0, 0.0, 1.0);
-         float pointHalf = mix(230.0, 16.0, pointT);
-         if (vWorldPos.x < -540.0 && abs(vWorldPos.z + 72.0) < pointHalf) discard;
-         diffuseColor.rgb += flow * 0.05 * vec3(0.4, 0.7, 0.88);
-         diffuseColor.rgb += vec3(0.04, 0.07, 0.09);
-         diffuseColor.rgb *= 0.9 + flow * 0.06;
-         diffuseColor.a *= 0.94;`,
+         {
+           vec2 flow = riverFlow(vWorldPos.xz);
+           vec2 drift = vWorldPos.xz - flow * uTime * 5.5;
+           float crest = waterWaves(drift, flow, uTime).x;
+           float sheen = smoothstep(0.55, 1.45, crest);
+           diffuseColor.rgb *= 0.92 + crest * 0.05;
+           diffuseColor.rgb += sheen * vec3(0.05, 0.09, 0.11);
+           diffuseColor.rgb += vec3(0.02, 0.04, 0.05);
+         }`,
       );
   };
 

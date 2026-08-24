@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "polygon-clipping": "^0.15.7",
     "three": "^0.170.0"
   },
   "devDependencies": {

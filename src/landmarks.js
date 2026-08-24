@@ -489,34 +489,12 @@ const SINGLETON_MESHES = new Set([
   'heinz-chapel',
   'pnc-park',
   'acrisure-stadium',
+  'ppg-arena',
 ]);
-
-const CANONICAL_SITES = {
-  'us-steel': [635, -22],
-  'fifth-avenue': [-85, -67],
-  'bny-mellon': [458, 167],
-  'pnc-tower': [140, 86],
-  'oxford-centre': [297, 356],
-  'gulf-tower': [575, -178],
-  'koppers-tower': [547, -123],
-  'grant-building': [378, 373],
-  'pnc-park': [-396, -593],
-  'acrisure-stadium': [-1169, -635],
-  cathedral: [4133, -366],
-};
 
 function landmarkScore(b) {
   const bb = footprintBounds(b.f);
-  let score = b.h || 0;
-  score += bb.w * bb.d * 0.002;
-  const site = CANONICAL_SITES[b.landmarkMesh];
-  if (site) {
-    const d = Math.hypot(bb.cx - site[0], bb.cz - site[1]);
-    score += Math.max(0, 800 - d);
-  } else if (b.n === b.n?.toUpperCase()) {
-    score += 80;
-  }
-  return score;
+  return (b.h || 0) + bb.w * bb.d * 0.002;
 }
 
 function dedupeLandmarkBuildings(buildings) {
@@ -534,12 +512,12 @@ function dedupeLandmarkBuildings(buildings) {
   return [...singletons.values(), ...multi];
 }
 
-export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
+export function buildLandmarkMeshes(buildings, yFn, waterIndex = null, pointPark = null) {
   const group = new THREE.Group();
   group.name = 'landmarks';
 
   for (const b of dedupeLandmarkBuildings(buildings)) {
-    if (waterIndex && footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
+    if (waterIndex && footprintWaterOverlap(b.f, waterIndex) > 0.35) continue;
     const builder = BUILDERS[b.landmarkMesh];
     if (!builder) continue;
     const [cx, cz] = footprintCentroid(b.f);
@@ -547,8 +525,8 @@ export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
       ? footprintLandBaseY(b.f, yFn, waterIndex)
       : yFn(cx, cz);
     try {
-      const mesh = builder(b);
       const frame = footprintBounds(b.f);
+      const mesh = builder(b, frame);
       mesh.position.set(frame.cx, baseY, frame.cz);
       mesh.rotation.y = -frame.yaw;
       group.add(mesh);
@@ -557,11 +535,11 @@ export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
     }
   }
 
-  const park = buildPointStatePark(yFn);
-  group.add(park);
+  group.add(buildPointStatePark(yFn, pointPark));
 
+  // Duquesne Incline lower station, from OSM: 40.44012 N, 80.01784 W.
   const incline = buildIncline();
-  incline.position.set(-1364.04, yFn(-1364.04, 200.38), 200.38);
+  incline.position.set(-1341, yFn(-1341, 98), 98);
   group.add(incline);
 
   return group;

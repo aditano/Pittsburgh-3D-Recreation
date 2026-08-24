@@ -71,7 +71,6 @@ export function terrainHeight(x, z, peaks) {
 }
 
 export function surfaceHeight(x, z, peaks, waterIndex) {
-  if (insidePointPark(x, z)) return 0.55;
   let h = terrainHeight(x, z, peaks);
   if (!waterIndex) return h;
   if (waterIndex.inside(x, z)) return -3.5;
@@ -113,75 +112,6 @@ function rasterizePoly(grid, poly, minX, minZ, res, cols, rows) {
   }
 }
 
-/**
- * Point State Park outline from OSM (west-pointing triangle at the confluence).
- * Fountain sits near the western tip; Fort Pitt Museum / Block House on the east lawn.
- */
-export const POINT_PARK_RING = [
-  [-449, 103],
-  [-460, 115],
-  [-535, 102],
-  [-559, 142],
-  [-587, 111],
-  [-582, 94],
-  [-595, 84],
-  [-639, 81],
-  [-675, 121],
-  [-944, -60],
-  [-968, -78],
-  [-956, -80],
-  [-953, -112],
-  [-930, -134],
-  [-496, -257],
-  [-419, -25],
-  [-417, 34],
-  [-449, 103],
-];
-
-export function insidePointPark(x, z) {
-  return x < -560 && pointInPoly(x, z, POINT_PARK_RING);
-}
-
-/** Land cutouts where rivers should not render (parks, points, riverfront). */
-export const LAND_CUTOUTS = [
-  {
-    n: 'Point State Park',
-    f: POINT_PARK_RING,
-  },
-  {
-    n: 'North Shore riverfront',
-    f: [
-      [-520, -820],
-      [180, -1020],
-      [280, -900],
-      [120, -700],
-      [-60, -760],
-      [-180, -600],
-      [-520, -820],
-    ],
-  },
-  {
-    n: 'South Shore near Liberty',
-    f: [
-      [300, 500],
-      [620, 540],
-      [700, 720],
-      [460, 800],
-      [300, 500],
-    ],
-  },
-  {
-    n: 'Station Square riverfront',
-    f: [
-      [-180, 300],
-      [80, 340],
-      [120, 480],
-      [-80, 520],
-      [-180, 300],
-    ],
-  },
-];
-
 function erasePoly(grid, poly, minX, minZ, res, cols, rows) {
   const n = poly.length;
   if (n < 3) return;
@@ -213,24 +143,34 @@ function erasePoly(grid, poly, minX, minZ, res, cols, rows) {
   }
 }
 
-export function makeWaterIndex(polygons, { erosion = 0, cutouts = LAND_CUTOUTS } = {}) {
-  const minX = -4200;
-  const maxX = 8200;
-  const minZ = -3600;
-  const maxZ = 4200;
+/**
+ * Rasterize the river surfaces into a water mask.
+ *
+ * `surfaces` accepts either bare rings or `{ f, holes }` records; holes are the
+ * real OSM islands (Washington's Landing, Brunot Island, Herrs Island) and are
+ * punched back out to land after the outers are filled.
+ */
+export function makeWaterIndex(surfaces, { erosion = 0 } = {}) {
+  const minX = -4800;
+  const maxX = 8800;
+  const minZ = -4200;
+  const maxZ = 4800;
   const res = 10;
   const cols = Math.ceil((maxX - minX) / res);
   const rows = Math.ceil((maxZ - minZ) / res);
   const water = new Uint8Array(cols * rows);
 
-  for (const poly of polygons) {
-    if (!poly || poly.length < 3) continue;
-    rasterizePoly(water, poly, minX, minZ, res, cols, rows);
-  }
+  const normalized = surfaces
+    .map((s) => (Array.isArray(s) ? { f: s, holes: [] } : s))
+    .filter((s) => s?.f && s.f.length >= 3);
 
-  for (const cut of cutouts) {
-    if (!cut?.f || cut.f.length < 3) continue;
-    erasePoly(water, cut.f, minX, minZ, res, cols, rows);
+  for (const s of normalized) {
+    rasterizePoly(water, s.f, minX, minZ, res, cols, rows);
+  }
+  for (const s of normalized) {
+    for (const hole of s.holes || []) {
+      if (hole.length >= 3) erasePoly(water, hole, minX, minZ, res, cols, rows);
+    }
   }
 
   if (erosion > 0) {
