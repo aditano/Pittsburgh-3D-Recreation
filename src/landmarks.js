@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { footprintCentroid, footprintWaterOverlap, footprintLandBaseY } from './geo.js';
 import { buildPointStatePark } from './point.js';
+import { buildPncPark, buildAcrisureStadium, buildPpgArena } from './stadiums.js';
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({
@@ -353,83 +354,6 @@ function buildGlassTower(h, footprint, variant = 'default') {
   return g;
 }
 
-function buildStadium(h, footprint, sport = 'baseball') {
-  const g = new THREE.Group();
-  const b = footprintBounds(footprint);
-  const w = Math.max(b.w, sport === 'baseball' ? 200 : 180);
-  const d = Math.max(b.d, sport === 'baseball' ? 160 : 140);
-  const bowlMat = mat(0x4a5248, { roughness: 0.72, metalness: 0.12 });
-  const seatMat = mat(0x1a4a2a, { roughness: 0.85, metalness: 0.05, emissive: 0x0a2010, emissiveIntensity: 0.08 });
-  const fieldMat = mat(0x2a6a32, { roughness: 0.92, metalness: 0.02 });
-
-  const field = new THREE.Mesh(new THREE.BoxGeometry(w * 0.72, 0.6, d * 0.72), fieldMat);
-  field.position.y = 0.3;
-  g.add(field);
-
-  const tiers = sport === 'baseball' ? 3 : 4;
-  for (let t = 0; t < tiers; t++) {
-    const shrink = 1 - t * 0.08;
-    const tierH = h * (sport === 'baseball' ? 0.22 : 0.18);
-    const tierY = 1.2 + t * tierH * 0.85;
-    const segs = sport === 'baseball' ? 20 : 16;
-    for (let i = 0; i < segs; i++) {
-      const a0 = (i / segs) * Math.PI * (sport === 'baseball' ? 1.35 : 2);
-      const a1 = ((i + 1) / segs) * Math.PI * (sport === 'baseball' ? 1.35 : 2);
-      const r0 = w * 0.42 * shrink;
-      const r1 = w * 0.5 * shrink;
-      const x0 = Math.cos(a0 + (sport === 'baseball' ? 0.35 : 0)) * r0;
-      const z0 = Math.sin(a0 + (sport === 'baseball' ? 0.35 : 0)) * d * 0.42 * shrink;
-      const x1 = Math.cos(a1 + (sport === 'baseball' ? 0.35 : 0)) * r1;
-      const z1 = Math.sin(a1 + (sport === 'baseball' ? 0.35 : 0)) * d * 0.5 * shrink;
-      const mx = (x0 + x1) * 0.5;
-      const mz = (z0 + z1) * 0.5;
-      const len = Math.hypot(x1 - x0, z1 - z0);
-      const angle = Math.atan2(z1 - z0, x1 - x0);
-      const section = new THREE.Mesh(new THREE.BoxGeometry(len + 1, tierH, 8 + t * 2), t % 2 === 0 ? seatMat : bowlMat);
-      section.position.set(mx, tierY + tierH * 0.5, mz);
-      section.rotation.y = -angle;
-      section.castShadow = true;
-      g.add(section);
-    }
-  }
-
-  if (sport === 'football') {
-    const lightH = h * 0.35;
-    for (const [ox, oz] of [[-w * 0.42, 0], [w * 0.42, 0], [0, -d * 0.42], [0, d * 0.42]]) {
-      const tower = new THREE.Mesh(new THREE.BoxGeometry(2, lightH, 2), mat(0x5a5a5a, { metalness: 0.4 }));
-      tower.position.set(ox, lightH * 0.5 + h * 0.5, oz);
-      g.add(tower);
-      const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 1.5, 3), mat(0x888888, { emissive: 0xffffcc, emissiveIntensity: 0.3 }));
-      bank.position.set(ox, lightH + h * 0.5, oz);
-      g.add(bank);
-    }
-  } else {
-    const light = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2, h * 0.55, 8), mat(0x6a6a6a, { metalness: 0.35 }));
-    light.position.set(-w * 0.35, h * 0.55, -d * 0.2);
-    g.add(light);
-  }
-  return g;
-}
-
-function buildPointFountain() {
-  const g = new THREE.Group();
-  const pool = new THREE.Mesh(new THREE.CylinderGeometry(18, 18, 0.8, 32), mat(0x3a4a48, { roughness: 0.6, metalness: 0.2 }));
-  pool.position.y = 0.4;
-  g.add(pool);
-
-  const center = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2.5, 8, 8), mat(0xc8c0b0, { metalness: 0.4 }));
-  center.position.y = 4.5;
-  g.add(center);
-
-  for (let i = 0; i < 5; i++) {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(4 + i * 2.5, 0.25, 6, 24), mat(0xb0a898, { metalness: 0.35 }));
-    ring.rotation.x = Math.PI / 2;
-    ring.position.y = 1.2 + i * 0.6;
-    g.add(ring);
-  }
-  return g;
-}
-
 function buildIncline() {
   const g = new THREE.Group();
   const track = mat(0x4a4a4a, { roughness: 0.7, metalness: 0.3 });
@@ -471,9 +395,29 @@ const BUILDERS = {
   'fifth-avenue': (b) => buildGlassTower(b.h, b.f, 'fifth'),
   'bny-mellon': (b) => buildGlassTower(b.h, b.f, 'bny'),
   'oxford-centre': (b) => buildGlassTower(b.h, b.f),
-  'pnc-park': (b) => buildStadium(b.h, b.f, 'baseball'),
-  'acrisure-stadium': (b) => buildStadium(b.h, b.f, 'football'),
+  'pnc-park': (b) => buildPncPark({ h: b.h, f: b.f, orientYaw: b.field?.open }),
+  'acrisure-stadium': (b) => buildAcrisureStadium({ h: b.h, f: b.f, orientYaw: b.field?.open }),
+  'ppg-arena': (b, frame) =>
+    buildPpgArena({ h: b.h, f: b.f, orientYaw: downtownBearing(frame.cx, frame.cz) }),
 };
+
+/**
+ * Bearing from a point to the Golden Triangle, used to aim the features that
+ * real buildings deliberately turn toward the skyline (the arena's glass
+ * atrium, for one).
+ */
+const DOWNTOWN = [180, 70];
+function downtownBearing(x, z) {
+  return Math.atan2(DOWNTOWN[1] - z, DOWNTOWN[0] - x);
+}
+
+/**
+ * Venues carry a `field` record solved from the real OSM playing surface: the
+ * bowl is centred on the field rather than the footprint, and `open` is the
+ * world bearing the seating opens toward. Those already encode orientation, so
+ * the footprint's own principal axis must not be applied on top.
+ */
+const STADIUM_MESHES = new Set(['pnc-park', 'acrisure-stadium', 'ppg-arena']);
 
 const SINGLETON_MESHES = new Set([
   'us-steel',
@@ -527,8 +471,10 @@ export function buildLandmarkMeshes(buildings, yFn, waterIndex = null, pointPark
     try {
       const frame = footprintBounds(b.f);
       const mesh = builder(b, frame);
-      mesh.position.set(frame.cx, baseY, frame.cz);
-      mesh.rotation.y = -frame.yaw;
+      const seated = STADIUM_MESHES.has(b.landmarkMesh);
+      const [px, pz] = seated && b.field?.c ? b.field.c : [frame.cx, frame.cz];
+      mesh.position.set(px, baseY, pz);
+      if (!seated) mesh.rotation.y = -frame.yaw;
       group.add(mesh);
     } catch (err) {
       console.warn('Landmark mesh failed:', b.n, err);
