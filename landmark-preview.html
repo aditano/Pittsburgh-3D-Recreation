@@ -97,7 +97,8 @@
       scene.add(ground);
 
       const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 1, 12000);
-      const dist = maxY * zoom + 120;
+      if (params.get('top')) maxY = Number(params.get('top'));
+      const dist = params.get('d') ? Number(params.get('d')) : maxY * zoom + 120;
       camera.position.set(
         anchor[0] + Math.cos(az) * dist * Math.cos(el),
         maxY * 0.62 + dist * Math.sin(el),

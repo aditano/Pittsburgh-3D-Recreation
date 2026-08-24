@@ -104,6 +104,87 @@ export function ringFromGeometry(geometry, p = PROJECTION) {
   return ring.length >= 4 ? ring : null;
 }
 
+/**
+ * Stitch open polylines into closed rings by matching endpoints.
+ *
+ * OSM multipolygon members are usually *open* segments, so treating a member as
+ * a ring on its own collapses it into a sliver. Anything already closed passes
+ * through; anything that will not close is returned in `open`.
+ */
+export function stitchRings(ways, precision = 2) {
+  const key = (p) => `${p[0].toFixed(precision)},${p[1].toFixed(precision)}`;
+  const rings = [];
+  const open = [];
+  const pool = [];
+
+  for (const w of ways) {
+    if (!w || w.length < 2) continue;
+    if (key(w[0]) === key(w[w.length - 1]) && w.length >= 4) rings.push(w);
+    else pool.push(w.slice());
+  }
+
+  const used = new Uint8Array(pool.length);
+  const ends = new Map();
+  const addEnd = (k, i) => {
+    if (!ends.has(k)) ends.set(k, []);
+    ends.get(k).push(i);
+  };
+  pool.forEach((w, i) => {
+    addEnd(key(w[0]), i);
+    addEnd(key(w[w.length - 1]), i);
+  });
+
+  for (let i = 0; i < pool.length; i++) {
+    if (used[i]) continue;
+    used[i] = 1;
+    let chain = pool[i].slice();
+    for (let guard = 0; guard < pool.length + 4; guard++) {
+      const tail = key(chain[chain.length - 1]);
+      if (tail === key(chain[0])) break;
+      let next = -1;
+      for (const c of ends.get(tail) || []) {
+        if (!used[c]) {
+          next = c;
+          break;
+        }
+      }
+      if (next < 0) break;
+      used[next] = 1;
+      const w = pool[next];
+      chain = key(w[0]) === tail ? chain.concat(w.slice(1)) : chain.concat(w.slice(0, -1).reverse());
+    }
+    if (key(chain[0]) === key(chain[chain.length - 1]) && chain.length >= 4) rings.push(chain);
+    else open.push(chain);
+  }
+
+  return { rings, open };
+}
+
+/**
+ * Largest outer ring of an Overpass `out geom` element, stitching relation
+ * members when they arrive as open segments.
+ */
+export function largestRing(el, p = PROJECTION) {
+  if (el.type === 'way') return ringFromGeometry(el.geometry, p);
+  const ways = [];
+  for (const m of el.members || []) {
+    if (m.role === 'inner' || !m.geometry) continue;
+    ways.push(m.geometry.map((g) => project(g.lat, g.lon, p)));
+  }
+  if (!ways.length) return null;
+  const { rings } = stitchRings(ways);
+  let best = null;
+  for (const r of rings) {
+    const closed = r.slice();
+    const a = closed[0];
+    const b = closed[closed.length - 1];
+    if (Math.hypot(a[0] - b[0], a[1] - b[1]) > 0.01) closed.push([a[0], a[1]]);
+    if (closed.length < 4) continue;
+    if (!best || Math.abs(ringArea(closed)) > Math.abs(ringArea(best))) best = closed;
+  }
+  return best ? best.map(([x, z]) => [+x.toFixed(2), +z.toFixed(2)]) : null;
+}
+
 export function ringCentroid(ring) {
   let cx = 0;
   let cz = 0;
