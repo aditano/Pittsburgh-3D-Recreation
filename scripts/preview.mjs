@@ -13,7 +13,7 @@
  * elevation in radians), d (camera distance), zoom, top.
  */
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 const out = process.argv[2] || '/tmp/preview.png';
@@ -21,7 +21,6 @@ const query = process.argv[3] || '';
 const baseUrl = process.env.PREVIEW_BASE || 'http://127.0.0.1:5177';
 const url = `${baseUrl}/landmark-preview.html${query ? `?${query}` : ''}`;
 
-const PORT = 9800 + (process.pid % 400);
 const WIDTH = Number(process.env.SHOT_WIDTH || 1400);
 const HEIGHT = Number(process.env.SHOT_HEIGHT || 900);
 const profile = `/tmp/preview-profile-${process.pid}`;
@@ -39,7 +38,10 @@ const chrome = spawn(
     '--use-angle=swiftshader',
     '--hide-scrollbars',
     `--user-data-dir=${profile}`,
-    `--remote-debugging-port=${PORT}`,
+    // Port 0 lets Chrome pick and write the choice into the profile. Guessing a
+    // port raced with concurrent runs: the loser attached to the other run's
+    // browser and then failed every call with "not attached to an active page".
+    '--remote-debugging-port=0',
     `--window-size=${WIDTH},${HEIGHT}`,
     'about:blank',
   ],
@@ -49,12 +51,16 @@ const chrome = spawn(
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function endpoint() {
-  for (let i = 0; i < 60; i++) {
+  const portFile = `${profile}/DevToolsActivePort`;
+  for (let i = 0; i < 90; i++) {
+    await sleep(500);
+    if (!existsSync(portFile)) continue;
+    const port = readFileSync(portFile, 'utf8').split('\n')[0].trim();
+    if (!port) continue;
     try {
-      const r = await fetch(`http://127.0.0.1:${PORT}/json/version`);
+      const r = await fetch(`http://127.0.0.1:${port}/json/version`);
       if (r.ok) return (await r.json()).webSocketDebuggerUrl;
     } catch {}
-    await sleep(500);
   }
   throw new Error('Chrome never exposed a debugging port');
 }
