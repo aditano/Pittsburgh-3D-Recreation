@@ -44,16 +44,36 @@ function makeCanvases(w, h) {
   };
 }
 
+/**
+ * Every family's palette below was picked for the night scene, which leaves the
+ * brickwork near 0.04 albedo where real brick sits around 0.25. In daylight that
+ * flattens the buildings: with almost no tonal range, the cornices, setbacks and
+ * pier bays stop reading and the stock looks like plain dark boxes. Set once by
+ * `createCityMaterials` so all fourteen families lift together.
+ */
+let facadeDayMode = true;
+
+/**
+ * Gamma lift toward daylight reflectance. Applied in sRGB so the families keep
+ * their relative order — pale stone stays pale, dark glass stays dark.
+ */
+function liftForDay(hex, exponent = 0.45) {
+  if (!facadeDayMode) return hex;
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const v = parseInt(m[1], 16);
+  const out = [16, 8, 0].map((shift) => {
+    const s = ((v >> shift) & 255) / 255;
+    return Math.round(Math.min(1, s ** exponent) * 255);
+  });
+  return `rgb(${out[0]},${out[1]},${out[2]})`;
+}
+
 function paintFacade(opts) {
   const {
     seed = 1,
     width = 512,
     height = 512,
-    base = '#3d322c',
-    mortar = '#2a2420',
-    windowDark = '#07090d',
-    windowLit = '#e0b25a',
-    frame = '#161410',
     cols = 6,
     rows = 8,
     litChance = 0.32,
@@ -62,6 +82,15 @@ function paintFacade(opts) {
     panels = false,
     tallWindows = false,
   } = opts;
+  const base = liftForDay(opts.base ?? '#3d322c');
+  const mortar = liftForDay(opts.mortar ?? '#2a2420');
+  const frame = liftForDay(opts.frame ?? '#161410');
+  // Daylight glazing mirrors the sky rather than reading as a black hole, but
+  // stays darker than the surrounding wall.
+  const windowDark = facadeDayMode
+    ? liftForDay(opts.windowDark ?? '#07090d', 0.62)
+    : (opts.windowDark ?? '#07090d');
+  const windowLit = opts.windowLit ?? '#e0b25a';
 
   const rand = rng(seed);
   const { color, emissive, rough, c, e, r } = makeCanvases(width, height);
@@ -320,6 +349,7 @@ function stdMat(maps, extras = {}) {
 }
 
 export function createCityMaterials({ dayMode = true } = {}) {
+  facadeDayMode = dayMode;
   const families = {
     lowrise: {
       mat: stdMat(
