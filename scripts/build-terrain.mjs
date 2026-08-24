@@ -17,8 +17,12 @@ import { PROJECTION, ROOT, readData, writeData, unproject } from './osm.mjs';
 const ZOOM = 14;
 const TILE_DIR = join(ROOT, 'scripts/osm-cache/terrain');
 
-/** Grid covering the full scene extent at 40 m spacing. */
-const GRID = { minX: -5600, minZ: -5000, step: 40, cols: 340, rows: 228 };
+/**
+ * Grid at 40 m spacing, sized to contain the whole ground plane in main.js with
+ * margin. Anything the grid misses gets edge-clamped at runtime, which drags
+ * valley-wall elevations sideways across the rivers, so the cover must be total.
+ */
+const GRID = { minX: -6600, minZ: -6300, step: 40, cols: 388, rows: 295 };
 
 /**
  * Normal pool elevation of the three rivers (Emsworth Pool is tagged ele=219,
@@ -159,7 +163,7 @@ async function main() {
   // Spot checks against known landmarks.
   const probes = [
     ['Point fountain', -765, -80, 0],
-    ['Mount Washington (Grandview)', -600, 700, 110],
+    ['Mount Washington (Grandview Ave)', -576, 1024, 110],
     ['Cathedral of Learning', 4133, -369, 60],
     ['Downtown Golden Triangle', 200, 0, 5],
     ['Herrs Island', 1500, -2100, 5],

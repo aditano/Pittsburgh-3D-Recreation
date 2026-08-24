@@ -64,16 +64,24 @@ export function makeTerrain(terrain) {
   };
 }
 
+/** Riverbed depth below normal pool, in metres. */
+export const BED_Y = -3.2;
+
+/**
+ * Ground height with the river channels carved out.
+ *
+ * The bank easing has to reach `BED_Y` at the waterline, not merely lean toward
+ * it: the terrain grid is coarser than the ground mesh, so any shoreline cell
+ * left above pool renders as a slab of land standing in the middle of a river.
+ */
 export function surfaceHeight(x, z, terrainFn, waterIndex) {
   const h = terrainFn(x, z);
   if (!waterIndex) return h;
-  if (waterIndex.inside(x, z)) return -3.2;
+  if (waterIndex.inside(x, z)) return BED_Y;
   const bank = waterIndex.bankStrength(x, z);
-  if (bank > 0) {
-    // Ease the last few metres down to the waterline so banks are not cliffs.
-    return h * (1 - bank * 0.5) - bank * 1.1;
-  }
-  return h;
+  if (bank <= 0) return h;
+  const t = bank * bank;
+  return Math.min(h * (1 - t) + BED_Y * t, h);
 }
 
 function rasterizePoly(grid, poly, minX, minZ, res, cols, rows) {

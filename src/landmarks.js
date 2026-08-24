@@ -456,12 +456,22 @@ function dedupeLandmarkBuildings(buildings) {
   return [...singletons.values(), ...multi];
 }
 
-export function buildLandmarkMeshes(buildings, yFn, waterIndex = null, pointPark = null) {
+export function buildLandmarkMeshes(
+  buildings,
+  yFn,
+  waterIndex = null,
+  pointPark = null,
+  waterCull = null,
+) {
   const group = new THREE.Group();
   group.name = 'landmarks';
 
+  // Base heights come off the true water outline; the cull test uses the eroded
+  // one so riverfront venues are not thrown away for overhanging a bank.
+  const cull = waterCull || waterIndex;
+
   for (const b of dedupeLandmarkBuildings(buildings)) {
-    if (waterIndex && footprintWaterOverlap(b.f, waterIndex) > 0.35) continue;
+    if (cull && footprintWaterOverlap(b.f, cull) > 0.35) continue;
     const builder = BUILDERS[b.landmarkMesh];
     if (!builder) continue;
     const [cx, cz] = footprintCentroid(b.f);

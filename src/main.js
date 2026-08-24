@@ -215,8 +215,12 @@ function groundColor(x, y, z, slope, waterIndex) {
   ];
 }
 
-/** Covers the full data extent (Sewickley to Squirrel Hill) at ~50 m sampling. */
-const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 375, segZ: 280 };
+/**
+ * Covers the full data extent (Sewickley to Squirrel Hill). The 30 m sampling is
+ * set by the shorelines rather than the hills: a coarser grid leaves single
+ * cells spanning a river bank, which read as slabs of land in the water.
+ */
+const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 500, segZ: 374 };
 
 function makeGround(terrainFn, waterIndex) {
   const geom = new THREE.PlaneGeometry(GROUND.w, GROUND.d, GROUND.segX, GROUND.segZ);
@@ -508,7 +512,12 @@ function buildingTint(b, cx, cz) {
 
 async function buildCity(data) {
   const terrainFn = makeTerrain(data.terrain);
-  const waterIndex = makeWaterIndex(data.water || [], { erosion: 12 });
+  // The rivers need two masks with opposite biases. Everything that shapes or
+  // dresses the landform reads the true OSM water outline, so no ground is left
+  // standing inside a river. Building culling reads an eroded outline, so the
+  // wharves and riverfront blocks that legitimately overhang the bank survive.
+  const waterIndex = makeWaterIndex(data.water || []);
+  const waterCull = makeWaterIndex(data.water || [], { erosion: 12 });
   const yFn = (x, z) => surfaceHeight(x, z, terrainFn, waterIndex);
 
   scene.add(makeGround(terrainFn, waterIndex));
@@ -572,7 +581,7 @@ async function buildCity(data) {
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
     if (isLandmarkMeshBuilding(b)) continue;
-    if (footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
+    if (footprintWaterOverlap(b.f, waterCull) > 0.18) continue;
     try {
       const family = buildingFamily(b);
       const spec = materials.families[family];
@@ -649,7 +658,7 @@ async function buildCity(data) {
     addChunks(geoms, materials.families[name].mat);
   }
 
-  scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex, data.pointPark));
+  scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex, data.pointPark, waterCull));
   scene.add(buildRooftopDetails(data.buildings, yFn));
   scene.add(buildStreetLights(data.streets || [], yFn, waterIndex, { dayMode: DAY_MODE }));
   if (!DAY_MODE) buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);
