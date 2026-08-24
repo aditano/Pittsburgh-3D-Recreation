@@ -725,7 +725,7 @@ const PNC_WALL = [
 
 // Inner edge of the grandstand, right-field corner -> behind home -> left-field corner.
 const PNC_STAND_EDGE = [
-  [56, 73],
+  [54, 69],
   [36, 54],
   [16, 34],
   [2, 22],
@@ -737,7 +737,7 @@ const PNC_STAND_EDGE = [
   [2, -22],
   [16, -34],
   [36, -54],
-  [57, -74],
+  [54, -69],
 ];
 
 /**
@@ -1093,16 +1093,13 @@ export function buildAcrisureStadium(spec = {}) {
   const boards = [];
   const lamps = [];
 
-  const rx = 70;
-  const rz = 40;
-  const plan = superEllipse(rx, rz, 0.38);
-  const openHalf = 29 * DEG;
+  const plan = roundedRect(ACR_RX, ACR_RZ, ACR_CORNER);
 
   // --- field: turf apron follows the bowl plan so it never clips the seats --
   const apron = [];
-  for (let i = 0; i < 48; i++) {
-    const p = plan((i / 48) * Math.PI * 2);
-    apron.push([p[0] * 0.93, p[1] * 0.93]);
+  for (let i = 0; i < 64; i++) {
+    const p = plan((i / 64) * Math.PI * 2);
+    apron.push([p[0] * 0.94, p[1] * 0.94]);
   }
   const turf = turfMaterial(footballFieldMaps());
   const fieldGeom = groundPolygon(apron, 0.3, (x, z) => [
@@ -1114,94 +1111,102 @@ export function buildAcrisureStadium(spec = {}) {
   core.add(field);
 
   // --- lower bowl: complete ring around the field --------------------------
-  const ringPath = buildPath(plan, 84, 0, Math.PI * 2, true);
-  const lower = rakedSection({ u0: 0, v0: 1.6 * hs, steps: 14, run: 1.55, rise: 0.86 * hs, fascia: 2.4 });
+  const ringPath = buildPath(plan, 104, 0, Math.PI * 2, true);
+  const lower = rakedSection({ u0: 0, v0: 1.9 * hs, steps: 16, run: 1.5, rise: 0.86 * hs, fascia: 2.6 });
   seatsA.push(sweepStrip(ringPath, lower.seats, true));
   conc.push(sweepStrip(ringPath, lower.shell, true));
 
-  // --- club and upper decks: horseshoe, open at +X -------------------------
-  const horseshoe = buildPath(plan, 78, openHalf, Math.PI * 2 - openHalf);
-  const club = rakedSection({ u0: 11, v0: 18.5 * hs, steps: 7, run: 1.7, rise: 0.9 * hs, fascia: 2.6 });
-  seatsA.push(sweepStrip(horseshoe, club.seats));
-  shell.push(sweepStrip(horseshoe, club.shell));
+  // --- club tier: stops at the south corners ------------------------------
+  const clubPath = buildPath(plan, 88, ACR_CLUB_OPEN, Math.PI * 2 - ACR_CLUB_OPEN);
+  const club = rakedSection({ u0: 12, v0: 19.5 * hs, steps: 8, run: 1.75, rise: 0.95 * hs, fascia: 2.8 });
+  seatsA.push(sweepStrip(clubPath, club.seats));
+  shell.push(sweepStrip(clubPath, club.shell));
 
+  // --- upper deck: sidelines plus the north end bleachers, nothing south ---
+  const upperPath = buildPath(plan, 82, ACR_UPPER_OPEN, Math.PI * 2 - ACR_UPPER_OPEN);
   const upper = rakedSection({
-    u0: 13,
-    v0: 29 * hs,
-    steps: 17,
-    run: 1.5,
-    rise: 1.28 * hs,
-    fascia: 3.4,
+    u0: 16,
+    v0: 31 * hs,
+    steps: 24,
+    run: 1.45,
+    rise: 1.02 * hs,
+    fascia: 3.6,
     base: 0,
   });
-  seatsB.push(sweepStrip(horseshoe, upper.seats));
-  conc.push(sweepStrip(horseshoe, upper.shell));
-  const ends = [horseshoe[0], horseshoe[horseshoe.length - 1]];
-  for (const node of ends) {
+  seatsB.push(sweepStrip(upperPath, upper.seats));
+  conc.push(sweepStrip(upperPath, upper.shell));
+  for (const node of [clubPath[0], clubPath[clubPath.length - 1]]) {
     shell.push(sectionCap(club.closed, node));
+  }
+  for (const node of [upperPath[0], upperPath[upperPath.length - 1]]) {
     conc.push(sectionCap(upper.closed, node));
   }
 
   // --- partial canopy over the back of the upper deck ----------------------
-  const canopyY = upper.vTop + 5.5 * hs;
-  const canopyIn = upper.uTop - 8;
+  const canopyY = upper.vTop + 4.6 * hs;
+  const canopyIn = upper.uTop - 9;
   steelG.push(
-    sweepStrip(horseshoe, [
+    sweepStrip(upperPath, [
       [canopyIn, canopyY],
-      [upper.uOut + 1, canopyY],
-      [upper.uOut + 1, canopyY - 1.1],
-      [canopyIn, canopyY - 1.1],
+      [upper.uOut + 1.2, canopyY],
+      [upper.uOut + 1.2, canopyY - 1.2],
+      [canopyIn, canopyY - 1.2],
     ]),
   );
   conc.push(
-    sweepStrip(horseshoe, [
+    sweepStrip(upperPath, [
+      [upper.uTop, canopyY - 1.3],
       [upper.uTop, upper.vTop],
-      [upper.uTop, canopyY - 1.2],
     ]),
   );
-  for (let i = 2; i < horseshoe.length - 2; i += 5) {
-    const p = horseshoe[i];
+  for (let i = 2; i < upperPath.length - 2; i += 5) {
+    const p = upperPath[i];
     const a = Math.atan2(p.nx, p.nz);
     steelG.push(
-      box(1.1, canopyY, 3.5, p.x + p.nx * (upper.uTop + 1.5), canopyY * 0.5, p.z + p.nz * (upper.uTop + 1.5), a),
+      box(1.2, canopyY, 3.5, p.x + p.nx * (upper.uTop + 1.6), canopyY * 0.5, p.z + p.nz * (upper.uTop + 1.6), a),
     );
-    lamps.push(box(7.0, 1.1, 1.0, p.x + p.nx * (canopyIn + 0.5), canopyY - 1.8, p.z + p.nz * (canopyIn + 0.5), a));
+    lamps.push(box(7.4, 1.1, 1.0, p.x + p.nx * (canopyIn + 0.6), canopyY - 2.0, p.z + p.nz * (canopyIn + 0.6), a));
   }
 
-  // --- south end: low plaza structure keeps the end open to downtown -------
-  const southPath = buildPath(plan, 22, -openHalf, openHalf);
-  shell.push(
-    sweepStrip(southPath, [
-      [10, 17.5 * hs],
-      [30, 17.5 * hs],
-      [30, 0],
-    ]),
-  );
+  // --- south end: a single low terrace, so the gap reads from any angle ----
+  const southPath = buildPath(plan, 32, -ACR_CLUB_OPEN, ACR_CLUB_OPEN);
+  const southDeck = rakedSection({ u0: 11, v0: 16.5 * hs, steps: 6, run: 1.8, rise: 0.92 * hs, fascia: 3.0 });
+  seatsA.push(sweepStrip(southPath, southDeck.seats));
+  shell.push(sweepStrip(southPath, southDeck.shell));
+  for (const node of [southPath[0], southPath[southPath.length - 1]]) {
+    shell.push(sectionCap(southDeck.closed, node));
+  }
   for (let i = 0; i < southPath.length; i += 4) {
     const p = southPath[i];
-    steelG.push(box(0.3, 1.2, 0.3, p.x + p.nx * 10.4, 18.2 * hs, p.z + p.nz * 10.4));
+    steelG.push(box(0.3, 1.3, 0.3, p.x + p.nx * (southDeck.uOut - 0.6), southDeck.vTop + 0.65, p.z + p.nz * (southDeck.uOut - 0.6)));
   }
 
-  // --- scoreboards at both ends --------------------------------------------
-  const southX = rx + 26;
-  steelG.push(box(3.0, 26 * hs, 34, southX + 2.5, 13 * hs, 0));
-  boards.push(box(1.2, 9.5, 31, southX, 24 * hs, 0));
-  const northX = -(rx + 14);
-  steelG.push(box(3.0, 13, 32, northX - 2.5, upper.vTop + 2.5, 0));
-  boards.push(box(1.2, 10.5, 29, northX, upper.vTop + 3, 0));
+  // --- 28 x 96 ft video board, on open legs behind the south terrace -------
+  const boardX = ACR_RX + 30;
+  for (const bz of [-15, 15]) {
+    steelG.push(box(2.6, 26 * hs, 2.6, boardX + 3.2, 13 * hs, bz));
+  }
+  steelG.push(box(3.0, 2.2, 33, boardX + 3.2, 25.2 * hs, 0));
+  steelG.push(box(3.0, 2.2, 33, boardX + 3.2, 34.8 * hs, 0));
+  boards.push(box(1.4, 8.5, 29.3, boardX, 30 * hs, 0));
+
+  // --- smaller board carried above the closed north end -------------------
+  const northX = -(ACR_RX + 7);
+  steelG.push(box(2.8, 13, 31, northX - 2.4, club.vTop + 6.5, 0));
+  boards.push(box(1.3, 9.0, 27, northX, club.vTop + 7.5, 0));
 
   // --- exterior ramp towers and cladding fins ------------------------------
-  for (let i = 3; i < horseshoe.length - 3; i += 9) {
-    const p = horseshoe[i];
+  for (let i = 4; i < upperPath.length - 4; i += 10) {
+    const p = upperPath[i];
     const a = Math.atan2(p.nx, p.nz);
-    const ox = p.x + p.nx * (upper.uOut + 5.5);
-    const oz = p.z + p.nz * (upper.uOut + 5.5);
-    conc.push(box(13, upper.vTop * 0.92, 10, ox, upper.vTop * 0.46, oz, a));
+    const ox = p.x + p.nx * (upper.uOut + 4.2);
+    const oz = p.z + p.nz * (upper.uOut + 4.2);
+    conc.push(box(13, upper.vTop * 0.9, 8.5, ox, upper.vTop * 0.45, oz, a));
     for (let k = 1; k <= 3; k++) {
-      shell.push(box(14, 0.8, 11, ox, (upper.vTop * 0.92 * k) / 3.4, oz, a));
+      shell.push(box(14, 0.8, 9.5, ox, (upper.vTop * 0.9 * k) / 3.4, oz, a));
     }
   }
-  const fascia = offsetPath(horseshoe, upper.uOut + 0.4);
+  const fascia = offsetPath(upperPath, upper.uOut + 0.4);
   shell.push(
     sweepStrip(fascia, [
       [0, upper.vTop + 0.4],
@@ -1224,7 +1229,9 @@ export function buildAcrisureStadium(spec = {}) {
     const mesh = meshFrom(geoms, material);
     if (mesh) core.add(mesh);
   }
-  centerAndAttach(core, oriented);
+  // The playing surface is centred on the model origin, which is where
+  // landmarks.js drops the venue, so no bounding-box recentring is wanted.
+  anchorAndAttach(core, oriented, 0, 0);
   return group;
 }
 

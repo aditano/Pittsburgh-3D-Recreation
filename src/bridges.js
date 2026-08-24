@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { snapBridgeToBanks } from './geo.js';
 
 /**
  * Pittsburgh's river crossings, each modelled as the structural type it really
@@ -26,61 +25,73 @@ const DECK = 0x2a2c30;
 const WALK = 0xb8b0a0;
 
 /**
- * `spans` is the real span sequence of the main structure; it only sets the pier
- * proportions, so it is scaled onto whatever span the dataset gives. `clear` is
- * the clearance to the underside of the deck, `arch` the index of the span that
- * carries the arch (the rest are approach trusses).
+ * `spans` is the real span sequence of the main structure, in metres. Several of
+ * these bridges are mostly land viaduct — Liberty is 273 m of cantilever truss
+ * inside 812 m of deck — so the structure is laid over the river and the rest of
+ * the deck becomes girder approach spans. `clear` is the clearance to the
+ * underside of the deck, `arch` the index of the span carrying the arch.
  */
 const STRUCTURES = [
-  // Three Sisters: self-anchored eyebar-chain suspension, 840 ft of truss in
-  // 215/410/215 ft spans, 62 ft deck, 40.3 ft clearance, towers 78 ft over pool.
-  { match: /clemente/, form: 'suspension', eyebar: true, spans: [66, 133, 66], width: 19, clear: 12.4, tower: 11.6, paint: 'gold' },
-  { match: /warhol bridge/, form: 'suspension', eyebar: true, spans: [66, 132, 66], width: 19, clear: 12.4, tower: 13, paint: 'gold' },
-  { match: /carson/, form: 'suspension', eyebar: true, spans: [66, 125, 66], width: 19, clear: 12.3, tower: 11.6, paint: 'gold' },
+  // Three Sisters: self-anchored eyebar-chain suspension. Carson's truss is
+  // 840 ft in 215/410/215 ft spans inside 995 ft of deck; the other two match it
+  // to within a few feet. 62 ft deck, 40.3 ft clearance, towers 78 ft over pool.
+  { match: /clemente/, form: 'suspension', eyebar: true, spans: [65.5, 131, 65.5], width: 18.9, clear: 12.3, tower: 11.6, paint: 'gold' },
+  { match: /warhol bridge/, form: 'suspension', eyebar: true, spans: [66, 135, 66], width: 18.9, clear: 12.3, tower: 13, paint: 'gold' },
+  { match: /carson/, form: 'suspension', eyebar: true, spans: [65.5, 125, 65.5], width: 18.9, clear: 12.3, tower: 11.6, paint: 'gold' },
 
-  // Fort Pitt and Fort Duquesne: double-decked bowstring (tied) arches, 750 ft
-  // and 430 ft main spans, four lanes on each deck.
-  { match: /fort pitt/, form: 'decked-arch', spans: [69, 230, 69], arch: 1, width: 21, clear: 14.4, rise: 31, upper: 8.4, paint: 'gold' },
+  // Fort Pitt and Fort Duquesne: double-decked bowstring (tied) arches with
+  // 750 ft and 430 ft main spans, four lanes on each deck.
+  { match: /fort pitt/, form: 'decked-arch', spans: [69.5, 229, 69.5], arch: 1, width: 21, clear: 14.4, rise: 31, upper: 8.4, paint: 'gold' },
   { match: /fort duquesne/, form: 'decked-arch', spans: [62, 130, 62], arch: 1, width: 21, clear: 14, rise: 22, upper: 8.4, paint: 'gold' },
 
-  // Lindenthal's lenticular (Pauli) trusses: two 360 ft lens spans, 42.5 ft
-  // clearance, repainted to the 1883 scheme rather than gold.
+  // Lindenthal's lenticular (Pauli) trusses: two 360 ft lens spans in 1,184 ft
+  // of deck, repainted to the 1883 scheme rather than gold.
   { match: /smithfield/, form: 'lenticular', spans: [110, 110], width: 18, clear: 13, rise: 12, drop: 5.5, paint: 'historic' },
 
-  // Liberty: steel cantilever through truss, two 448 ft river spans.
-  { match: /liberty/, form: 'cantilever', spans: [137, 137], width: 17, clear: 13.5, depth: 17, paint: 'apricot' },
+  // Liberty: steel cantilever through truss, two 448 ft river spans, deck
+  // 44.4 ft over the pool.
+  { match: /liberty/, form: 'cantilever', spans: [136.5, 136.5], width: 17, clear: 13.5, depth: 17, paint: 'apricot' },
 
-  // Veterans: welded steel plate girder, 410 ft main span, seven lanes.
-  { match: /veterans/, form: 'girder', spans: [95, 120, 95], width: 28, clear: 15.5, depth: 4.6, paint: 'steel' },
+  // Veterans: welded steel plate girder, 410 ft main span in 1,050 ft, seven
+  // lanes, deck 51 ft over the pool.
+  { match: /veterans/, form: 'girder', spans: [97, 125, 98], width: 28, clear: 15.5, depth: 4.6, paint: 'steel' },
 
   // West End: 780 ft tied arch, the longest in the world when built, one pier in
   // the water, Warren pony trusses on the approaches.
-  { match: /west end/, form: 'tied-arch', spans: [47, 240, 54], arch: 1, width: 18, clear: 20, rise: 43, paint: 'gold' },
+  { match: /west end/, form: 'tied-arch', spans: [47, 238, 54], arch: 1, width: 18, clear: 20, rise: 43, paint: 'gold' },
 
-  // 16th Street: trussed through arches, 437 ft main span, 41 ft deck, gold
-  // since the 2002 rehabilitation.
-  { match: /mccullough|16th/, form: 'through-arch', spans: [133, 133, 133], width: 12.6, clear: 12.6, rise: 19, paint: 'gold' },
+  // 16th Street: trussed through arches, 437 ft main span in 1,996 ft of deck,
+  // 41.3 ft roadway and 41.3 ft clearance, gold since the 2002 rehabilitation.
+  { match: /mccullough|16th/, form: 'through-arch', spans: [64, 133, 64], width: 12.6, clear: 12.6, rise: 19, paint: 'gold' },
 
-  // Fort Wayne Railroad Bridge: four-track through truss.
-  { match: /fort wayne|warhol rail/, form: 'through-truss', spans: [80, 110, 80], width: 18, clear: 12, depth: 12, paint: 'steel' },
+  // Fort Wayne Railroad Bridge: two-track through truss, 985 ft over five spans
+  // with a 319 ft channel span, deck 40.9 ft over the pool.
+  { match: /fort wayne|warhol rail/, form: 'through-truss', spans: [51, 51, 97, 51, 51], width: 17.3, clear: 12.5, depth: 12, paint: 'steel' },
 
-  // Birmingham: 607 ft bowstring arch, six lanes, PennDOT "Antique Bronze".
+  // Birmingham: 607 ft bowstring arch in 1,662 ft, six lanes, PennDOT
+  // "Antique Bronze".
   { match: /birmingham/, form: 'tied-arch', spans: [70, 185, 70], arch: 1, width: 24, clear: 19.8, rise: 33, paint: 'bronze' },
 
   // South Tenth Street (Philip Murray): the county's only wire-cable suspension
-  // bridge, 725 ft main span, 116 ft towers, Aztec Gold.
-  { match: /tenth|10th/, form: 'suspension', spans: [77, 221, 77], width: 18, clear: 15.3, tower: 33, paint: 'gold' },
+  // bridge, 725 ft main span in 1,275 ft, 58 ft deck, 50.3 ft clearance.
+  { match: /tenth|10th/, form: 'suspension', spans: [84, 221, 84], width: 17.7, clear: 15.3, tower: 33, paint: 'gold' },
 
-  // Panhandle: Pennsylvania Pratt through truss channel span, two rail tracks.
-  { match: /panhandle/, form: 'through-truss', spans: [90, 107, 90], width: 10, clear: 13.4, depth: 11, paint: 'steel' },
+  // Panhandle: Pennsylvania Pratt through truss channel spans, three light rail
+  // tracks on a deck only 8.4 m wide.
+  { match: /panhandle/, form: 'through-truss', spans: [90, 107, 90], width: 9, clear: 13.4, depth: 11, paint: 'steel' },
 
-  // Hot Metal: the paired Monongahela Connecting Railroad trusses, one now a
-  // roadway and one a trail, and explicitly not painted gold.
+  // Hot Metal: the paired 1887 Monongahela Connecting and 1900 Hot Metal
+  // trusses on one set of piers, one now a roadway and one a trail, and
+  // explicitly not painted gold.
   { match: /hot metal/, form: 'through-truss', spans: [90, 90, 90], width: 11, clear: 12, depth: 10, twin: 23, paint: 'rust' },
 
-  // 31st Street: open-spandrel steel deck arches, 380 ft three-hinged centre
-  // span, 28 ft roadway, 72.6 ft deck, painted "31st Blue".
-  { match: /31st/, form: 'deck-arch', spans: [55, 116, 55], arch: 1, width: 11, clear: 22.1, rise: 17, paint: 'blue' },
+  // 31st Street: open-spandrel steel deck arches, 360 ft three-hinged centre
+  // span in 2,681 ft of deck, 72.6 ft clearance, painted "31st Blue".
+  { match: /31st/, form: 'deck-arch', spans: [55, 110, 55], arch: 1, width: 11, clear: 22.1, rise: 17, paint: 'blue' },
+
+  // Washington Crossing (40th Street): steel deck arch, 360 ft main span in
+  // 2,366 ft of deck, 72.5 ft clearance.
+  { match: /40th|washington crossing/, form: 'deck-arch', spans: [55, 110, 55], arch: 1, width: 12, clear: 22.1, rise: 17, paint: 'steel' },
 ];
 
 const FALLBACK = {
@@ -104,25 +115,6 @@ function structureFor(b) {
   const n = (b.n || '').toLowerCase();
   const hit = STRUCTURES.find((s) => s.match.test(n));
   return hit || FALLBACK[b.type || inferType(b.n)] || FALLBACK.truss;
-}
-
-/** Pier positions as fractions of the modelled span, from the real span list. */
-function pierFractions(spans) {
-  const total = spans.reduce((a, s) => a + s, 0) || 1;
-  const out = [];
-  let run = 0;
-  for (let i = 0; i < spans.length - 1; i++) {
-    run += spans[i];
-    out.push(run / total);
-  }
-  return out;
-}
-
-function spanRanges(fracs) {
-  const edges = [0, ...fracs, 1];
-  const out = [];
-  for (let i = 0; i < edges.length - 1; i++) out.push([edges[i], edges[i + 1]]);
-  return out;
 }
 
 function addBox(geoms, mid, size, quat) {
@@ -167,37 +159,78 @@ function at(frame, t, y, side = 0, width = 0) {
   );
 }
 
-function waterPierTs(frame, waterIndex, count) {
-  const picks = [];
-  const candidates =
-    count >= 3 ? [0.26, 0.5, 0.74] : count === 1 ? [0.5] : [0.3, 0.7];
-  for (const t of candidates) {
+/** The longest run of the deck that is actually over the river, as a t range. */
+function riverRun(frame, waterIndex) {
+  const step = Math.max(0.004, 2 / frame.len);
+  let run = null;
+  let best = null;
+  for (let t = 0; t <= 1.0001; t += step) {
     const p = at(frame, t, 0);
-    if (waterIndex.inside(p.x, p.z)) picks.push(t);
+    if (waterIndex.inside(p.x, p.z)) {
+      if (run === null) run = t;
+      if (!best || t - run > best[1] - best[0]) best = [run, Math.min(1, t)];
+    } else {
+      run = null;
+    }
   }
-  if (picks.length) return picks;
-  let tA = 0.16;
-  let tB = 0.84;
-  while (tA < 0.45 && !waterIndex.inside(at(frame, tA, 0).x, at(frame, tA, 0).z)) tA += 0.02;
-  while (tB > 0.55 && !waterIndex.inside(at(frame, tB, 0).x, at(frame, tB, 0).z)) tB -= 0.02;
-  return [tA, tB];
+  return best;
 }
 
 /**
- * The surveyed endpoints are the truth; the water mask only nudges a deck the
- * last few metres onto its abutment. Bounding the nudge stops a coarse or wrong
- * shoreline from dragging a span out over the river or leaving it short of the
- * bank.
+ * Places the real span sequence on the deck. The named structure is centred on
+ * the river — widened if the crossing is broader than the published spans — and
+ * whatever deck is left over at the ends becomes girder approach bays, so a
+ * bridge that is mostly land viaduct still gets an arch of the right size over
+ * the water instead of one stretched the full length of the deck.
+ */
+function layout(frame, spans, waterIndex) {
+  const total = spans.reduce((a, s) => a + s, 0) || 1;
+  const river = riverRun(frame, waterIndex);
+  const needed = Math.max(Math.min(total, frame.len) / frame.len, river ? river[1] - river[0] : 0);
+  const half = Math.min(0.5, needed / 2);
+  const centre = river ? (river[0] + river[1]) / 2 : 0.5;
+  const c = Math.min(1 - half, Math.max(half, centre));
+  const main = [c - half, c + half];
+
+  const ranges = [];
+  let cut = main[0];
+  for (const s of spans) {
+    cut += ((main[1] - main[0]) * s) / total;
+    ranges.push([ranges.length ? ranges[ranges.length - 1][1] : main[0], cut]);
+  }
+  ranges[ranges.length - 1][1] = main[1];
+
+  const bays = [];
+  for (const [a, b] of [[0, main[0]], [main[1], 1]]) {
+    const len = (b - a) * frame.len;
+    if (len < 8) continue;
+    const n = Math.max(1, Math.round(len / 34));
+    for (let i = 0; i < n; i++) bays.push([a + ((b - a) * i) / n, a + ((b - a) * (i + 1)) / n]);
+  }
+  return { main, ranges, bays };
+}
+
+/**
+ * The surveyed endpoints are the truth, so a deck is only ever pushed outwards:
+ * an end that still sits over the river walks along the span until it reaches
+ * dry ground and its abutment. Never pulling an end inwards keeps a coarse
+ * shoreline from leaving a span hanging in the water, and the cap keeps a wrong
+ * one from stretching the deck across the bank.
  */
 function deckEnds(pts, waterIndex) {
-  const snapped = snapBridgeToBanks(pts, waterIndex, 16);
-  const len = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) || 1;
-  const cap = Math.max(20, len * 0.1);
+  const dx = pts[1][0] - pts[0][0];
+  const dz = pts[1][1] - pts[0][1];
+  const len = Math.hypot(dx, dz) || 1;
+  const ux = dx / len;
+  const uz = dz / len;
+  const cap = Math.max(24, len * 0.2);
   return pts.map((p, i) => {
-    const s = snapped[i] || p;
-    const d = Math.hypot(s[0] - p[0], s[1] - p[1]);
-    if (d <= cap) return s;
-    return [p[0] + ((s[0] - p[0]) * cap) / d, p[1] + ((s[1] - p[1]) * cap) / d];
+    if (!waterIndex.inside(p[0], p[1])) return p.slice();
+    const dir = i === 0 ? -1 : 1;
+    let s = 0;
+    while (s < cap && waterIndex.inside(p[0] + ux * dir * s, p[1] + uz * dir * s)) s += 3;
+    s = Math.min(cap, s + 12);
+    return [+(p[0] + ux * dir * s).toFixed(2), +(p[1] + uz * dir * s).toFixed(2)];
   });
 }
 
@@ -251,6 +284,21 @@ function addPiers(geoms, frame, ts, deckY, width, top = null) {
   }
 }
 
+/** Approach-span bents: paired columns from grade up to the deck soffit. */
+function addBents(geoms, frame, ts, deckY, width, yFn) {
+  for (const t of ts) {
+    const p = at(frame, t, 0);
+    const ground = Math.min(deckY - 3, yFn(p.x, p.z));
+    const h = deckY - 1.6 - ground;
+    if (h < 2) continue;
+    for (const side of [-1, 1]) {
+      const leg = at(frame, t, ground + h * 0.5, side, width * 0.3);
+      addBox(geoms, leg, new THREE.Vector3(1.9, h, 1.7), frame.quat);
+    }
+    addBox(geoms, at(frame, t, ground + h + 0.75), new THREE.Vector3(2.6, 1.5, width * 0.9), frame.quat);
+  }
+}
+
 /**
  * Approach viaducts. Every one of these bridges reaches its street grid on a
  * ramp rather than dropping off its abutment, so the deck keeps going past each
@@ -263,7 +311,7 @@ function addApproach(geoms, deckGeoms, frame, deckY, width, yFn, thick) {
     const ground0 = Math.max(0, yFn(foot.x, foot.z));
     const drop = deckY - ground0;
     if (drop < 3) continue;
-    const rampLen = Math.min(220, Math.max(50, drop / 0.06));
+    const rampLen = Math.min(300, Math.max(50, drop / 0.055));
     const segs = Math.max(2, Math.round(rampLen / 30));
     let y = deckY;
     let s = end === 0 ? 0 : frame.len;
@@ -497,17 +545,18 @@ function addCantilever(geoms, frame, a, b, deckY, width, depth) {
 }
 
 /** Continuous plate girders slung under the roadway. */
-function addGirders(geoms, frame, deckY, width, depth) {
-  const lines = 4;
-  for (let i = 0; i < lines; i++) {
-    const side = i / (lines - 1) - 0.5;
-    const p = at(frame, 0.5, deckY - depth * 0.5 - 0.6, side * 2, width * 0.36);
-    addBox(geoms, p, new THREE.Vector3(frame.len, depth, 1.2), frame.quat);
+function addGirders(geoms, frame, a, b, deckY, width, depth) {
+  const len = (b - a) * frame.len;
+  if (len < 2) return;
+  const y = deckY - depth * 0.5 - 0.6;
+  for (let i = 0; i < 4; i++) {
+    const p = at(frame, (a + b) * 0.5, y, i / 3 - 0.5, width * 0.72);
+    addBox(geoms, p, new THREE.Vector3(len, depth, 1.2), frame.quat);
   }
-  const braceN = Math.max(4, Math.round(frame.len / 22));
+  const braceN = Math.max(2, Math.round(len / 22));
   for (let i = 0; i <= braceN; i++) {
-    const t = i / braceN;
-    addBox(geoms, at(frame, t, deckY - depth * 0.5 - 0.6), new THREE.Vector3(0.7, depth * 0.8, width * 0.78), frame.quat);
+    const t = a + (b - a) * (i / braceN);
+    addBox(geoms, at(frame, t, y), new THREE.Vector3(0.7, depth * 0.8, width * 0.78), frame.quat);
   }
 }
 
@@ -546,20 +595,31 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
       const width = rec.width;
       const steel = bucket(steelGeoms, rec.paint);
       const lines = bucket(steelLines, rec.paint);
-      const fracs = pierFractions(rec.spans);
-      const ranges = spanRanges(fracs);
+      const { main, ranges, bays } = layout(frame, rec.spans, waterIndex);
+      const fracs = ranges.slice(0, -1).map((r) => r[1]);
       const upperY = rec.upper ? deckY + rec.upper : null;
 
       addDeck(deckGeoms, walkGeoms, frame, deckY, width, thick);
       if (upperY !== null) addDeck(deckGeoms, walkGeoms, frame, upperY, width, thick);
       addRailings(steel, frame, upperY ?? deckY, width, thick);
       addAbutments(concreteGeoms, frame, yFn, deckY, width);
+      addPiers(concreteGeoms, frame, fracs, deckY, width);
+      // Shore piers where the structure hands over to its approach spans.
       addPiers(
         concreteGeoms,
         frame,
-        fracs.length ? fracs : waterPierTs(frame, waterIndex, 2),
+        main.filter((t) => t > 0.01 && t < 0.99),
         deckY,
         width,
+      );
+      for (const [a, c] of bays) addGirders(steel, frame, a, c, deckY, width, Math.min(4.2, deckY * 0.3));
+      addBents(
+        concreteGeoms,
+        frame,
+        bays.map(([, c]) => c).filter((t) => t > 0.01 && t < 0.99),
+        deckY,
+        width,
+        yFn,
       );
       if (!lateral) addApproach(concreteGeoms, deckGeoms, frame, upperY ?? deckY, width, yFn, thick);
 
@@ -622,7 +682,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
           for (const [a, c] of ranges) addCantilever(steel, frame, a, c, deckY, width, rec.depth);
           break;
         case 'girder':
-          addGirders(steel, frame, deckY, width, rec.depth);
+          addGirders(steel, frame, main[0], main[1], deckY, width, rec.depth);
           break;
         default:
           for (const [a, c] of ranges) addThroughTruss(steel, frame, a, c, deckY, width, rec.depth ?? 11);
@@ -638,7 +698,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
 
       if (!lateral) {
         const crest = rec.tower ?? rec.rise ?? rec.depth ?? 12;
-        addLabel(b.n, at(frame, 0.5, (upperY ?? deckY) + crest + 22));
+        addLabel(b.n, at(frame, (main[0] + main[1]) * 0.5, (upperY ?? deckY) + crest + 22));
       }
     }
   }

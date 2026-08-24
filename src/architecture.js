@@ -1,9 +1,22 @@
 /**
  * Architectural articulation for OSM building footprints.
  *
- * Turns a flat prism into something that reads as a building: stepped massing,
- * a cornice/parapet at every tier top, a proud ground-floor plinth, pilaster
- * bays, roof decks and a mechanical roofscape.
+ * Turns a flat prism into something that reads as a building: a typology guess
+ * from bulk and position, stepped massing on the towers, a stone base course, a
+ * shaft divided by belt courses and pier bays, a cornice and parapet over a
+ * recessed roof deck, pitched roofs on the rowhouse stock, and masonry rooftop
+ * housings under a mechanical roofscape.
+ *
+ * Two things carry a building at flyover distance, and neither is depth. A
+ * 45-degree field of view over 1080 px puts one pixel at 0.6 m from 800 m, so
+ * relief is decided by the VERTICAL EXTENT of each element - a 4 m base, a 2 m
+ * cornice band - and by TONE, which comes from pinning trim to its own texel in
+ * the facade atlas (see PIN_STONE / PIN_DARK). A pinned triangle has zero
+ * texture derivative, so it samples mip 0 and holds its exact tone at any
+ * range, while the window grid itself has long since averaged out.
+ *
+ * All relief steps INWARD from the footprint. These are party-wall lots and a
+ * projecting cornice lands inside the neighbour.
  *
  * Everything here returns plain `BufferGeometry` so the caller can push results
  * straight into the existing per-material merge buckets in `main.js`. No
@@ -15,16 +28,17 @@
  * All pseudo-randomness comes from `hash01()` seeded by the footprint centroid,
  * so the city is identical every run.
  *
- * Triangle budget, shell plus roofscape, measured over all 7,471 footprints in
+ * Triangle budget, shell plus roofscape, over all 7,471 footprints in
  * public/data/pittsburgh.json:
  *
  *   tier   count   avg tris   max tris   hard cap
- *   0        153       14.9         36        140
- *   1      6,916       64.4        440        460
- *   2        402      509.0      1,318      1,500
+ *   0        133       15.4         36          -
+ *   1      6,449      106.7        424        420
+ *   2        869      314.1      1,322      1,900
  *
- * City total 652k triangles versus 112k for today's plain prisms, generated in
- * ~0.55 s. Dial the whole thing up or down from `detailTier()` alone.
+ * City total 1.25M triangles against 639k for the previous articulation and
+ * 112k for plain prisms, generated in ~1.0 s. Dial the whole thing up or down
+ * from `detailTier()`, `courseCount()` and `pierCount()`.
  */
 
 import * as THREE from 'three';
@@ -88,7 +102,7 @@ const DEFAULT_GRID = [6, 8];
 const MODERN_STYLES = new Set(['glass', 'ppg', 'steel', 'steelTower', 'convention', 'stadium']);
 
 /** Max footprint vertices kept per detail tier (cost of every band scales with this). */
-const MAX_RING_VERTS = [10, 16, 26];
+const MAX_RING_VERTS = [10, 18, 34];
 /** Visvalingam removal threshold in m^2 - a vertex that deviates ~0.5 m over 3 m. */
 const SIMPLIFY_TOL = 0.9;
 
@@ -209,7 +223,14 @@ export function footprintArea(footprint) {
   return ring ? polygonArea(ring) : 0;
 }
 
-/** Visvalingam-Whyatt decimation, kept cheap because rings are short. */
+/**
+ * Visvalingam-Whyatt decimation, kept cheap because rings are short.
+ *
+ * Dropping a convex vertex cuts a corner off and stays inside the footprint;
+ * dropping a reflex one fills a notch in and bulges outside it. On a party-wall
+ * lot that bulge ends up inside the neighbour, so reflex vertices are weighted
+ * to go last and only when the vertex budget demands it.
+ */
 function simplifyRing(ring, tolArea, maxVerts) {
   let pts = ring;
   if (pts.length > 240) {
@@ -223,13 +244,17 @@ function simplifyRing(ring, tolArea, maxVerts) {
   while (pts.length > 4) {
     let bestI = -1;
     let bestA = Infinity;
+    let bestCost = Infinity;
     const n = pts.length;
     for (let i = 0; i < n; i++) {
       const a = pts[(i - 1 + n) % n];
       const b = pts[i];
       const c = pts[(i + 1) % n];
-      const ar = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])) * 0.5;
-      if (ar < bestA) {
+      const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+      const ar = Math.abs(cross) * 0.5;
+      const cost = cross > 0 ? ar : ar * 12 + 4;
+      if (cost < bestCost) {
+        bestCost = cost;
         bestA = ar;
         bestI = i;
       }
@@ -1278,26 +1303,29 @@ function emitPiers(trim, shaft, lot, y0, y1, p, maxCount) {
  *            recess is the whole point from the air: it is what turns a roof
  *            into a rimmed tray instead of a flat lid, and it costs 2n.
  *
+ * The crown fills [yBot, yTop] exactly, whatever the proportions ask for, so a
+ * tier too short for a full parapet loses depth rather than leaving a gap
+ * between the shaft and the coping.
+ *
  * @returns {{ring: Array<[number,number]>, y: number}} the deck to stand
  *   rooftop structures on
  */
-function emitCrown(wall, trim, ring, shaft, yTop, p, mode) {
-  const ch = Math.min(p.corniceH, Math.max(0.3, (yTop - p.parapetH) * 0.5));
-  if (mode === 'cap') {
-    band(trim, shaft, yTop - ch, ring, yTop, null, PIN_STONE);
+function emitCrown(wall, trim, ring, shaft, yBot, yTop, p, mode, ch) {
+  const span = yTop - yBot;
+  if (mode === 'cap' || span < 0.4) {
+    band(trim, shaft, yBot, ring, yTop, null, PIN_STONE);
     capUp(wall, ring, yTop, null, PIN_DARK);
     return { ring, y: yTop };
   }
-  const cy = yTop - p.parapetH - ch;
-  band(trim, shaft, cy, ring, cy + ch * 0.55, null, PIN_STONE);
-  band(trim, ring, cy + ch * 0.55, ring, yTop, null, PIN_STONE);
+  band(trim, shaft, yBot, ring, yBot + ch * 0.55, null, PIN_STONE);
+  band(trim, ring, yBot + ch * 0.55, ring, yTop, null, PIN_STONE);
   const coping = insetRing(ring, p.copingIn);
   if (!coping) {
     capUp(wall, ring, yTop, null, PIN_DARK);
     return { ring, y: yTop };
   }
   band(trim, ring, yTop, coping, yTop, null, PIN_STONE);
-  const deckY = yTop - p.deckDrop;
+  const deckY = Math.max(yBot + 0.15, yTop - p.deckDrop);
   band(trim, coping, yTop, coping, deckY, null, PIN_DARK);
   capUp(wall, coping, deckY, null, PIN_DARK);
   return { ring: coping, y: deckY };
@@ -1310,11 +1338,9 @@ function emitCrown(wall, trim, ring, shaft, yTop, p, mode) {
  * carry anyway.
  * @returns {{ring: Array<[number,number]>, y: number}|null}
  */
-function emitPitchedRoof(wall, ring, eaveY, rise) {
-  const area = polygonArea(ring);
-  const perim = ringPerimeter(ring);
-  if (!(area > 4) || !(perim > 4)) return null;
-  const ridge = insetRing(ring, (2 * area) / perim, 0.02);
+function emitPitchedRoof(wall, ring, eaveY, rise, ang) {
+  if (!(polygonArea(ring) > 4)) return null;
+  const ridge = insetRing(ring, planExtent(ring, ang).across * 0.44, 0.02);
   if (!ridge) return null;
   const ridgeY = eaveY + rise;
   band(wall, ring, eaveY, ridge, ridgeY, null, PIN_DARK);
@@ -1324,10 +1350,9 @@ function emitPitchedRoof(wall, ring, eaveY, rise) {
 
 /** Belt courses are worth their triangles only once there is wall to divide. */
 function courseCount(typ, det, shaftSpan) {
-  if (shaftSpan < 7) return 0;
+  if (typ === 'house' || shaftSpan < 7) return 0;
   const room = Math.floor(shaftSpan / 5.5) - 1;
   if (room < 1) return 0;
-  if (typ === 'house') return 0;
   if (typ === 'block') return Math.min(room, det === 2 ? 2 : 1);
   if (typ === 'warehouse') return Math.min(room, 2);
   return Math.min(room, det === 2 ? 4 : 2);
@@ -1450,14 +1475,14 @@ export function buildArticulatedBuilding(opts) {
     const shaftRing = wantBase ? shaft : ring;
 
     if (pitched) {
-      const friezeY = ty1 - p.corniceH;
+      const friezeY = Math.max(sy0 + 0.3, ty1 - p.corniceH);
       emitShaft(wall, trim, shaftRing, sy0, friezeY, p, 0);
       band(trim, shaftRing, friezeY, ring, ty1, null, PIN_STONE);
-      deck = emitPitchedRoof(wall, ring, ty1, prog.roof.rise);
+      deck = emitPitchedRoof(wall, ring, ty1, prog.roof.rise, prog.ang);
       if (deck) pitch = { ring, eaveY: ty1 };
       else {
         // the ridge collapsed; fall back to a parapet so the shell stays closed
-        deck = emitCrown(wall, trim, ring, ring, baseY + t.y1, p, 'deck');
+        deck = emitCrown(wall, trim, ring, ring, ty1, baseY + t.y1, p, 'deck', p.corniceH);
       }
       continue;
     }
@@ -1465,16 +1490,19 @@ export function buildArticulatedBuilding(opts) {
     const mode = t.top ? 'deck' : 'cap';
     const crownH = mode === 'cap' ? p.corniceH : p.parapetH + p.corniceH;
     const shaftTop = Math.max(sy0 + 0.4, ty1 - crownH);
+    const ch = clamp(p.corniceH, 0.3, (ty1 - shaftTop) * 0.7);
     emitShaft(wall, trim, shaftRing, sy0, shaftTop, p, courseCount(prog.typ, det, shaftTop - sy0));
 
-    const perim = ringPerimeter(shaftRing);
     const room = Math.floor((budget - wall.triangles - trim.triangles) / 6);
-    const piers = Math.min(pierCount(prog.typ, det, perim), room);
-    if (piers > 1 && shaftTop - sy0 > 6) {
-      emitPiers(trim, shaftRing, sy0, shaftTop + crownH * 0.55, p, piers);
+    const piers = Math.min(pierCount(prog.typ, det, ringPerimeter(shaftRing)), room);
+    if (piers > 1 && shaftRing !== ring && shaftTop - sy0 > 6) {
+      // die into the cornice flare rather than stopping short: the flare closes
+      // over the pier, so its top never needs capping and never reaches the
+      // parapet plane, where it would fight for depth with the parapet face
+      emitPiers(trim, shaftRing, ring, sy0, shaftTop + ch * 0.5, p, piers);
     }
 
-    const crown = emitCrown(wall, trim, ring, shaftRing, ty1, p, mode);
+    const crown = emitCrown(wall, trim, ring, shaftRing, shaftTop, ty1, p, mode, ch);
     if (t.top) deck = crown;
   }
 
