@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { footprintCentroid } from './geo.js';
+import { createWaterMaterial } from './water.js';
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -247,49 +248,6 @@ function makeGroundMaps() {
   return {
     map: canvasTexture(color, { repeat: 10 }),
     roughnessMap: canvasTexture(rough, { color: false, repeat: 10 }),
-  };
-}
-
-function makeWaterMaps() {
-  const color = noiseCanvas(256, 256, (ctx, w, h) => {
-    const g = ctx.createLinearGradient(0, 0, w, h);
-    g.addColorStop(0, '#0a2430');
-    g.addColorStop(0.5, '#071820');
-    g.addColorStop(1, '#0c2a36');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
-    for (let y = 0; y < h; y += 3) {
-      const band = 0.04 + Math.sin(y * 0.08) * 0.02;
-      ctx.strokeStyle = `rgba(140,190,210,${band})`;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(w, y + Math.sin(y * 0.05) * 4);
-      ctx.stroke();
-    }
-    for (let i = 0; i < 120; i++) {
-      ctx.strokeStyle = `rgba(180,220,235,${0.02 + Math.random() * 0.04})`;
-      ctx.beginPath();
-      const y = Math.random() * h;
-      ctx.moveTo(0, y);
-      ctx.bezierCurveTo(w * 0.3, y + 6, w * 0.6, y - 6, w, y + 3);
-      ctx.stroke();
-    }
-  });
-  const rough = noiseCanvas(256, 256, (ctx, w, h) => {
-    ctx.fillStyle = '#4a4a4a';
-    ctx.fillRect(0, 0, w, h);
-    for (let y = 0; y < h; y += 2) {
-      ctx.fillStyle = `rgba(255,255,255,${0.08 + Math.sin(y * 0.15) * 0.12})`;
-      ctx.fillRect(0, y, w, 1);
-    }
-    for (let i = 0; i < 300; i++) {
-      ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.35})`;
-      ctx.fillRect(Math.random() * w, Math.random() * h, 6, 2);
-    }
-  });
-  return {
-    map: canvasTexture(color, { repeat: 2 }),
-    roughnessMap: canvasTexture(rough, { color: false, repeat: 3 }),
   };
 }
 
@@ -613,7 +571,6 @@ export function createCityMaterials({ dayMode = true } = {}) {
 
   const grass = makeGrassMaps(dayMode);
   const ground = makeGroundMaps();
-  const water = makeWaterMaps();
   const road = makeRoadMaps(dayMode);
 
   const parkMat = new THREE.MeshStandardMaterial({
@@ -631,125 +588,7 @@ export function createCityMaterials({ dayMode = true } = {}) {
     polygonOffsetUnits: -1,
   });
 
-  const waterUniforms = { uTime: { value: 0 } };
-  // No albedo/roughness maps: at river scale a tiled texture reads as corduroy.
-  // The surface is shaded entirely from flow-aligned noise in the shader below.
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: dayMode ? 0x34718c : 0x0a2834,
-    roughness: dayMode ? 0.24 : 0.28,
-    metalness: 0.34,
-    transparent: true,
-    opacity: dayMode ? 0.9 : 0.95,
-    envMapIntensity: dayMode ? 1.25 : 1.05,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-  });
-  waterMat.onBeforeCompile = (shader) => {
-    shader.uniforms.uTime = waterUniforms.uTime;
-    shader.vertexShader = shader.vertexShader
-      .replace(
-        '#include <common>',
-        `#include <common>
-         varying vec3 vWorldPos;`,
-      )
-      .replace(
-        '#include <worldpos_vertex>',
-        `#include <worldpos_vertex>
-         vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
-      );
-
-    // All three rivers run broadly west; the Allegheny carries a slight
-    // southward set and the Monongahela a northward one as they converge on
-    // the Point, so blend the cross-stream term across the confluence.
-    //
-    // Surface detail is value-noise rather than summed sine waves: at a few
-    // hundred metres across, periodic wave trains alias into visible corduroy
-    // banding. The sampling frame is compressed along the flow and stretched
-    // across it, which stretches the noise into the downstream streaks a real
-    // river shows, and it is advected so the streaks travel with the current.
-    const flowCommon = `
-      uniform float uTime;
-      varying vec3 vWorldPos;
-
-      vec2 riverFlow(vec2 p) {
-        float north = 1.0 - smoothstep(-260.0, -40.0, p.y);
-        float south = smoothstep(-20.0, 200.0, p.y);
-        return normalize(vec2(-1.0, 0.17 * north - 0.32 * south));
-      }
-
-      // Sine-free hash. The usual fract(sin(dot(...)) * 43758.5) breaks down
-      // here: the flow frame reaches coordinates in the hundreds, so sin() is
-      // evaluated tens of thousands of radians out where float32 resolves only
-      // a couple of hundred steps per period. The hash then correlates between
-      // neighbouring cells and the correlation reads as diagonal banding
-      // marching across the channel.
-      float vhash(vec2 c) {
-        vec3 p = fract(vec3(c.xyx) * 0.1031);
-        p += dot(p, p.yzx + 33.33);
-        return fract((p.x + p.y) * p.z);
-      }
-
-      float vnoise(vec2 p) {
-        vec2 i = floor(p);
-        vec2 f = fract(p);
-        vec2 u = f * f * (3.0 - 2.0 * f);
-        return mix(
-          mix(vhash(i), vhash(i + vec2(1.0, 0.0)), u.x),
-          mix(vhash(i + vec2(0.0, 1.0)), vhash(i + vec2(1.0, 1.0)), u.x),
-          u.y);
-      }
-
-      // Two advected octaves in the flow frame, plus a broad slow term. The frame
-      // must be stretched ALONG the flow and compressed across it so the noise
-      // pulls into long downstream streaks; scaling it the other way round makes
-      // features short along the flow and wide across it, which is what reads as
-      // bands marching across the channel. Streaks here run ~55 m by ~12 m.
-      float riverSurface(vec2 p, vec2 flow, float t) {
-        vec2 across = vec2(-flow.y, flow.x);
-        float along = dot(p, flow);
-        float side = dot(p, across);
-        vec2 q = vec2(along * 0.018 - t * 0.45, side * 0.085);
-        float n = vnoise(q) * 0.60;
-        n += vnoise(q * 2.4 + vec2(t * 0.2, 0.0)) * 0.22;
-        n += vnoise(vec2(along * 0.004 + t * 0.03, side * 0.018)) * 0.44;
-        return n / 1.26;
-      }`;
-
-    shader.fragmentShader = shader.fragmentShader
-      .replace('#include <common>', `#include <common>${flowCommon}`)
-      .replace(
-        '#include <normal_fragment_maps>',
-        `#include <normal_fragment_maps>
-         {
-           vec2 flow = riverFlow(vWorldPos.xz);
-           vec2 across = vec2(-flow.y, flow.x);
-           // Differenced over a stride comparable to the streak width, so the
-           // slope stays gentle instead of sparkling at every pixel.
-           float e = 6.0;
-           float c0 = riverSurface(vWorldPos.xz, flow, uTime);
-           float ca = riverSurface(vWorldPos.xz + flow * e, flow, uTime);
-           float cb = riverSurface(vWorldPos.xz + across * e, flow, uTime);
-           vec2 grad = vec2(ca - c0, cb - c0) * 0.53;
-           normal = normalize(normal + vec3(
-             flow.x * grad.x + across.x * grad.y,
-             0.0,
-             flow.y * grad.x + across.y * grad.y));
-         }`,
-      )
-      .replace(
-        '#include <color_fragment>',
-        `#include <color_fragment>
-         {
-           vec2 flow = riverFlow(vWorldPos.xz);
-           float s = riverSurface(vWorldPos.xz, flow, uTime);
-           diffuseColor.rgb *= 0.94 + s * 0.12;
-           // Wide, soft ramp: keyed to the old unnormalised peak this only lit
-           // the top 1.5% of the range, so the sheen arrived as hard slivers.
-           diffuseColor.rgb += smoothstep(0.72, 0.99, s) * vec3(0.045, 0.07, 0.085);
-         }`,
-      );
-  };
+  const { mat: waterMat, uniforms: waterUniforms } = createWaterMaterial({ dayMode });
 
   const groundMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,

@@ -1455,12 +1455,12 @@ const LANDMARKS = [
     crown: 'beacon',
   },
   // Burnham, 1902: 330 ft of granite under one very deep cornice.
-  { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, shell: 0.93, crown: 'classicalAttic' },
-  { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, shell: 0.88, crown: 'classicalAttic' },
-  // Osterling, 1917: 237 ft over 15 floors. The cornice lands at about 52 m and
-  // everything above it is the terra-cotta mansard, its dormers, and the two
-  // chapel-like mechanical towers that make the roof unmistakable.
-  { n: 'Union Trust Building', at: [421.7, 118.7], r: 55, h: 72, shell: 0.72, crown: 'flemishRoof' },
+  { n: 'Frick Building', at: [395.3, 207.4], r: 40, h: 100, shell: 0.942, crown: 'classicalAttic' },
+  { n: 'Pittsburgh City-County Building', at: [436.0, 321.7], r: 45, h: 43.9, shell: 0.925, crown: 'classicalAttic' },
+  // Osterling, 1917: 237 ft to the roof over 15 floors. The cornice lands at
+  // about 52 m and everything above it is the terra-cotta mansard, its dormers,
+  // and the two chapel-like mechanical towers, which clear the stated roof.
+  { n: 'Union Trust Building', at: [421.7, 118.7], r: 55, h: 78, shell: 0.667, crown: 'flemishRoof' },
   // Richardson, 1888. Roof 100 ft, tower 250 ft (Wikipedia); the tower is also
   // widely cited at 318 ft to the finial. Steep tiled roof, dormers at every
   // corner, and the tower standing on the open side of the courtyard.
@@ -1479,7 +1479,7 @@ const LANDMARKS = [
     at: [4135.4, -368.4],
     r: 55,
     h: 163,
-    shell: 0.88,
+    shell: 0.84,
     // the Commons Room block, then the tower stepping in at roughly the 15th,
     // 25th and 36th floors
     tiers: [[0.16, 0], [0.5, 15], [0.74, 3], [1, 2.5]],
@@ -1931,8 +1931,8 @@ const CROWNS = {
 
     // roughly 70 degrees: a mansard this steep reads as a wall, which is the
     // whole difference between this roof and a bevelled lid
-    const ridgeY = y + span * 0.66;
-    const ridge = insetRing(skirt, span * 0.23, 0.05);
+    const ridgeY = y + span * 0.5;
+    const ridge = insetRing(skirt, span * 0.18, 0.05);
     if (ridge) {
       band(trim, skirt, eave, ridge, ridgeY, null, PIN_STONE);
       capUp(wall, ridge, ridgeY, null, PIN_DARK);
@@ -1941,7 +1941,7 @@ const CROWNS = {
     }
 
     // dormers stand on the lower half of the pitch, gabled and finialled
-    const inset = span * 0.05;
+    const inset = span * 0.04;
     const [gx, gz] = ringCentroid(skirt);
     alongRing(skirt, 12, (x, z, edgeAng) => {
       const dx = gx - x;
@@ -1950,25 +1950,25 @@ const CROWNS = {
       const px = x + (dx / len) * inset;
       const pz = z + (dz / len) * inset;
       const dorm = rectRing(px, pz, 5.5, 4, Math.cos(edgeAng), Math.sin(edgeAng));
-      const dy = eave + span * 0.06;
-      band(trim, dorm, dy, dorm, dy + span * 0.3, null, PIN_STONE);
-      pyramidUp(trim, dorm, dy + span * 0.3, dy + span * 0.5, PIN_STONE);
+      const dy = eave + span * 0.04;
+      band(trim, dorm, dy, dorm, dy + span * 0.24, null, PIN_STONE);
+      pyramidUp(trim, dorm, dy + span * 0.24, dy + span * 0.4, PIN_STONE);
     });
 
     const ext = planExtent(deck, c.ang);
     const [cx, cz] = ringCentroid(ridge || skirt);
     const ca = Math.cos(c.ang);
     const sa = Math.sin(c.ang);
-    const r = Math.max(4, Math.min(ext.along, ext.across) * 0.09);
+    const r = Math.max(4.5, Math.min(ext.along, ext.across) * 0.07);
     for (const sgn of [-1, 1]) {
-      const u = sgn * ext.along * 0.22;
+      const u = sgn * ext.along * 0.24;
       const tx = cx + u * ca;
       const tz = cz + u * sa;
       const tower = regularRing(tx, tz, r, 4, c.ang);
-      const foot = ridgeY - span * 0.3;
-      const belfry = foot + (top - foot) * 0.45;
+      const foot = ridgeY - span * 0.12;
+      const belfry = foot + (top - foot) * 0.5;
       band(trim, tower, foot, tower, belfry, null, PIN_STONE);
-      for (const [px, pz] of tower) pinnacle(trim, px, pz, r * 0.2, belfry, span * 0.16, c.ang, PIN_STONE);
+      for (const [px, pz] of tower) pinnacle(trim, px, pz, r * 0.22, belfry, span * 0.14, c.ang, PIN_STONE);
       coneUp(trim, scaleRing(tower, tx, tz, 0.9), belfry, tx, top, tz, null, PIN_STONE);
     }
   },
@@ -2027,7 +2027,7 @@ const CROWNS = {
     const top = c.baseY + c.h;
     const span = top - y;
     // segmental, not semicircular: the display houses are long shallow arcs
-    vaultUp(wall, deck, y, 11, span * 0.4, 4, PIN_NONE);
+    vaultUp(wall, deck, y, 13, span * 0.34, 4, PIN_NONE);
     // glazing bars, without which the vault reads as one blank shell
     alongRing(deck, 5, (x, z, edgeAng) => {
       const rib = rectRing(x, z, 0.5, 1.3, Math.cos(edgeAng), Math.sin(edgeAng));
@@ -2038,23 +2038,22 @@ const CROWNS = {
     const ext = planExtent(deck, c.ang);
     const ca = Math.cos(c.ang);
     const sa = Math.sin(c.ang);
+    const springY = y + span * 0.2;
     for (const [u, k] of [[0, 1], [-ext.along * 0.3, 0.5], [ext.along * 0.29, 0.46]]) {
       const dx = cx + u * ca;
       const dz = cz + u * sa;
       if (!pointInRing(dx, dz, deck)) continue;
-      const r = Math.min(15 * k, distToRing(dx, dz, deck) - 1);
+      // the Palm Court is a 65 ft hemisphere and reads as nothing if it is
+      // flattened to fit, so the radius gives way before the profile does
+      const r = Math.min(10 * k, distToRing(dx, dz, deck) - 1, (top - springY) * 0.92);
       if (r < 3) continue;
-      // the Palm Court apex is the building's stated height; the side houses
-      // spring from the same ring and stop short of it
-      const springY = y + span * 0.26;
-      const apex = springY + (top - springY) * (k === 1 ? 0.82 : 0.5);
       const drum = regularRing(dx, dz, r, 14, 0);
-      band(trim, drum, springY - span * 0.2, drum, springY, null, PIN_STONE);
-      domeUp(wall, dx, dz, r, springY, apex - springY, 14, 5, PIN_NONE);
-      const lantern = regularRing(dx, dz, Math.max(0.8, r * 0.15), 8, 0);
-      const lantH = (top - apex) * (k === 1 ? 0.55 : 0.3);
-      band(trim, lantern, apex - 0.3, lantern, apex + lantH, null, PIN_STONE);
-      coneUp(trim, lantern, apex + lantH, dx, apex + lantH * 2.2, dz, null, PIN_STONE);
+      band(trim, drum, springY - span * 0.24, drum, springY, null, PIN_STONE);
+      domeUp(wall, dx, dz, r, springY, r, 14, 5, PIN_NONE);
+      const apex = springY + r;
+      const lantern = regularRing(dx, dz, Math.max(0.8, r * 0.16), 8, 0);
+      band(trim, lantern, apex - 0.3, lantern, apex + r * 0.16, null, PIN_STONE);
+      coneUp(trim, lantern, apex + r * 0.16, dx, apex + r * 0.42, dz, null, PIN_STONE);
     }
   },
 
@@ -2091,20 +2090,27 @@ const CROWNS = {
     const { wall, trim, ring, deck, y, capY } = c;
     const top = c.baseY + c.h;
     const span = top - y;
-    alongRing(ring, 7, (x, z, edgeAng) => {
-      const pier = rectRing(x, z, 2.4, 1.6, Math.cos(edgeAng), Math.sin(edgeAng));
-      band(trim, pier, capY - span * 1.4, pier, capY + span * 0.14, null, PIN_STONE);
-      pinnacle(trim, x, z, 1.2, capY + span * 0.14, span * 0.4, edgeAng, PIN_STONE);
+    // The real crown is flat-topped tracery, not a spire: a tall lantern stage
+    // stepping in once, ringed by the pinnacles the shaft piers run up into.
+    const lantern = insetRing(deck, Math.sqrt(polygonArea(deck)) * 0.13, 0.05) || deck;
+    const lanternTop = y + span * 0.72;
+    band(wall, lantern, y, lantern, lanternTop, null, PIN_NONE);
+    // few and large: at 12 m centres the piers read as buttresses, and at the
+    // 6 m the facade grid would suggest they turn into noise on the skyline
+    alongRing(ring, 12, (x, z, edgeAng) => {
+      const pier = rectRing(x, z, 3.2, 2.2, Math.cos(edgeAng), Math.sin(edgeAng));
+      band(trim, pier, capY - span * 2.2, pier, capY + span * 0.3, null, PIN_STONE);
+      pinnacle(trim, x, z, 1.7, capY + span * 0.3, span * 0.55, edgeAng, PIN_STONE);
     });
     for (const [px, pz] of ringCorners(ring, 4)) {
-      pinnacle(trim, px, pz, 2.4, capY, span * 0.78, c.ang, PIN_STONE);
+      pinnacle(trim, px, pz, 3, capY, span * 1.05, c.ang, PIN_STONE);
     }
-    // The real crown is flat-topped tracery, not a spire: a lantern stage that
-    // steps in twice and stops.
-    const lantern = insetRing(deck, Math.sqrt(polygonArea(deck)) * 0.16, 0.05) || deck;
-    band(wall, lantern, y, lantern, y + span * 0.5, null, PIN_NONE);
-    alongRing(lantern, 5.5, (x, z) => pinnacle(trim, x, z, 0.9, y + span * 0.5, span * 0.34, c.ang, PIN_STONE));
-    const cap = steppedUp(trim, lantern, y + span * 0.5, top, 2, 2.2, PIN_STONE);
+    alongRing(lantern, 11, (x, z, edgeAng) => {
+      const mullion = rectRing(x, z, 2.2, 1.4, Math.cos(edgeAng), Math.sin(edgeAng));
+      band(trim, mullion, y, mullion, lanternTop, null, PIN_STONE);
+      pinnacle(trim, x, z, 1.4, lanternTop, span * 0.24, edgeAng, PIN_STONE);
+    });
+    const cap = steppedUp(trim, lantern, lanternTop, top, 2, 2, PIN_STONE);
     capUp(wall, cap.ring, cap.y, null, PIN_DARK);
   },
 
@@ -2265,27 +2271,13 @@ const CROWNS = {
         );
       }
     }
-    // masts along the springing edge, with a stay running back to the peak
-    const peak = profile(0.66);
+    // Masts along the springing edge. The back-stays they carry are a few
+    // centimetres of steel and never survive rasterisation at city range, so
+    // only the masts are modelled, and only as far above the lip as they show.
     for (let i = 0; i < 5; i++) {
       const u = (i / 4 - 0.5) * ext.along * 0.86;
-      const foot = at(u, 0.06);
-      const head = at(u, 0.1);
-      mastUp(trim, foot[0], foot[1], 1.1, y - c.h * 0.4, peak + c.h * 0.24, c.ang, PIN_STONE);
-      const anchor = at(u, 0.66);
-      const cable = [
-        [head[0], peak + c.h * 0.22, head[1]],
-        [anchor[0], profile(0.66), anchor[1]],
-      ];
-      const w = 0.35;
-      trim.quad(
-        [cable[0][0] - w, cable[0][1], cable[0][2]],
-        [cable[1][0] - w, cable[1][1], cable[1][2]],
-        [cable[1][0] + w, cable[1][1], cable[1][2]],
-        [cable[0][0] + w, cable[0][1], cable[0][2]],
-        null,
-        PIN_STONE,
-      );
+      const foot = at(u, 0.05);
+      mastUp(trim, foot[0], foot[1], 1.2, y, profile(0.05) + c.h * 0.12, c.ang, PIN_STONE);
     }
     capUp(wall, deck, y, null, PIN_DARK);
   },

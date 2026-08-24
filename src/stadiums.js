@@ -1117,10 +1117,17 @@ export function buildAcrisureStadium(spec = {}) {
   const plan = roundedRect(ACR_RX, ACR_RZ, ACR_CORNER);
 
   // --- field: turf apron follows the bowl plan so it never clips the seats --
+  // Sampling the plan by polar angle drops several points onto each straight
+  // run, and the ear clipper turns those into zero-area triangles, so a sample
+  // is only kept where the outline actually turns.
   const apron = [];
-  for (let i = 0; i < 64; i++) {
-    const p = plan((i / 64) * Math.PI * 2);
-    apron.push([p[0] * 0.96, p[1] * 0.96]);
+  for (let i = 0; i < 96; i++) {
+    const p = plan((i / 96) * Math.PI * 2);
+    const q = [p[0] * 0.96, p[1] * 0.96];
+    const a = apron[apron.length - 1];
+    const b = apron[apron.length - 2];
+    if (a && b && Math.abs((a[0] - b[0]) * (q[1] - b[1]) - (a[1] - b[1]) * (q[0] - b[0])) < 0.05) apron.pop();
+    apron.push(q);
   }
   const turf = turfMaterial(footballFieldMaps());
   const fieldGeom = groundPolygon(apron, 0.3, (x, z) => [
