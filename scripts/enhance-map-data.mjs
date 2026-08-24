@@ -55,6 +55,8 @@ const LANDMARK_MESH = [
   [/fifth avenue place/i, 'fifth-avenue'],
   [/bny mellon center/i, 'bny-mellon'],
   [/one oxford centre/i, 'oxford-centre'],
+  [/^pnc park$/i, 'pnc-park'],
+  [/^acrisure stadium$/i, 'acrisure-stadium'],
 ];
 
 const ROOF_RULES = [
@@ -78,7 +80,6 @@ function matchRule(rules, name) {
 let styled = 0;
 let meshLandmarks = 0;
 let roofTagged = 0;
-const landmarkMeshIds = new Set();
 
 for (const b of data.buildings) {
   const n = b.n || '';
@@ -91,7 +92,6 @@ for (const b of data.buildings) {
   if (meshId) {
     b.landmarkMesh = meshId;
     b.landmark = true;
-    landmarkMeshIds.add(meshId);
     meshLandmarks++;
   }
   const roof = matchRule(ROOF_RULES, n);

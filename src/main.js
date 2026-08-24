@@ -301,11 +301,21 @@ function outlineRibbon(poly, width, y) {
   return geom;
 }
 
-function buildWaterEdges(water) {
+function buildWaterEdges(water, yFn) {
   const geoms = [];
   for (const w of water) {
     if (!w.f || w.f.length < 4 || w.f.length > 200) continue;
-    const ribbon = outlineRibbon(w.f, 7, 0.45);
+    let cx = 0;
+    let cz = 0;
+    const n = w.f.length - 1;
+    for (let i = 0; i < n; i++) {
+      cx += w.f[i][0];
+      cz += w.f[i][1];
+    }
+    cx /= n;
+    cz /= n;
+    const edgeY = Math.max(0.35, yFn(cx, cz) + 0.55);
+    const ribbon = outlineRibbon(w.f, 7, edgeY);
     if (ribbon) geoms.push(ribbon);
   }
   if (!geoms.length) return null;
@@ -477,7 +487,7 @@ async function buildCity(data) {
     waterMesh.receiveShadow = true;
     scene.add(waterMesh);
   }
-  const foam = buildWaterEdges(data.water);
+  const foam = buildWaterEdges(data.water, yFn);
   if (foam) scene.add(foam);
 
   const buckets = {

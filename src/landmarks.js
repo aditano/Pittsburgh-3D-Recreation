@@ -44,6 +44,19 @@ function buildPPGTower(h, footprint) {
   body.receiveShadow = true;
   g.add(body);
 
+  const mullionMat = mat(0x9ac8bc, { roughness: 0.18, metalness: 0.6, emissive: 0x3a7868, emissiveIntensity: 0.2 });
+  for (let i = -2; i <= 2; i++) {
+    const vert = new THREE.Mesh(new THREE.BoxGeometry(0.35, bodyH * 0.96, d + 0.2), mullionMat);
+    vert.position.set(i * (w / 5), bodyH * 0.5, 0);
+    g.add(vert);
+    const horiz = new THREE.Mesh(new THREE.BoxGeometry(w + 0.2, 0.3, 0.35), mullionMat);
+    horiz.position.set(0, bodyH * (0.25 + ((i + 2) / 4) * 0.5), d * 0.5 + 0.1);
+    g.add(horiz);
+    const horiz2 = horiz.clone();
+    horiz2.position.z = -d * 0.5 - 0.1;
+    g.add(horiz2);
+  }
+
   const spireH = h * 0.18;
   for (const [ox, oz] of [
     [-w * 0.42, -d * 0.42],
@@ -97,10 +110,10 @@ function buildCathedral(h, footprint) {
   const d = Math.max(b.d, 55);
   const stone = mat(0x8a8478, { roughness: 0.82, metalness: 0.04 });
   const towerW = Math.min(w, d) * 0.35;
-  const towerH = h * 0.92;
+  const towerH = h * 0.88;
 
-  const base = new THREE.Mesh(new THREE.BoxGeometry(w * 0.85, h * 0.35, d * 0.85), stone);
-  base.position.y = h * 0.175;
+  const base = new THREE.Mesh(new THREE.BoxGeometry(w * 0.88, h * 0.32, d * 0.88), stone);
+  base.position.y = h * 0.16;
   base.castShadow = true;
   g.add(base);
 
@@ -109,21 +122,34 @@ function buildCathedral(h, footprint) {
   tower.castShadow = true;
   g.add(tower);
 
-  const cren = new THREE.Mesh(new THREE.BoxGeometry(towerW * 1.08, h * 0.04, towerW * 1.08), stone);
-  cren.position.y = towerH + h * 0.02;
-  g.add(cren);
+  for (let i = 0; i < 8; i++) {
+    const t = (i / 8) * Math.PI * 2;
+    const cren = new THREE.Mesh(new THREE.BoxGeometry(towerW * 0.14, h * 0.035, towerW * 0.1), stone);
+    cren.position.set(Math.cos(t) * towerW * 0.48, towerH + h * 0.018, Math.sin(t) * towerW * 0.48);
+    cren.rotation.y = -t;
+    g.add(cren);
+  }
 
-  const spire = new THREE.Mesh(new THREE.ConeGeometry(towerW * 0.25, h * 0.12, 4), mat(0x6a6458, { roughness: 0.75 }));
-  spire.position.y = towerH + h * 0.08;
+  const spire = new THREE.Mesh(new THREE.ConeGeometry(towerW * 0.22, h * 0.14, 4), mat(0x6a6458, { roughness: 0.75 }));
+  spire.position.y = towerH + h * 0.07;
+  spire.rotation.y = Math.PI / 4;
   g.add(spire);
 
   for (let i = 0; i < 4; i++) {
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(w * 0.3, h * 0.25, d * 0.55), stone);
+    const wing = new THREE.Mesh(new THREE.BoxGeometry(w * 0.28, h * 0.22, d * 0.52), stone);
     const side = i < 2 ? -1 : 1;
-    if (i % 2 === 0) wing.position.set(side * w * 0.42, h * 0.125, 0);
-    else wing.position.set(0, h * 0.125, side * d * 0.42);
+    if (i % 2 === 0) wing.position.set(side * w * 0.4, h * 0.11, 0);
+    else wing.position.set(0, h * 0.11, side * d * 0.4);
     wing.castShadow = true;
     g.add(wing);
+  }
+
+  for (let i = 0; i < 4; i++) {
+    const t = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const mini = new THREE.Mesh(new THREE.ConeGeometry(2.5, h * 0.06, 4), stone);
+    mini.position.set(Math.cos(t) * w * 0.38, h * 0.25, Math.sin(t) * d * 0.38);
+    mini.rotation.y = Math.PI / 4;
+    g.add(mini);
   }
   return g;
 }
@@ -249,21 +275,109 @@ function buildHeinzChapel(h) {
   return g;
 }
 
-function buildGlassTower(h, footprint) {
+function buildGlassTower(h, footprint, variant = 'default') {
   const g = new THREE.Group();
   const b = footprintBounds(footprint);
   const w = Math.max(b.w, 35);
   const d = Math.max(b.d, 35);
   const glass = mat(0x88a0b0, { roughness: 0.15, metalness: 0.65, emissive: 0x406080, emissiveIntensity: 0.4, envMapIntensity: 1.2 });
-  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h * 0.94, d), glass);
-  body.position.y = h * 0.47;
+  const bodyH = h * 0.9;
+  const body = new THREE.Mesh(new THREE.BoxGeometry(w, bodyH, d), glass);
+  body.position.y = bodyH * 0.5;
   body.castShadow = true;
   body.receiveShadow = true;
   g.add(body);
 
-  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.6, h * 0.08, 6), mat(0x888888, { metalness: 0.7 }));
-  antenna.position.y = h * 0.98;
+  if (variant === 'pnc') {
+    const crown = new THREE.Mesh(new THREE.BoxGeometry(w * 0.55, h * 0.06, d * 0.55), mat(0x6a8090, { roughness: 0.2, metalness: 0.55 }));
+    crown.position.y = bodyH + h * 0.03;
+    g.add(crown);
+    const spire = new THREE.Mesh(new THREE.ConeGeometry(w * 0.08, h * 0.12, 4), mat(0x788898, { metalness: 0.6 }));
+    spire.position.y = bodyH + h * 0.09;
+    spire.rotation.y = Math.PI / 4;
+    g.add(spire);
+  } else if (variant === 'fifth') {
+    const steps = 5;
+    for (let i = 0; i < steps; i++) {
+      const shrink = 1 - i * 0.12;
+      const stepH = h * 0.028;
+      const step = new THREE.Mesh(new THREE.BoxGeometry(w * shrink, stepH, d * shrink), glass);
+      step.position.y = bodyH + stepH * (i + 0.5);
+      g.add(step);
+    }
+  } else if (variant === 'bny') {
+    const crown = new THREE.Mesh(new THREE.CylinderGeometry(w * 0.22, w * 0.28, h * 0.08, 8), mat(0x708898, { metalness: 0.5 }));
+    crown.position.y = bodyH + h * 0.04;
+    g.add(crown);
+    for (let i = 0; i < 4; i++) {
+      const fin = new THREE.Mesh(new THREE.BoxGeometry(0.5, h * 0.05, w * 0.35), mat(0x8090a0, { metalness: 0.45 }));
+      fin.position.set(0, bodyH + h * 0.075, (i < 2 ? 1 : -1) * d * 0.3);
+      fin.rotation.y = i % 2 === 0 ? 0 : Math.PI / 2;
+      g.add(fin);
+    }
+  }
+
+  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.55, h * 0.07, 6), mat(0x888888, { metalness: 0.7 }));
+  antenna.position.y = h * 0.97;
   g.add(antenna);
+  return g;
+}
+
+function buildStadium(h, footprint, sport = 'baseball') {
+  const g = new THREE.Group();
+  const b = footprintBounds(footprint);
+  const w = Math.max(b.w, sport === 'baseball' ? 200 : 180);
+  const d = Math.max(b.d, sport === 'baseball' ? 160 : 140);
+  const bowlMat = mat(0x4a5248, { roughness: 0.72, metalness: 0.12 });
+  const seatMat = mat(0x1a4a2a, { roughness: 0.85, metalness: 0.05, emissive: 0x0a2010, emissiveIntensity: 0.08 });
+  const fieldMat = mat(0x2a6a32, { roughness: 0.92, metalness: 0.02 });
+
+  const field = new THREE.Mesh(new THREE.BoxGeometry(w * 0.72, 0.6, d * 0.72), fieldMat);
+  field.position.y = 0.3;
+  g.add(field);
+
+  const tiers = sport === 'baseball' ? 3 : 4;
+  for (let t = 0; t < tiers; t++) {
+    const shrink = 1 - t * 0.08;
+    const tierH = h * (sport === 'baseball' ? 0.22 : 0.18);
+    const tierY = 1.2 + t * tierH * 0.85;
+    const segs = sport === 'baseball' ? 20 : 16;
+    for (let i = 0; i < segs; i++) {
+      const a0 = (i / segs) * Math.PI * (sport === 'baseball' ? 1.35 : 2);
+      const a1 = ((i + 1) / segs) * Math.PI * (sport === 'baseball' ? 1.35 : 2);
+      const r0 = w * 0.42 * shrink;
+      const r1 = w * 0.5 * shrink;
+      const x0 = Math.cos(a0 + (sport === 'baseball' ? 0.35 : 0)) * r0;
+      const z0 = Math.sin(a0 + (sport === 'baseball' ? 0.35 : 0)) * d * 0.42 * shrink;
+      const x1 = Math.cos(a1 + (sport === 'baseball' ? 0.35 : 0)) * r1;
+      const z1 = Math.sin(a1 + (sport === 'baseball' ? 0.35 : 0)) * d * 0.5 * shrink;
+      const mx = (x0 + x1) * 0.5;
+      const mz = (z0 + z1) * 0.5;
+      const len = Math.hypot(x1 - x0, z1 - z0);
+      const angle = Math.atan2(z1 - z0, x1 - x0);
+      const section = new THREE.Mesh(new THREE.BoxGeometry(len + 1, tierH, 8 + t * 2), t % 2 === 0 ? seatMat : bowlMat);
+      section.position.set(mx, tierY + tierH * 0.5, mz);
+      section.rotation.y = -angle;
+      section.castShadow = true;
+      g.add(section);
+    }
+  }
+
+  if (sport === 'football') {
+    const lightH = h * 0.35;
+    for (const [ox, oz] of [[-w * 0.42, 0], [w * 0.42, 0], [0, -d * 0.42], [0, d * 0.42]]) {
+      const tower = new THREE.Mesh(new THREE.BoxGeometry(2, lightH, 2), mat(0x5a5a5a, { metalness: 0.4 }));
+      tower.position.set(ox, lightH * 0.5 + h * 0.5, oz);
+      g.add(tower);
+      const bank = new THREE.Mesh(new THREE.BoxGeometry(8, 1.5, 3), mat(0x888888, { emissive: 0xffffcc, emissiveIntensity: 0.3 }));
+      bank.position.set(ox, lightH + h * 0.5, oz);
+      g.add(bank);
+    }
+  } else {
+    const light = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 2, h * 0.55, 8), mat(0x6a6a6a, { metalness: 0.35 }));
+    light.position.set(-w * 0.35, h * 0.55, -d * 0.2);
+    g.add(light);
+  }
   return g;
 }
 
@@ -323,18 +437,58 @@ const BUILDERS = {
   'koppers-tower': (b) => buildArtDecoTower(b.h, b.f, 'dome'),
   'convention-center': (b) => buildConventionCenter(b.h, b.f),
   'heinz-chapel': (b) => buildHeinzChapel(b.h),
-  'pnc-tower': (b) => buildGlassTower(b.h, b.f),
-  'fifth-avenue': (b) => buildGlassTower(b.h, b.f),
-  'bny-mellon': (b) => buildGlassTower(b.h, b.f),
+  'pnc-tower': (b) => buildGlassTower(b.h, b.f, 'pnc'),
+  'fifth-avenue': (b) => buildGlassTower(b.h, b.f, 'fifth'),
+  'bny-mellon': (b) => buildGlassTower(b.h, b.f, 'bny'),
   'oxford-centre': (b) => buildGlassTower(b.h, b.f),
+  'pnc-park': (b) => buildStadium(b.h, b.f, 'baseball'),
+  'acrisure-stadium': (b) => buildStadium(b.h, b.f, 'football'),
 };
+
+const SINGLETON_MESHES = new Set([
+  'us-steel',
+  'fifth-avenue',
+  'bny-mellon',
+  'pnc-tower',
+  'oxford-centre',
+  'gulf-tower',
+  'koppers-tower',
+  'grant-building',
+  'convention-center',
+  'cathedral',
+  'heinz-chapel',
+  'pnc-park',
+  'acrisure-stadium',
+]);
+
+function landmarkScore(b) {
+  const bb = footprintBounds(b.f);
+  let score = b.h || 0;
+  if (b.n === b.n?.toUpperCase()) score += 500;
+  score += bb.w * bb.d * 0.002;
+  return score;
+}
+
+function dedupeLandmarkBuildings(buildings) {
+  const singletons = new Map();
+  const multi = [];
+  for (const b of buildings) {
+    if (!b.landmarkMesh || !b.f) continue;
+    if (SINGLETON_MESHES.has(b.landmarkMesh)) {
+      const prev = singletons.get(b.landmarkMesh);
+      if (!prev || landmarkScore(b) > landmarkScore(prev)) singletons.set(b.landmarkMesh, b);
+    } else {
+      multi.push(b);
+    }
+  }
+  return [...singletons.values(), ...multi];
+}
 
 export function buildLandmarkMeshes(buildings, yFn, waterIndex = null) {
   const group = new THREE.Group();
   group.name = 'landmarks';
 
-  for (const b of buildings) {
-    if (!b.landmarkMesh || !b.f) continue;
+  for (const b of dedupeLandmarkBuildings(buildings)) {
     if (waterIndex && footprintWaterOverlap(b.f, waterIndex) > 0.18) continue;
     const builder = BUILDERS[b.landmarkMesh];
     if (!builder) continue;

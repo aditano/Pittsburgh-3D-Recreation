@@ -227,19 +227,31 @@ function makeWaterMaps() {
     g.addColorStop(1, '#0c2a36');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, w, h);
-    for (let i = 0; i < 180; i++) {
-      ctx.strokeStyle = `rgba(140,190,210,${0.03 + Math.random() * 0.05})`;
+    for (let y = 0; y < h; y += 3) {
+      const band = 0.04 + Math.sin(y * 0.08) * 0.02;
+      ctx.strokeStyle = `rgba(140,190,210,${band})`;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y + Math.sin(y * 0.05) * 4);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 120; i++) {
+      ctx.strokeStyle = `rgba(180,220,235,${0.02 + Math.random() * 0.04})`;
       ctx.beginPath();
       const y = Math.random() * h;
       ctx.moveTo(0, y);
-      ctx.bezierCurveTo(w * 0.3, y + 8, w * 0.6, y - 8, w, y + 4);
+      ctx.bezierCurveTo(w * 0.3, y + 6, w * 0.6, y - 6, w, y + 3);
       ctx.stroke();
     }
   });
   const rough = noiseCanvas(256, 256, (ctx, w, h) => {
     ctx.fillStyle = '#4a4a4a';
     ctx.fillRect(0, 0, w, h);
-    for (let i = 0; i < 400; i++) {
+    for (let y = 0; y < h; y += 2) {
+      ctx.fillStyle = `rgba(255,255,255,${0.08 + Math.sin(y * 0.15) * 0.12})`;
+      ctx.fillRect(0, y, w, 1);
+    }
+    for (let i = 0; i < 300; i++) {
       ctx.fillStyle = `rgba(255,255,255,${Math.random() * 0.35})`;
       ctx.fillRect(Math.random() * w, Math.random() * h, 6, 2);
     }
@@ -597,28 +609,44 @@ export function createCityMaterials({ dayMode = true } = {}) {
       .replace(
         '#include <common>',
         `#include <common>
-         varying vec3 vWorldPos;`,
+         varying vec3 vWorldPos;
+         varying vec2 vFlowUv;`,
       )
       .replace(
         '#include <worldpos_vertex>',
         `#include <worldpos_vertex>
-         vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
+         vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+         vFlowUv = vWorldPos.xz * 0.008;`,
       );
     shader.fragmentShader = shader.fragmentShader
       .replace(
         '#include <common>',
         `#include <common>
          uniform float uTime;
-         varying vec3 vWorldPos;`,
+         varying vec3 vWorldPos;
+         varying vec2 vFlowUv;`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-         float n = sin(vWorldPos.x * 0.018 + uTime * 0.35) * sin(vWorldPos.z * 0.014 + uTime * 0.28);
+         float allegheny = smoothstep(-1400.0, 200.0, vWorldPos.x) * (1.0 - smoothstep(-900.0, 300.0, vWorldPos.z));
+         float monongahela = smoothstep(-1200.0, 4200.0, vWorldPos.x) * smoothstep(-200.0, 1600.0, vWorldPos.z);
+         float ohio = smoothstep(-1600.0, -500.0, vWorldPos.x) * (1.0 - smoothstep(-200.0, 200.0, abs(vWorldPos.z + 78.0)));
+         vec2 flowDir = normalize(vec2(
+           mix(-0.85, 0.65, allegheny) + mix(0.55, 0.95, monongahela) + mix(0.95, -0.35, ohio),
+           mix(0.45, 0.75, allegheny) + mix(0.35, 0.95, monongahela) + mix(-0.15, 0.55, ohio)
+         ) + 1e-5);
+         vec2 scrollUv = vFlowUv + flowDir * uTime * 0.14;
+         float streak = sin(scrollUv.x * 18.0 + scrollUv.y * 6.0) * 0.5 + 0.5;
+         float rippleA = sin(dot(vWorldPos.xz, vec2(0.028, 0.016)) + uTime * 1.35) * 0.5 + 0.5;
+         float rippleB = sin(dot(vWorldPos.xz, vec2(-0.02, 0.034)) - uTime * 0.95 + streak * 2.0) * 0.5 + 0.5;
+         float rippleC = sin(dot(vWorldPos.xz, flowDir * 12.0) - uTime * 1.6) * 0.5 + 0.5;
+         float flow = streak * 0.35 + rippleA * 0.25 + rippleB * 0.2 + rippleC * 0.2;
          float edge = smoothstep(0.0, 18.0, abs(vWorldPos.y));
-         diffuseColor.rgb += n * 0.045 * vec3(0.45, 0.7, 0.85);
-         diffuseColor.rgb += vec3(0.04, 0.06, 0.08) * (1.0 - edge);
-         diffuseColor.rgb *= 0.86 + edge * 0.1;`,
+         diffuseColor.rgb += flow * 0.07 * vec3(0.45, 0.72, 0.9);
+         diffuseColor.rgb += vec3(0.05, 0.08, 0.1) * (1.0 - edge);
+         diffuseColor.rgb *= 0.84 + edge * 0.12;
+         diffuseColor.a *= 0.92 + flow * 0.06;`,
       );
   };
 
