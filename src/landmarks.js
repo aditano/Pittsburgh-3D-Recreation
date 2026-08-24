@@ -96,7 +96,7 @@ function addMerged(group, geoms, material, { cast = true, receive = true } = {})
  *   Duquesne Incline    793 ft of track, 400 ft of rise, opened 1877
  *   Monongahela Incline 635 ft of track, 369 ft of rise, opened 1870
  */
-const INCLINES = [
+export const INCLINES = [
   { n: 'Duquesne Incline', lower: [-1326.2, 128.5], upper: [-1419.3, 294.7], gauge: 5.2, cars: 2 },
   { n: 'Monongahela Incline', lower: [-246.5, 952.3], upper: [-330.2, 1069.4], gauge: 4.4, cars: 2 },
 ];

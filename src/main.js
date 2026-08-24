@@ -28,7 +28,7 @@ import {
   trimTint,
 } from './architecture.js';
 import { buildBridges } from './bridges.js';
-import { buildLandmarkMeshes, isLandmarkMeshBuilding } from './landmarks.js';
+import { buildLandmarkMeshes, isLandmarkMeshBuilding, INCLINES } from './landmarks.js';
 import { buildStreetLights, buildRooftopDetails, buildStreetLightGlows } from './details.js';
 import { createSkyDome, createEnvironmentMap } from './sky.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
@@ -595,15 +595,18 @@ function makeParkMask(parks) {
  * Trees go where Pittsburgh actually has them: inside mapped parks and on the
  * steep wooded hillsides that wall in the river valleys.
  */
-function plantTrees(parks, terrainFn, waterIndex, yFn) {
+function plantTrees(parks, terrainFn, waterIndex, yFn, wooded) {
   const dummy = new THREE.Object3D();
   const inPark = makeParkMask(parks);
   const positions = [];
 
-  for (let x = -5200; x <= 7600; x += 26) {
-    for (let z = -4600; z <= 3600; z += 26) {
-      const jx = x + (hash01(x, z) - 0.5) * 20;
-      const jz = z + (hash01(z, x) - 0.5) * 20;
+  // 17 m spacing. Canopy has to close to read as woodland from the air; at the
+  // 26 m the slope test alone used, the crowns never touch and the hillsides
+  // came out as scattered bushes on bare ground rather than as forest.
+  for (let x = -5200; x <= 7600; x += 17) {
+    for (let z = -4600; z <= 3600; z += 17) {
+      const jx = x + (hash01(x, z) - 0.5) * 14;
+      const jz = z + (hash01(z, x) - 0.5) * 14;
       if (waterIndex.inside(jx, jz) || waterIndex.nearBank(jx, jz)) continue;
 
       const slope =
@@ -613,10 +616,13 @@ function plantTrees(parks, terrainFn, waterIndex, yFn) {
         ) / 80;
 
       const park = inPark(jx, jz);
+      const wood = wooded(jx, jz) === 1;
       const steep = slope > 0.16;
-      if (!park && !steep) continue;
+      if (!park && !wood && !steep) continue;
 
-      const density = park ? 0.42 : Math.min(0.72, (slope - 0.16) * 3.4);
+      // Mapped woodland is closed canopy; a park is mown grass with specimen
+      // trees on it; an unmapped steep slope is scrub thickening with gradient.
+      const density = wood ? 0.88 : park ? 0.3 : Math.min(0.66, (slope - 0.16) * 3.2);
       if (hash01(jz * 1.7, jx * 1.3) > density) continue;
 
       positions.push(jx, yFn(jx, jz), jz, 0.7 + hash01(jx, jz) * 0.75);
@@ -665,8 +671,9 @@ function plantTrees(parks, terrainFn, waterIndex, yFn) {
       const h = hash01(x * 1.7, z * 1.3);
       // Instance colours are consumed in the working (linear) space, so the
       // lightness has to be authored as sRGB and converted or the canopy comes
-      // out bleached. Foliage sits near 0.10 albedo.
-      tint.setHSL(0.24 + h * 0.07, 0.42 + h * 0.18, 0.26 + h * 0.14, THREE.SRGBColorSpace);
+      // out bleached. Broadleaf foliage sits near 0.09 albedo and is far less
+      // saturated than a paint-chip green - closer to olive than to emerald.
+      tint.setHSL(0.22 + h * 0.06, 0.24 + h * 0.16, 0.24 + h * 0.13, THREE.SRGBColorSpace);
       colors[n * 3] = tint.r;
       colors[n * 3 + 1] = tint.g;
       colors[n * 3 + 2] = tint.b;
@@ -677,6 +684,82 @@ function plantTrees(parks, terrainFn, waterIndex, yFn) {
     group.add(mesh);
   }
   return group;
+}
+
+/**
+ * Labels are anchored to the footprint the dataset actually holds.
+ *
+ * The `landmarks` array in the dataset carries hand-placed anchors that have
+ * drifted badly from the geometry they name - the Carnegie Museum label sat
+ * 780 m west of the museum, the Monongahela Incline label 1.1 km west of the
+ * incline - so a viewer reading the labels was being told the buildings were in
+ * the wrong place even where they were not. Resolving each label against the
+ * dataset by name keeps the two in step by construction.
+ *
+ * Bridges are labelled by `buildBridges` from their own deck geometry, so the
+ * six bridge entries in the array are dropped rather than drawn twice.
+ */
+const LABELLED = [
+  ['U.S. STEEL TOWER', 'U.S. Steel Tower'],
+  ['PPG PLACE', 'One PPG Place'],
+  ['BNY MELLON CENTER', 'BNY Mellon Center'],
+  ['FIFTH AVENUE PLACE', 'Fifth Avenue Place'],
+  ['ONE OXFORD CENTRE', 'One Oxford Centre'],
+  ['TOWER AT PNC PLAZA', 'Tower at PNC Plaza'],
+  ['GULF TOWER', 'Gulf Tower'],
+  ['KOPPERS BUILDING', 'Koppers Building'],
+  ['GRANT BUILDING', 'Grant Building'],
+  ['UNION TRUST BUILDING', 'Union Trust Building'],
+  ['ALLEGHENY COUNTY COURTHOUSE', 'Allegheny County Courthouse'],
+  ['CONVENTION CENTER', 'David L. Lawrence Convention Center'],
+  ['PNC PARK', 'PNC Park'],
+  ['ACRISURE STADIUM', 'Acrisure Stadium'],
+  ['PPG PAINTS ARENA', 'PPG Paints Arena'],
+  ['ANDY WARHOL MUSEUM', 'The Andy Warhol Museum'],
+  ['SCIENCE CENTER', 'Kamin Science Center'],
+  ['CATHEDRAL OF LEARNING', 'Cathedral of Learning'],
+  ['HEINZ MEMORIAL CHAPEL', 'Heinz Memorial Chapel'],
+  ['CARNEGIE MUSEUM', 'Carnegie Museum of Natural History'],
+  ['SOLDIERS & SAILORS MEMORIAL', 'Soldiers and Sailors Memorial Hall'],
+  ['PHIPPS CONSERVATORY', 'Phipps Conservatory'],
+];
+
+/** Districts, which name a place rather than a building. */
+const DISTRICT_LABELS = [
+  ['POINT STATE PARK', -800, -70, 40],
+  ['MOUNT WASHINGTON', -720, 1000, 60],
+  ['THE STRIP DISTRICT', 1500, -900, 50],
+  ['OAKLAND', 4200, 0, 60],
+];
+
+function placeLandmarkLabels(data, yFn) {
+  const byName = new Map();
+  for (const b of data.buildings || []) {
+    if (!b.n || !b.f || b.f.length < 4) continue;
+    const prev = byName.get(b.n);
+    if (!prev || (b.h || 0) > (prev.h || 0)) byName.set(b.n, b);
+  }
+  const loose = (want) => {
+    const key = want.toLowerCase();
+    for (const [n, b] of byName) if (n.toLowerCase().includes(key)) return b;
+    return null;
+  };
+
+  for (const [text, want] of LABELLED) {
+    const b = byName.get(want) || loose(want);
+    if (!b) continue;
+    const [cx, cz] = footprintCentroid(b.f);
+    addLabel(text, new THREE.Vector3(cx, yFn(cx, cz) + Math.max(24, b.h || 24) + 28, cz));
+  }
+  for (const [text, x, z, lift] of DISTRICT_LABELS) {
+    addLabel(text, new THREE.Vector3(x, yFn(x, z) + lift, z));
+  }
+  // Straight off the funicular alignments the meshes are built from, so the
+  // label cannot drift away from the incline it names.
+  for (const inc of INCLINES) {
+    const [x, z] = inc.upper;
+    addLabel(inc.n.toUpperCase(), new THREE.Vector3(x, yFn(x, z) + 34, z));
+  }
 }
 
 function buildingTint(b, cx, cz) {
@@ -943,14 +1026,10 @@ async function buildCity(data, landcover) {
   const bridgeGroup = buildBridges(data.bridges || [], { yFn, waterIndex, addLabel, dayMode: DAY_MODE });
   scene.add(bridgeGroup);
 
-  const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn);
+  const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn, wooded);
   if (trees) scene.add(trees);
 
-  for (const lm of data.landmarks || []) {
-    const [x, z] = lm.p;
-    const y = yFn(x, z) + (lm.h || 40) + 30;
-    addLabel(lm.n, new THREE.Vector3(x, y, z));
-  }
+  placeLandmarkLabels(data, yFn);
 
   layersEl.textContent = `buildings ${buildingCount.toLocaleString()} · live`;
   return buildingCount;
