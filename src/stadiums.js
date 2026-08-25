@@ -2076,7 +2076,7 @@ export function buildPpgArena(spec = {}) {
   const steel = mat(0x5a6068, { roughness: 0.4, metalness: 0.68, envMapIntensity: 1.0 });
   // The dome is the largest surface in any view from above; matte standing-seam
   // rather than bright sheet, or the sky reflection flattens it to white.
-  const roofMat = mat(0x8f959c, { roughness: 0.7, metalness: 0.18, envMapIntensity: 0.35 });
+  const roofMat = mat(0x7c828a, { roughness: 0.7, metalness: 0.18, envMapIntensity: 0.35 });
   const glass = mat(0x8fb6cf, {
     roughness: 0.08,
     metalness: 0.55,
