@@ -15,14 +15,16 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { blackFraction, decode } from './png.mjs';
 
 const out = process.argv[2] || '/tmp/preview.png';
 const query = process.argv[3] || '';
 const baseUrl = process.env.PREVIEW_BASE || 'http://127.0.0.1:5177';
 const url = `${baseUrl}/landmark-preview.html${query ? `?${query}` : ''}`;
 
-const WIDTH = Number(process.env.SHOT_WIDTH || 1400);
-const HEIGHT = Number(process.env.SHOT_HEIGHT || 900);
+// Same ceiling as scripts/shoot.mjs: SwiftShader drops tiles above this.
+const WIDTH = Number(process.env.SHOT_WIDTH || 960);
+const HEIGHT = Number(process.env.SHOT_HEIGHT || 540);
 const profile = `/tmp/preview-profile-${process.pid}`;
 
 mkdirSync(dirname(out), { recursive: true });
@@ -133,7 +135,17 @@ if (!ready) {
 
 await sleep(600);
 const shot = await call('Page.captureScreenshot', { format: 'png' });
-writeFileSync(out, Buffer.from(shot.data, 'base64'));
+const buf = Buffer.from(shot.data, 'base64');
+const black = blackFraction(decode(buf));
+if (black > 0.02) {
+  console.log(
+    `FAILED: ${(black * 100).toFixed(0)}% of the frame is #000000; the rasteriser dropped tiles.`,
+  );
+  ws.close();
+  chrome.kill('SIGKILL');
+  process.exit(1);
+}
+writeFileSync(out, buf);
 console.log(`${out}  ${hud}`);
 if (errors.length) console.log(`  console errors: ${errors.join(' | ')}`);
 

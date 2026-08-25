@@ -983,8 +983,10 @@ function buildingTint(b, cx, cz) {
   if (/ppg/.test(n)) return new THREE.Color(0xd8ece6);
   if (/koppers/.test(n)) return new THREE.Color(0x4a7a58);
   if (/gulf tower|grant building/.test(n)) return new THREE.Color(0x9a9488);
-  if (/cathedral|chapel|church/.test(n)) return new THREE.Color(0x8a8478);
-  if (/carnegie|sandstone|soldiers/.test(n)) return new THREE.Color(0x8a8070);
+  if (/cathedral|chapel|church/.test(n)) return new THREE.Color(0xc8c2b6);
+  // These tints multiply the facade atlas, including the roof pin. Anything
+  // much below ~0.7 crushed Carnegie's slate decks to a black slab in Oakland.
+  if (/carnegie|sandstone|soldiers/.test(n)) return new THREE.Color(0xd4cfc4);
   if (/convention/.test(n)) return new THREE.Color(0xd8dcd8);
   // The family palette already carries the hue, so this only needs to break up
   // the repetition: a wide spread in value plus a slight warm/cool drift, so two
@@ -1136,6 +1138,7 @@ async function buildCity(data, landcover, fabric) {
     copper: [],
     convention: [],
     steelTower: [],
+    glasshouse: [],
   };
   let buildingCount = 0;
   const roofGeoms = [];
@@ -1186,7 +1189,7 @@ async function buildCity(data, landcover, fabric) {
       if (!wall) continue;
 
       tintGeometry(wall, tint);
-      buckets[family].push(wall);
+      (buckets[family] ||= []).push(wall);
       if (trim) {
         tintGeometry(trim, trimTint(tint));
         buckets[family].push(trim);
@@ -1268,7 +1271,7 @@ async function buildCity(data, landcover, fabric) {
         if (!wall) continue;
 
         tintGeometry(wall, buildingTint(b, ...footprintCentroid(b.f)));
-        buckets[family].push(wall);
+        (buckets[family] ||= []).push(wall);
         fabricCount += 1;
       } catch {
         /* skip degenerate */

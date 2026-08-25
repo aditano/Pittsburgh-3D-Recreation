@@ -103,6 +103,7 @@ const FACADE_GRID = {
   copper: [5, 8],
   convention: [10, 4],
   steelTower: [7, 11],
+  glasshouse: [6, 8],
 };
 const DEFAULT_GRID = [6, 8];
 
