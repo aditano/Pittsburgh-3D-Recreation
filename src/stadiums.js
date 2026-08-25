@@ -218,6 +218,17 @@ function nodeYaw(p) {
   return Math.atan2(p.nx, p.nz);
 }
 
+function lerpNode(a, b, t) {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    z: a.z + (b.z - a.z) * t,
+    nx: a.nx + (b.nx - a.nx) * t,
+    nz: a.nz + (b.nz - a.nz) * t,
+    su: a.su,
+    sv: a.sv,
+  };
+}
+
 /** Box on a circular drum at polar angle `a`: local +X tangential, +Z outward. */
 function drumBox(w, h, d, cx, cz, radius, y, a) {
   return box(w, h, d, cx + Math.cos(a) * radius, y, cz + Math.sin(a) * radius, Math.PI / 2 - a);
@@ -447,6 +458,11 @@ function sectionCap(section, node) {
  * `aisleStep` nodes, and dark vomitory mouths punched through the back riser.
  * The radial aisles are what break a bowl into wedge-shaped sections; without
  * them a swept deck reads as one continuous corduroy ramp.
+ *
+ * An aisle is a 4 ft walkway between 60 ft wide sections, so it has to be drawn
+ * as a narrow strip inside one node span rather than the whole span -- a full
+ * span makes the pale concrete a fifth of the bowl surface and the deck reads as
+ * corduroy from the air, which is the opposite of the intended effect.
  */
 function seatingTier({
   path,
@@ -457,24 +473,25 @@ function seatingTier({
   dark,
   aisleStep = 6,
   aisleFrom = 0,
+  aisleFrac = 0.3,
   vomStep = 0,
   vomWidth = 3.2,
 }) {
   seats.push(sweepStrip(path, section.seats, closed));
-  const lifted = section.seats.map(([u, v]) => [u, v + 0.14]);
+  const lifted = section.seats.map(([u, v]) => [u, v + 0.12]);
   const spans = closed ? path.length : path.length - 1;
   if (aisles && aisleStep > 0) {
+    const half = aisleFrac / 2;
     for (let i = aisleFrom; i < spans; i += aisleStep) {
       const a = path[i];
       const b = path[(i + 1) % path.length];
-      aisles.push(sweepStrip([a, b], lifted));
+      aisles.push(sweepStrip([lerpNode(a, b, 0.5 - half), lerpNode(a, b, 0.5 + half)], lifted));
     }
   }
   if (dark && vomStep > 0) {
     const backU = section.uTop - 1.6;
     for (let i = Math.floor(vomStep / 2); i < spans; i += vomStep) {
       const p = path[i];
-      aisles.push(null);
       dark.push(
         box(vomWidth, 3.0, 2.4, p.x + p.nx * backU, section.vTop - 1.2, p.z + p.nz * backU, nodeYaw(p)),
       );
@@ -488,7 +505,7 @@ function seatingTier({
  * exteriors are read almost entirely from this vertical rhythm, so a flat
  * swept wall always looks like a warehouse.
  */
-function colonnade({ path, y0, y1, step, colW, colD, cols, braces, braceEvery = 0, outset = 0 }) {
+function colonnade({ path, y0, y1, step, colW, colD, cols, braces, braceEvery = 0, braceBands = [], outset = 0 }) {
   const spans = path.length - 1;
   for (let i = 0; i < path.length; i += step) {
     const p = path[i];
@@ -499,11 +516,13 @@ function colonnade({ path, y0, y1, step, colW, colD, cols, braces, braceEvery = 
     const bay = Math.hypot(q.x - p.x, q.z - p.z);
     const mx = (p.x + q.x) * 0.5 + p.nx * outset;
     const mz = (p.z + q.z) * 0.5 + p.nz * outset;
-    const rise = y1 - y0;
-    const diag = Math.hypot(bay, rise);
-    const tilt = Math.atan2(rise, bay);
-    for (const sgn of [1, -1]) {
-      braces.push(brace(diag, 0.55, colD * 0.6, sgn * tilt, mx, (y0 + y1) * 0.5, mz, a));
+    for (const [b0, b1] of braceBands) {
+      const rise = b1 - b0;
+      const diag = Math.hypot(bay, rise);
+      const tilt = Math.atan2(rise, bay);
+      for (const sgn of [1, -1]) {
+        braces.push(brace(diag, 0.5, colD * 0.5, sgn * tilt, mx, (b0 + b1) * 0.5, mz, a));
+      }
     }
   }
 }
@@ -1092,7 +1111,12 @@ export function buildPncPark(spec = {}) {
   const h = clamp(spec.h, 30, 46);
   const hs = clamp(h / 36, 0.9, 1.15);
   const s = fitScale(spec.f, 280, 218);
-  const yaw = surveyedAxis(spec.orientYaw, 29.7 * DEG);
+  // Home plate to dead centre bears 111 deg (ESE), so local +X sits 21 deg off
+  // east. Bisecting the two foul lines of the OSM pitch ring gives 110.8 deg and
+  // Clem's survey gives 111.2; that also puts the foul poles on Federal Street
+  // (left, bearing 76) and the riverfront trail (right, bearing 156), which is
+  // how the park is described. `field.open` is 104 deg and reads ~7 deg short.
+  const yaw = surveyedAxis(spec.orientYaw, 21 * DEG);
 
   const oriented = new THREE.Group();
   oriented.rotation.y = -yaw;
@@ -1100,13 +1124,20 @@ export function buildPncPark(spec = {}) {
   group.add(oriented);
   const core = new THREE.Group();
 
-  const limestone = mat(0xcabf9f, { roughness: 0.85, metalness: 0.04 });
-  const limeDark = mat(0xa79b7d, { roughness: 0.88, metalness: 0.04 });
-  const concrete = mat(0x9e9a8f, { roughness: 0.9, metalness: 0.04 });
+  // Kasota stone is a warm ochre dolomitic limestone, not a white marble. Held
+  // well below its apparent tone because the sun plus ACES exposure lifts it.
+  const limestone = mat(0xb0a17c, { roughness: 0.85, metalness: 0.04 });
+  const limeDark = mat(0x8e8262, { roughness: 0.88, metalness: 0.04 });
+  const concrete = mat(0x8d8a80, { roughness: 0.9, metalness: 0.04 });
   const steel = mat(0x1f3b66, { roughness: 0.48, metalness: 0.6, envMapIntensity: 0.9 });
   const seatLower = mat(0x25436f, { roughness: 0.88, metalness: 0.04 });
   const seatUpper = mat(0x1b3358, { roughness: 0.88, metalness: 0.04 });
-  const padding = mat(0x123a20, { roughness: 0.92, metalness: 0.03 });
+  const roofDeck = mat(0x9fa5a9, { roughness: 0.52, metalness: 0.4, envMapIntensity: 0.6 });
+  // The outfield wall including the 21 ft Clemente Wall is padded navy, not
+  // green; the only green mass out there is the batter's-eye rhododendron bank.
+  const padding = mat(0x16263f, { roughness: 0.92, metalness: 0.03 });
+  const foliage = mat(0x24471f, { roughness: 0.95, metalness: 0.02 });
+  const shade = mat(0x1b1d20, { roughness: 0.85, metalness: 0.05 });
   const glass = mat(0x8fb2c8, {
     roughness: 0.12,
     metalness: 0.5,
@@ -1123,10 +1154,13 @@ export function buildPncPark(spec = {}) {
   const stoneDark = [];
   const conc = [];
   const steelG = [];
+  const roofG = [];
   const seatsA = [];
   const seatsB = [];
   const aisles = [];
   const dark = [];
+  const shades = [];
+  const green = [];
   const glassG = [];
   const boards = [];
   const lamps = [];
@@ -1168,7 +1202,7 @@ export function buildPncPark(spec = {}) {
     section: lower,
     seats: seatsA,
     aisles,
-    dark,
+    dark: shades,
     aisleStep: 5,
     aisleFrom: 2,
     vomStep: 10,
@@ -1218,7 +1252,7 @@ export function buildPncPark(spec = {}) {
     section: upper,
     seats: seatsB,
     aisles,
-    dark,
+    dark: shades,
     aisleStep: 5,
     aisleFrom: 2,
     vomStep: 12,
@@ -1247,14 +1281,17 @@ export function buildPncPark(spec = {}) {
   );
 
   // --- steel roof over the back rows, carried on navy trusses --------------
+  // Light metal deck on exposed navy truss, the Forbes Field reference: the
+  // canopy only shelters the top rows and the press box, and the parapet of
+  // the limestone shell still shows above the upper-deck fascia.
   const roofY = upper.vTop + 4.2 * hs;
-  const roofIn = upper.uTop - 9.0;
-  steelG.push(
+  const roofIn = upper.uTop - 8.5;
+  roofG.push(
     sweepStrip(lowerPath, [
       [roofIn, roofY],
-      [upper.uOut + 1.4, roofY],
-      [upper.uOut + 1.4, roofY - 1.1],
-      [roofIn, roofY - 1.1],
+      [upper.uOut + 0.4, roofY],
+      [upper.uOut + 0.4, roofY - 1.0],
+      [roofIn, roofY - 1.0],
     ]),
   );
   stone.push(
@@ -1292,11 +1329,22 @@ export function buildPncPark(spec = {}) {
     ]),
   );
   // Every other bay of the arcade is an opening; the rest is a rusticated pier.
+  // The openings run nearly the full height of the arcade storey, because the
+  // masonry arches onto the public street arcade are the Forbes Field quotation
+  // the whole elevation is built around.
   for (let i = 0; i < facadePath.length; i += 2) {
     const p = facadePath[i];
     const a = nodeYaw(p);
     stoneDark.push(box(2.6, arcadeTop, 2.3, p.x + p.nx * 1.0, arcadeTop * 0.5, p.z + p.nz * 1.0, a));
-    dark.push(box(2.9, 5.2, 0.5, p.x + p.nx * 2.0, 2.6, p.z + p.nz * 2.0, a));
+    shades.push(box(3.4, 6.6, 0.5, p.x + p.nx * 2.0, 3.3, p.z + p.nz * 2.0, a));
+    // Keystone and springing course above each arch.
+    stoneDark.push(box(3.9, 0.7, 0.7, p.x + p.nx * 2.05, 7.0, p.z + p.nz * 2.05, a));
+  }
+  // Pilasters carrying the upper wall, on the same bay rhythm as the arcade.
+  for (let i = 1; i < facadePath.length; i += 2) {
+    const p = facadePath[i];
+    const a = nodeYaw(p);
+    stone.push(box(1.8, parapet - arcadeTop, 1.0, p.x + p.nx * 2.0, (parapet + arcadeTop) * 0.5, p.z + p.nz * 2.0, a));
   }
   // Thin jagged stone courses band the smooth upper wall.
   for (const y of [12.0, 16.4, 20.8]) {
@@ -1360,7 +1408,9 @@ export function buildPncPark(spec = {}) {
       // Baseball-card tapestries of Pirates legends face Federal Street.
       stoneDark.push(drumBox(5.6, 9.0, 0.5, cx, cz, radius + 0.3, 13.5, a));
     }
-    dark.push(cyl(radius - 1.4, radius - 1.4, height - 1.0, 14, cx, (height - 1.0) * 0.5, cz));
+    // The ramp helix is open to the air, so what shows between the columns is
+    // shadowed soffit, not a solid drum.
+    shades.push(cyl(radius - 1.4, radius - 1.4, height - 1.0, 14, cx, (height - 1.0) * 0.5, cz));
   }
 
   // --- right-field riverwalk terrace, kept low for the skyline view ---------
@@ -1491,7 +1541,7 @@ export function buildPncPark(spec = {}) {
   );
   for (let i = 0; i < 7; i++) {
     const a = (-10 + i * 3.2) * DEG;
-    dark.push(cyl(2.4, 2.0, 3.0, 6, Math.cos(a) * 120, 8.4, Math.sin(a) * 120));
+    green.push(cyl(2.4, 2.0, 3.0, 6, Math.cos(a) * 120, 8.4, Math.sin(a) * 120));
   }
 
   const parts = [
@@ -1500,9 +1550,12 @@ export function buildPncPark(spec = {}) {
     [conc, concrete],
     [aisles, concrete],
     [steelG, steel],
+    [roofG, roofDeck],
     [seatsA, seatLower],
     [seatsB, seatUpper],
     [dark, padding],
+    [shades, shade],
+    [green, foliage],
     [glassG, glass],
     [boards, board],
     [lamps, lamp],
@@ -1564,20 +1617,28 @@ export function buildAcrisureStadium(spec = {}) {
   group.add(oriented);
   const core = new THREE.Group();
 
-  const precast = mat(0xbdb193, { roughness: 0.87, metalness: 0.05 });
-  const concrete = mat(0x8f8b81, { roughness: 0.9, metalness: 0.05 });
+  // Buff architectural precast. Kept well below the tone it reads at, because
+  // the scene's sun plus ACES exposure lifts a mid-tan to near cream.
+  const precast = mat(0x82775f, { roughness: 0.87, metalness: 0.05 });
+  const concrete = mat(0x6f6b62, { roughness: 0.9, metalness: 0.05 });
   const steel = mat(0x3b3f45, { roughness: 0.44, metalness: 0.66, envMapIntensity: 0.95 });
-  const steelPale = mat(0x9aa0a4, { roughness: 0.5, metalness: 0.4, envMapIntensity: 0.6 });
+  // The canopy deck is the largest single surface seen from above, and it is
+  // painted steel rather than bright sheet. It has to stay matte: any metalness
+  // on a plane that big mirrors the sky and turns the whole stadium white, which
+  // is what made this read as a clad drum instead of an exposed frame.
+  const steelPale = mat(0x474c52, { roughness: 0.78, metalness: 0.08, envMapIntensity: 0.15 });
   const seatGold = mat(0xe8b21c, { roughness: 0.9, metalness: 0.05 });
   const seatBlack = mat(0x22242a, { roughness: 0.9, metalness: 0.06 });
-  const glass = mat(0x8fb4cc, {
-    roughness: 0.1,
-    metalness: 0.55,
+  // 50,000 sq ft of PPG glazing. Kept dark and only mildly reflective: at full
+  // envMap the stair towers blow out to white boxes and read as solid panel.
+  const glass = mat(0x53718a, {
+    roughness: 0.14,
+    metalness: 0.5,
     transparent: true,
-    opacity: 0.6,
-    emissive: 0x263f56,
-    emissiveIntensity: 0.4,
-    envMapIntensity: 1.4,
+    opacity: 0.55,
+    emissive: 0x1b2c3c,
+    emissiveIntensity: 0.16,
+    envMapIntensity: 0.85,
   });
   const board = mat(0x0a0c0f, { roughness: 0.3, metalness: 0.35, emissive: 0x3a4460, emissiveIntensity: 0.6 });
   const lamp = mat(0xe4e8dc, { roughness: 0.28, metalness: 0.5, emissive: 0xfff2c8, emissiveIntensity: 1.0 });
@@ -1839,17 +1900,24 @@ export function buildAcrisureStadium(spec = {}) {
       dark.push(box(6.4, 3.6, 0.6, p.x + p.nx * 2.4, y, p.z + p.nz * 2.4, a));
     }
   }
+  // Columns on a 9 m bay, X-braced in every other bay: 12,000 tons of exposed
+  // structural steel is what the building is remembered for.
   colonnade({
     path: outer,
     y0: 0,
     y1: ringTop,
     step: 3,
-    colW: 1.6,
-    colD: 3.0,
+    colW: 2.0,
+    colD: 3.4,
     cols: steelG,
     braces: steelG,
-    braceEvery: 2,
-    outset: 2.0,
+    braceEvery: 3,
+    braceBands: [
+      [5.0, podium],
+      [podium + 2.4, upper.v0],
+      [upper.v0 + 2.0, ringTop - 3.0],
+    ],
+    outset: 2.2,
   });
   // Horizontal ring beams tie the frame at each concourse level.
   for (const y of [podium + 1.2, upper.v0 + 1.0, (upper.v0 + upper.vTop) * 0.5]) {
@@ -1863,11 +1931,11 @@ export function buildAcrisureStadium(spec = {}) {
     );
   }
   // Ring beam at the top, and the glazed upper concourse behind the frame.
-  steelG2.push(
+  steelG.push(
     sweepStrip(offsetPath(outer, 1.4), [
       [0, ringTop + 1.4],
-      [2.0, ringTop + 1.4],
-      [2.0, ringTop - 3.0],
+      [2.2, ringTop + 1.4],
+      [2.2, ringTop - 3.0],
       [0, ringTop - 3.0],
     ]),
   );
@@ -1877,6 +1945,26 @@ export function buildAcrisureStadium(spec = {}) {
       [0, podium + 1.6],
     ]),
   );
+  // Street-level gates: glazed openings under a steel entry canopy.
+  glassG.push(
+    sweepStrip(offsetPath(outer, 2.6), [
+      [0, 4.6],
+      [0, 0.2],
+    ]),
+  );
+  steelG.push(
+    sweepStrip(offsetPath(outer, 2.4), [
+      [0, 5.4],
+      [2.6, 5.4],
+      [2.6, 4.7],
+      [0, 4.7],
+    ]),
+  );
+  for (let i = 2; i < outer.length - 2; i += 3) {
+    const p = outer[i];
+    const a = nodeYaw(p);
+    dark.push(box(3.4, 4.2, 0.8, p.x + p.nx * 2.9, 2.1, p.z + p.nz * 2.9, a));
+  }
 
   // Glazed escalator and stair towers standing off the frame.
   for (let i = 6; i < outer.length - 6; i += 13) {
@@ -1887,14 +1975,16 @@ export function buildAcrisureStadium(spec = {}) {
     const oz = p.z + p.nz * 8.0;
     glassG.push(box(14, top, 13, ox, top * 0.5, oz, a));
     for (const k of [-1, 1]) {
-      steelG.push(box(0.9, top, 0.9, ox + Math.cos(a) * k * 6.8, top * 0.5, oz - Math.sin(a) * k * 6.8, a));
+      steelG.push(box(1.1, top, 1.1, ox + Math.cos(a) * k * 6.8, top * 0.5, oz - Math.sin(a) * k * 6.8, a));
     }
-    // Escalator runs climbing the tower face.
+    // Escalator runs climbing the tower face, on their own concrete beams.
     for (let k = 0; k < 3; k++) {
-      conc.push(brace(19, 0.9, 5.0, 0.45, ox, 2.5 + k * (top - 5) / 3, oz + 0, a));
+      const y = 4.0 + (k * (top - 6.5)) / 3;
+      conc.push(brace(18, 1.1, 5.0, k % 2 ? -0.44 : 0.44, ox, y, oz, a));
+      steelG.push(box(15.4, 0.5, 5.6, ox, y + 4.6, oz, a));
     }
-    steelG2.push(box(15.4, 1.3, 14.4, ox, top + 0.65, oz, a));
-    steelG.push(box(15, 1.0, 5.0, ox, 1.0, oz, a));
+    steelG.push(box(15.6, 1.4, 14.6, ox, top + 0.7, oz, a));
+    conc.push(box(15, 1.4, 13.6, ox, 0.7, oz, a));
   }
   // The two south corners carry the open-air ramps up to the upper concourse.
   for (const t of [ACR_UPPER_OPEN, -ACR_UPPER_OPEN]) {
@@ -1984,7 +2074,9 @@ export function buildPpgArena(spec = {}) {
   const panel = mat(0xb9bec4, { roughness: 0.42, metalness: 0.52, envMapIntensity: 1.0 });
   const accent = mat(0x8d8878, { roughness: 0.72, metalness: 0.12 });
   const steel = mat(0x5a6068, { roughness: 0.4, metalness: 0.68, envMapIntensity: 1.0 });
-  const roofMat = mat(0xa8adb3, { roughness: 0.52, metalness: 0.45, envMapIntensity: 1.0 });
+  // The dome is the largest surface in any view from above; matte standing-seam
+  // rather than bright sheet, or the sky reflection flattens it to white.
+  const roofMat = mat(0x8f959c, { roughness: 0.7, metalness: 0.18, envMapIntensity: 0.35 });
   const glass = mat(0x8fb6cf, {
     roughness: 0.08,
     metalness: 0.55,
