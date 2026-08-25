@@ -116,28 +116,31 @@ export function buildRooftopDetails(buildings, yFn) {
     const baseY = yFn(cx, cz) + h;
 
     if (roof === 'antenna') {
-      const pole = new THREE.CylinderGeometry(0.3, 0.5, h * 0.06, 5);
-      pole.translate(cx, baseY + h * 0.03, cz);
+      const pole = new THREE.CylinderGeometry(0.16, 0.3, h * 0.075, 5);
+      pole.translate(cx, baseY + h * 0.0375, cz);
       antennaGeoms.push(pole);
-      const dish = new THREE.CylinderGeometry(1.2, 1.2, 0.3, 8);
-      dish.translate(cx, baseY + h * 0.06, cz);
+      const dish = new THREE.CylinderGeometry(1, 1, 0.25, 8);
+      dish.translate(cx, baseY + h * 0.045, cz);
       antennaGeoms.push(dish);
     } else if (roof === 'spire') {
-      const spire = new THREE.ConeGeometry(1.8, h * 0.05, 4);
-      spire.translate(cx, baseY + h * 0.025, cz);
+      const spire = new THREE.ConeGeometry(1.4, h * 0.055, 4);
+      spire.translate(cx, baseY + h * 0.0275, cz);
       spireGeoms.push(spire);
     }
   }
 
+  // A mast is a few centimetres of painted steel against the sky, so it reads
+  // as a dark line or as nothing at all. At 0x6a6a6a with metalness 0.45 these
+  // caught the sky and turned into pale flecks floating over the skyline.
   const detailMat = new THREE.MeshStandardMaterial({
-    color: 0x6a6a6a,
-    roughness: 0.5,
-    metalness: 0.45,
+    color: 0x2c2d2f,
+    roughness: 0.72,
+    metalness: 0.2,
   });
   const spireMat = new THREE.MeshStandardMaterial({
-    color: 0x888880,
-    roughness: 0.55,
-    metalness: 0.3,
+    color: 0x4a4a46,
+    roughness: 0.7,
+    metalness: 0.15,
   });
 
   if (antennaGeoms.length) {

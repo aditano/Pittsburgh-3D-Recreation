@@ -15,8 +15,13 @@
  * texture derivative, so it samples mip 0 and holds its exact tone at any
  * range, while the window grid itself has long since averaged out.
  *
- * All relief steps INWARD from the footprint. These are party-wall lots and a
- * projecting cornice lands inside the neighbour.
+ * Relief steps INWARD from the footprint, with one deliberate exception. These
+ * are party-wall lots, so a projecting element lands inside the neighbour - but
+ * a cornice flush with the wall is a tone change with no shadow under it, and
+ * the shadow is what carries the eave line from the street. So the corona and
+ * the house eaves project 0.1-0.95 m (`corniceProj`, `roofPlan().overhang`),
+ * which is a foot or two into a neighbour that has a cornice of its own there
+ * anyway, and nothing else ever leaves the footprint.
  *
  * Everything here returns plain `BufferGeometry` so the caller can push results
  * straight into the existing per-material merge buckets in `main.js`. No
@@ -32,13 +37,14 @@
  * public/data/pittsburgh.json:
  *
  *   tier   count   avg tris   max tris   hard cap
- *   0        133       15.4         36          -
- *   1      6,449      106.7        424        420
- *   2        869      314.1      1,322      1,900
+ *   0        133       15.6         36          -
+ *   1      6,434      132.7        500        460
+ *   2        921      404.3      3,725      2,100
  *
- * City total 1.25M triangles against 639k for the previous articulation and
- * 112k for plain prisms, generated in ~1.0 s. Dial the whole thing up or down
- * from `detailTier()`, `courseCount()` and `pierCount()`.
+ * City total 1.46M triangles (230k of it roofscape) against 112k for plain
+ * prisms, generated in ~0.7 s. The tier-2 maximum is a landmark, which gets
+ * 3,200 plus whatever its crown costs. Dial the whole thing up or down from
+ * `detailTier()`, `courseCount()` and `pierCount()`.
  */
 
 import * as THREE from 'three';
@@ -849,7 +855,7 @@ function typology(h, area, style, urban) {
   if (h >= 30) return 'midrise';
   if (area >= 900) return h >= 26 ? 'midrise' : 'warehouse';
   if (modern) return h >= 20 ? 'midrise' : 'block';
-  if (h <= 15 && area <= 430 && urban < 0.4) return 'house';
+  if (h <= 17 && area <= 520 && urban < 0.4) return 'house';
   return 'block';
 }
 
@@ -861,11 +867,21 @@ function typology(h, area, style, urban) {
  * @returns {{form: 'hip'|'flat', rise: number}}
  */
 function roofPlan(typ, h, seed, ring, ang) {
-  if (typ === 'house' && h01(seed, 7) < 0.66) {
-    const rise = clamp(planExtent(ring, ang).across * 0.33, 1.8, 5);
-    if (h - rise > 4.5) return { form: 'hip', rise };
+  const ext = planExtent(ring, ang);
+  const r = h01(seed, 7);
+  if (typ === 'house' && r < 0.84) {
+    const rise = clamp(ext.across * 0.36, 2, 6);
+    // a rowhouse row is one long plan and carries a ridge, not four hips
+    const form = ext.along > ext.across * 1.4 ? 'gable' : 'hip';
+    if (h - rise > 4) return { form, rise, overhang: 0.4 };
   }
-  return { form: 'flat', rise: 0 };
+  // the small commercial and outbuilding stock on the slopes: a shallow pitch
+  // on the narrow plans, a flat roof behind a parapet on everything else
+  if (typ === 'block' && h <= 13 && polygonArea(ring) < 340 && r > 0.6) {
+    const rise = clamp(ext.across * 0.24, 1.4, 3.4);
+    if (h - rise > 4) return { form: 'gable', rise, overhang: 0.3 };
+  }
+  return { form: 'flat', rise: 0, overhang: 0 };
 }
 
 /**
@@ -907,12 +923,17 @@ function pickArchetype(seed, height, area, style) {
     return r < 0.44 ? 'setback' : r < 0.78 ? 'setbackCrown' : 'podium';
   }
   if (height >= 38) {
-    if (slender > 1.6 && r < 0.55) return 'setback';
-    return r < 0.34 ? 'podium' : r < 0.7 ? 'crown' : 'prism';
+    if (modern) return r < 0.3 ? 'tower' : r < 0.62 ? 'podium' : 'crown';
+    // The 1916 zoning street wall: on Grant Street and Fourth Avenue an
+    // eight-to-fifteen storey block almost always steps back above its cornice
+    // line, and leaving a third of that stock as plain extrusions is most of
+    // why the mid-rise fabric reads as boxes.
+    if (slender > 1.5) return r < 0.6 ? 'setback' : 'setbackCrown';
+    return r < 0.42 ? 'setback' : r < 0.72 ? 'crown' : 'podium';
   }
   // 24-38 m: a recessed top floor is what stops an eight-storey block reading
   // as one extrusion, and it is common on Pittsburgh's interwar fabric
-  return r < 0.42 ? 'crown' : r < 0.56 ? 'podium' : 'prism';
+  return r < 0.5 ? 'crown' : r < 0.78 ? 'podium' : 'prism';
 }
 
 /**
@@ -1029,7 +1050,7 @@ export function massingProfile(footprint, height, seed, options = {}) {
  * @returns {function(number, number, number=, Array<number>=): Array<number>|null}
  *   place(sx, sz, tries, hint) -> world [x, z] or null
  */
-function makePlacer(ring, seed, ang, taken = []) {
+function makePlacer(ring, seed, ang, taken = [], zone = null) {
   const ca = Math.cos(ang);
   const sa = Math.sin(ang);
   let minX = Infinity;
@@ -1064,12 +1085,25 @@ function makePlacer(ring, seed, ang, taken = []) {
     return true;
   }
 
-  return function place(sx, sz, tries = 14, hint = null) {
+  return function place(sx, sz, tries = 14, hint = null, penned = true) {
     if (hint && accept(hint[0], hint[1], sx, sz)) return hint;
     for (let i = 0; i < tries; i++) {
       k++;
-      const x = minX + h01(seed, 200 + k * 2) * (maxX - minX);
-      const z = minZ + h01(seed, 201 + k * 2) * (maxZ - minZ);
+      const a = h01(seed, 200 + k * 2);
+      const b = h01(seed, 201 + k * 2);
+      let x;
+      let z;
+      if (zone && penned) {
+        // sample inside the housekeeping pad's own rectangle, in the roof's
+        // frame, so the loose plant lands as one group and not as scatter
+        const u = zone[0] + (a - 0.5) * zone[2];
+        const v = zone[1] + (b - 0.5) * zone[3];
+        x = u * ca - v * sa;
+        z = u * sa + v * ca;
+      } else {
+        x = minX + a * (maxX - minX);
+        z = minZ + b * (maxZ - minZ);
+      }
       if (accept(x, z, sx, sz)) return [x, z];
     }
     return null;
@@ -1086,27 +1120,25 @@ function makePlacer(ring, seed, ang, taken = []) {
  * @returns {{inner: Array<[number,number]>|null, area: number, ang: number,
  *            ca: number, sa: number, boxes: Array<object>, taken: Array<Array<number>>}}
  */
+/** Height of the housekeeping pad the loose plant stands on. */
+const PAD_H = 0.3;
+
 function roofStructures(deckRing, h, typ, seed, det) {
   const ang = dominantAngle(deckRing);
   const inner = insetRing(deckRing, 1.1) || insetRing(deckRing, 0.5) || deckRing;
   const area = polygonArea(inner);
-  const out = {
-    inner,
-    area,
-    ang,
-    ca: Math.cos(ang),
-    sa: Math.sin(ang),
-    boxes: [],
-    taken: [],
-  };
+  const ca = Math.cos(ang);
+  const sa = Math.sin(ang);
+  const out = { inner, area, ang, ca, sa, boxes: [], taken: [], zone: null, padH: 0 };
   if (!(area > 30) || h < 7) return out;
 
   const w = Math.sqrt(area);
   const place = makePlacer(inner, seed, ang, out.taken);
-  const add = (sx, sz, sy, hint) => {
-    if (!(sx > 0.4 && sz > 0.4 && sy > 0.3)) return;
-    const pt = place(sx, sz, 14, hint);
-    if (pt) out.boxes.push({ x: pt[0], z: pt[1], sx, sz, sy });
+  const add = (kind, sx, sz, sy, hint) => {
+    if (!(sx > 0.4 && sz > 0.4 && sy > 0.3)) return null;
+    const pt = place(sx, sz, 16, hint);
+    if (pt) out.boxes.push({ kind, x: pt[0], z: pt[1], sx, sz, sy });
+    return pt;
   };
   const r1 = h01(seed, 21);
   const r2 = h01(seed, 22);
@@ -1115,29 +1147,94 @@ function roofStructures(deckRing, h, typ, seed, det) {
   // mill monitor: the raised clerestory that runs the length of a loft roof
   if (typ === 'warehouse' && area > 700) {
     const { along, across } = planExtent(inner, ang);
-    add(clamp(along * 0.58, 6, 64), clamp(across * 0.28, 2.4, 9), 1.8 + r1 * 1.5, ringCentroid(inner));
-  }
-  // mechanical penthouse
-  if (area > 140 && h >= 9) {
     add(
-      clamp(w * (0.26 + r1 * 0.16), 3, 22),
-      clamp(w * (0.18 + r2 * 0.13), 2.4, 16),
-      typ === 'tower' ? 4.4 + r1 * 3 : 2.8 + r1 * 2.2,
+      'monitor',
+      clamp(along * 0.58, 6, 64),
+      clamp(across * 0.24, 2.4, 8),
+      2 + r1 * 1.6,
+      ringCentroid(inner),
     );
   }
-  // elevator overrun
-  if (h > 26 && area > 90) {
-    add(clamp(w * 0.18, 2.8, 8), clamp(w * 0.16, 2.4, 7), 3.8 + r2 * 2.6);
+
+  // Stair / elevator overrun. This is the tallest thing on the roof and the
+  // only one that is architecture rather than plant, so it stands near an edge
+  // rather than in the middle and it keeps the building's own facade. Anything
+  // over about eight floors has one.
+  let anchor = null;
+  if (h >= 26 && area > 70) {
+    const a = r1 * Math.PI * 2;
+    const hint = frontPoint(inner, Math.cos(a), Math.sin(a), clamp(w * 0.22, 3, 10));
+    anchor = add(
+      'overrun',
+      clamp(w * (0.15 + r2 * 0.1), 3, 11),
+      clamp(w * (0.13 + r3 * 0.08), 2.6, 9),
+      clamp(3.6 + h * 0.022, 4, 8.5) + r2 * 1.4,
+      hint,
+    );
+  } else if (area > (det === 2 ? 45 : 110)) {
+    add('overrun', 2.4 + r3 * 1.6, 2.8 + r3 * 1.4, 2.6 + r3 * 1.3);
   }
-  // stair bulkhead
-  if (area > (det === 2 ? 45 : 90)) {
-    add(2.3 + r3 * 1.5, 2.7 + r3 * 1.3, 2.3 + r3 * 1.1);
+
+  // mechanical penthouse, standing beside the overrun rather than anywhere
+  if (area > 200 && h >= 12) {
+    const sx = clamp(w * (0.2 + r1 * 0.12), 3, 18);
+    const sz = clamp(w * (0.15 + r2 * 0.1), 2.4, 13);
+    const gap = sx * 0.5 + 3;
+    add(
+      'penthouse',
+      sx,
+      sz,
+      typ === 'tower' ? 3.4 + r1 * 2.4 : 2.4 + r1 * 1.8,
+      anchor ? [anchor[0] - gap * ca, anchor[1] - gap * sa] : null,
+    );
   }
+
   // brick stack: the flat-roofed rowhouse and corner-block signature
   if ((typ === 'house' || typ === 'block') && area > 40 && r3 > 0.28) {
-    add(0.85 + r1 * 0.4, 0.7 + r2 * 0.35, 1.4 + r1 * 1.3);
+    add('stack', 0.85 + r1 * 0.4, 0.7 + r2 * 0.35, 1.6 + r1 * 1.5);
+  }
+
+  // Housekeeping pad. Loose plant stands ON it, so its reservation is dropped
+  // again once it has been placed: what the pad keeps clear of is the other
+  // housings, and what it does for the roofscape is turn scattered boxes into
+  // one plant compound with a visible edge under it.
+  if (area > 150) {
+    for (const k of [1, 0.7, 0.48]) {
+      const su = clamp(w * 0.48 * k, 4.5, 30);
+      const sv = clamp(w * 0.32 * k, 3.2, 20);
+      const mark = out.taken.length;
+      const pt = place(su, sv, 20);
+      if (!pt) continue;
+      out.boxes.push({ kind: 'pad', x: pt[0], z: pt[1], sx: su, sz: sv, sy: PAD_H });
+      out.zone = [pt[0] * ca + pt[1] * sa, pt[1] * ca - pt[0] * sa, su - 2, sv - 2];
+      out.padH = PAD_H;
+      out.taken.splice(mark, 1);
+      break;
+    }
   }
   return out;
+}
+
+/**
+ * One rooftop housing. The overrun and the mill monitor are extensions of the
+ * building and keep its facade; plant enclosures and the housekeeping pad are
+ * grey metal and take the dark swatch. All of them get a coping band in stone,
+ * which is most of the difference between a housing and a block of packing
+ * foam left on a roof.
+ */
+function emitRoofHousing(wall, trim, b, rp, deckY) {
+  const ring = rectRing(b.x, b.z, b.sx, b.sz, rp.ca, rp.sa);
+  const top = deckY + b.sy;
+  if (b.kind === 'pad') {
+    band(trim, ring, deckY, ring, top, null, PIN_DARK);
+    capUpConvex(trim, ring, top, null, PIN_DARK);
+    return;
+  }
+  const coping = Math.min(0.4, b.sy * 0.2);
+  const facade = b.kind === 'overrun' || b.kind === 'monitor';
+  band(facade ? wall : trim, ring, deckY, ring, top - coping, null, facade ? PIN_NONE : PIN_DARK);
+  band(trim, ring, top - coping, ring, top, null, PIN_STONE);
+  capUpConvex(wall, ring, top, null, PIN_DARK);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1169,29 +1266,49 @@ function trimProportions(seed, style, height, typ) {
     baseGlazed = false;
     sillH = 0.22 + r2 * 0.14;
   } else if (tall) {
-    baseH = clamp(Math.min(height * 0.22, 4.2 + r * 2.8), 3.4, 9);
+    // a prewar tower stands on two or three storeys of stone, not on one
+    baseH = clamp(Math.min(height * 0.24, (modern ? 4.6 : 7.5) + r * (modern ? 3 : 5)), 3.4, 13);
     baseGlazed = true;
     sillH = 0.4 + r2 * 0.45;
   } else {
-    baseH = clamp(Math.min(height * 0.34, 3.1 + r * 1.9), 2.4, 6);
+    baseH = clamp(Math.min(height * 0.34, 3.1 + r * 2.4), 2.4, 7);
     baseGlazed = typ === 'block' || r > 0.45;
     sillH = 0.4 + r2 * 0.4;
   }
 
+  // The cornice is the one horizontal that survives to the far bank, so it is
+  // sized generously and, unlike everything else here, allowed to project.
+  // Scaled off height rather than given a floor: a fixed 1.4 m entablature on a
+  // two-storey building is a third of its wall, and a row of them reads as a
+  // white stripe with brick between the stripes.
   let corniceH;
-  if (typ === 'house') corniceH = 0.5 + r2 * 0.55;
-  else if (modern) corniceH = clamp(height * 0.014 + 0.6, 0.8, 2.4);
-  else if (tall) corniceH = clamp(height * 0.026 + 0.9, 1.3, 4.4);
-  else corniceH = clamp(height * 0.022 + 1.1, 1.1, 3);
+  if (typ === 'house') corniceH = 0.45 + r2 * 0.5;
+  else if (modern) corniceH = clamp(height * 0.016 + 0.7, 0.9, 2.8);
+  else if (tall) corniceH = clamp(height * 0.032 + 1.2, 1.8, 6);
+  else corniceH = clamp(height * 0.034 + 0.55, 0.85, 4.2);
+
+  // Outward projection of the corona. Party-wall lots mean a real cornice
+  // overlaps the neighbour's wall by a foot or two, and so does this one: a
+  // cornice flush with the footprint is a tone change with no shadow under it,
+  // and the shadow is what carries the eave line at street-to-mid distance.
+  const proj = modern
+    ? clamp(height * 0.004, 0.12, 0.4)
+    : clamp(0.3 + height * 0.006, 0.3, 0.95) * (typ === 'house' ? 0.7 : 1);
 
   return {
-    reveal: clamp(0.24 + r * 0.18 + (tall ? 0.18 : 0), 0.24, 0.62),
+    // deeper on the prewar stock: the shaft has to step back far enough that
+    // the pier bays and the cornice above them have something to project from
+    reveal: clamp(0.28 + r * 0.2 + (tall ? 0.22 : 0) + (modern ? 0 : 0.16), 0.28, 0.9),
     baseH,
     baseGlazed,
     sillH,
     corniceH,
-    parapetH: (modern ? 1 : 0.8) + r * 0.6,
-    deckDrop: 0.45 + r2 * 0.45,
+    corniceProj: proj,
+    // three storeys of solid wall under the cornice: the "capital" of the
+    // base/shaft/capital division, and the cheapest way to break a long shaft
+    capitalH: tall && !modern ? clamp(height * 0.045, 2.2, 7) : 0,
+    parapetH: clamp((modern ? 1.1 : 1) + r * 0.8, 0.45, height * 0.055 + 0.45),
+    deckDrop: 0.6 + r2 * 0.6,
     copingIn: 0.35 + r * 0.3,
     courseH: 0.4 + r * 0.35,
     pierW: 1 + r * 0.8,
@@ -1217,9 +1334,18 @@ function emitBase(wall, trim, ring, shaft, y0, p) {
  * than stepping out: the tonal change is what carries at distance and a flush
  * band costs a third of a moulded one.
  */
-function emitShaft(wall, trim, ring, y0, y1, p, courses) {
+function emitShaft(wall, trim, ring, y0, yTop, p, courses, capital = 0) {
+  // The capital is the storey or three of solid wall the cornice sits on. It
+  // costs one band and it is what stops a forty-metre shaft reading as one
+  // undivided grid of windows.
+  const cap = capital > 0.4 && yTop - y0 > capital + 8 ? capital : 0;
+  const y1 = yTop - cap;
   const span = y1 - y0;
-  if (!(span > 0.05)) return;
+  if (!(span > 0.05)) {
+    band(trim, ring, y0, ring, yTop, null, PIN_STONE);
+    return;
+  }
+  if (cap > 0) band(trim, ring, y1, ring, yTop, null, PIN_STONE);
   if (courses < 1 || span < 7) {
     band(wall, ring, y0, ring, y1, null, PIN_NONE);
     return;
@@ -1304,15 +1430,35 @@ function emitPiers(trim, shaft, lot, y0, y1, p, maxCount) {
  * @returns {{ring: Array<[number,number]>, y: number}} the deck to stand
  *   rooftop structures on
  */
-function emitCrown(wall, trim, ring, shaft, yBot, yTop, p, mode, ch) {
+function emitCrown(wall, trim, ring, shaft, yBot, yTop, p, mode, ch, det = 1) {
   const span = yTop - yBot;
   if (mode === 'cap' || span < 0.4) {
     band(trim, shaft, yBot, ring, yTop, null, PIN_STONE);
     capUp(wall, ring, yTop, null, PIN_DARK);
     return { ring, y: yTop };
   }
-  band(trim, shaft, yBot, ring, yBot + ch * 0.55, null, PIN_STONE);
-  band(trim, ring, yBot + ch * 0.55, ring, yTop, null, PIN_STONE);
+
+  // Corona: the cornice steps OUT past the lot line, and the annulus it leaves
+  // underneath faces down, so it reads as a shadow line under a projecting eave
+  // rather than as one more tonal band in the wall plane. Two variants, because
+  // the full soffit is 2n quads and the city cannot afford it everywhere:
+  // deep (soffit + fascia + wash) on the stock that is actually looked at,
+  // shallow (one flare out, one step back) on the rest.
+  const proj = p.corniceProj;
+  const out = proj > 0.1 ? insetRing(ring, -proj, 0.02) : null;
+  const deep = out && (det === 2 || ch >= 2.2);
+  if (out && deep) {
+    band(trim, shaft, yBot, out, yBot, null, PIN_DARK);
+    band(trim, out, yBot, out, yBot + ch * 0.62, null, PIN_STONE);
+    band(trim, out, yBot + ch * 0.62, ring, yBot + ch, null, PIN_STONE);
+  } else if (out) {
+    band(trim, shaft, yBot, out, yBot + ch * 0.7, null, PIN_STONE);
+    band(trim, out, yBot + ch * 0.7, ring, yBot + ch, null, PIN_STONE);
+  } else {
+    band(trim, shaft, yBot, ring, yBot + ch, null, PIN_STONE);
+  }
+  band(trim, ring, yBot + ch, ring, yTop, null, PIN_STONE);
+
   const coping = insetRing(ring, p.copingIn);
   if (!coping) {
     capUp(wall, ring, yTop, null, PIN_DARK);
@@ -1332,14 +1478,46 @@ function emitCrown(wall, trim, ring, shaft, yBot, yTop, p, mode, ch) {
  * carry anyway.
  * @returns {{ring: Array<[number,number]>, y: number}|null}
  */
-function emitPitchedRoof(wall, ring, eaveY, rise, ang) {
+function emitPitchedRoof(wall, trim, ring, eaveY, plan, ang) {
   if (!(polygonArea(ring) > 4)) return null;
-  const ridge = insetRing(ring, planExtent(ring, ang).across * 0.44, 0.02);
+  const over = plan.overhang || 0;
+  // The overhang is the point of a house roof at this scale. A flush verge is a
+  // tone change; a 0.4 m projection with a down-facing annulus under it throws
+  // a hard shadow the width of a gutter, and that line is what separates one
+  // house from the next across a hillside of identical 14 m defaults.
+  const eave = over > 0.05 ? insetRing(ring, -over, 0.02) || ring : ring;
+  let y = eaveY;
+  if (eave !== ring) {
+    band(trim, ring, eaveY, eave, eaveY, null, PIN_DARK);
+    const fascia = Math.min(0.4, plan.rise * 0.22);
+    band(trim, eave, eaveY, eave, eaveY + fascia, null, PIN_STONE);
+    y = eaveY + fascia;
+  }
+  const ridge =
+    plan.form === 'gable'
+      ? ridgeAxisRing(eave, ang)
+      : insetRing(eave, planExtent(eave, ang).across * 0.44, 0.02);
   if (!ridge) return null;
-  const ridgeY = eaveY + rise;
-  band(wall, ring, eaveY, ridge, ridgeY, null, PIN_DARK);
+  const ridgeY = y + plan.rise;
+  band(wall, eave, y, ridge, ridgeY, null, PIN_DARK);
   capUp(wall, ridge, ridgeY, null, PIN_DARK);
   return { ring: ridge, y: ridgeY };
+}
+
+/**
+ * Every vertex projected perpendicularly onto the plan's centre line along
+ * `ang`. The two vertices at each end of the plan land on the same point, so
+ * the quad between them and the eave degenerates into the vertical triangle
+ * that is a gable end - no special case, and the ridge closes itself.
+ */
+function ridgeAxisRing(ring, ang) {
+  const [cx, cz] = ringCentroid(ring);
+  const ca = Math.cos(ang);
+  const sa = Math.sin(ang);
+  return ring.map(([x, z]) => {
+    const u = (x - cx) * ca + (z - cz) * sa;
+    return [cx + u * ca, cz + u * sa];
+  });
 }
 
 /** Belt courses are worth their triangles only once there is wall to divide. */
@@ -1387,9 +1565,25 @@ function pierCount(typ, det, perim) {
  * stands on.
  */
 const LANDMARKS = [
-  // 841 ft, 64 floors. Triangular plan with truncated corners, hung on 18
-  // liquid-filled Cor-Ten box columns that stand proud of the glass line.
-  { n: 'U.S. Steel Tower', at: [614.7, -39.8], r: 45, h: 256, shell: 0.95, crown: 'usSteel' },
+  // 841 ft, 64 floors. Triangular plan with truncated corners; the office
+  // floors are three 221 ft x 45 ft 6 in bars round an equilateral core, and
+  // the whole frame is carried on 18 liquid-filled Cor-Ten box columns - six to
+  // a side, standing three feet clear of the wall - which is the only thing
+  // anybody remembers about the building. `reveal` pushes the glass line back
+  // so the columns have a plane to stand proud of, `piers: false` keeps the
+  // generic masonry bays out of their way, and `solidTop` is the mechanical
+  // floor banding the shaft under the roof.
+  {
+    n: 'U.S. Steel Tower',
+    at: [614.7, -39.8],
+    r: 45,
+    h: 256,
+    shell: 0.965,
+    reveal: 1.5,
+    piers: false,
+    solidTop: 7,
+    crown: 'usSteel',
+  },
   // 725 ft, 54 floors; stepped mechanical crown over a chamfered shaft.
   {
     n: 'BNY Mellon Center',
@@ -1745,22 +1939,78 @@ function ringCorners(ring, want) {
 
 const CROWNS = {
   /**
-   * Recessed mechanical top hat plus the corner columns. The columns are the
-   * whole point of the building: they carry the frame outside the glass, so
-   * they read as three sharp vertical arrises from anywhere in the Triangle.
+   * The 18 exterior box columns, six to each of the three long faces, running
+   * the full height of the building and stopping a few metres above the roof
+   * with a plate cap - exactly as they do on Grant Street.
+   *
+   * They are the whole building. The previous version put four-sided posts on
+   * the three vertices `ringCorners()` happened to rank hardest, which on a
+   * nine-vertex truncated triangle is two ends of the same chamfer and nothing
+   * at all on the third corner, and then projected them the same 0.6 m as an
+   * ordinary masonry pier - so from anywhere in the Triangle the tallest thing
+   * on the skyline read as a plain slab.
+   *
+   * Here the faces are found by length instead (the three 67-70 m sides, as
+   * against the six ~9 m corner chamfers), the columns are spread 4% to 96%
+   * along each so the end pairs close up tight across the chamfer the way the
+   * real ones do, and each one spans from the recessed glass plane out past the
+   * lot line. Section is 1.3 m x 2.4 m against a real 0.6 x 0.9 standing 0.9 m
+   * clear: about double, which is what it takes for a rib to survive a pixel
+   * that is 0.15 m across at preview range and to still darken the facade at
+   * city range. Three faces each plus a cap, so all 18 cost ~150 triangles.
    */
   usSteel(c) {
-    const { wall, trim, ring, deck, y, capY } = c;
-    for (const [px, pz] of ringCorners(ring, 3)) {
-      const col = regularRing(px, pz, 3.4, 4, c.ang);
-      band(trim, col, c.baseY, col, capY + 3, null, PIN_STONE);
-      capUpConvex(trim, col, capY + 3, null, PIN_STONE);
+    const { wall, trim, ring, deck, y, capY, baseY } = c;
+    const colW = 1.3;
+    const proud = 0.9;
+    const reveal = 1.5;
+    const colTop = capY + 4.5;
+    const n = ring.length;
+    for (let i = 0; i < n; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % n];
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const len = Math.hypot(dx, dz);
+      // the chamfers are ~9 m and carry no columns; the faces are ~68 m
+      if (len < 30) continue;
+      const ux = dx / len;
+      const uz = dz / len;
+      const ox = uz;
+      const oz = -ux;
+      for (let k = 0; k < 6; k++) {
+        const t = (0.04 + (k / 5) * 0.92) * len;
+        const cx = a[0] + ux * t;
+        const cz = a[1] + uz * t;
+        const q0 = [cx - ux * colW * 0.5, cz - uz * colW * 0.5];
+        const q1 = [cx + ux * colW * 0.5, cz + uz * colW * 0.5];
+        const f0 = [q0[0] + ox * proud, q0[1] + oz * proud];
+        const f1 = [q1[0] + ox * proud, q1[1] + oz * proud];
+        const g0 = [q0[0] - ox * reveal, q0[1] - oz * reveal];
+        const g1 = [q1[0] - ox * reveal, q1[1] - oz * reveal];
+        faceQuad(trim, f0, f1, baseY, colTop, null, PIN_STONE);
+        faceQuad(trim, g0, f0, baseY, colTop, null, PIN_STONE);
+        faceQuad(trim, f1, g1, baseY, colTop, null, PIN_STONE);
+        trim.quad(
+          [g0[0], colTop, g0[1]],
+          [f0[0], colTop, f0[1]],
+          [f1[0], colTop, f1[1]],
+          [g1[0], colTop, g1[1]],
+          null,
+          PIN_STONE,
+        );
+      }
     }
-    const hat = insetRing(deck, 7) || deck;
-    band(trim, hat, y, hat, y + 5.5, null, PIN_STONE);
-    capUp(wall, hat, y + 5.5, null, PIN_DARK);
+
+    // Flat mechanical deck: a screen wall round the plant, not a spire. The
+    // building's top is famously blunt, and the only things above the parapet
+    // are the penthouse and a couple of slim masts.
+    const hat = insetRing(deck, 6) || deck;
+    band(trim, hat, y, hat, y + 6.5, null, PIN_STONE);
+    band(trim, hat, y + 6.5, hat, y + 7.4, null, PIN_DARK);
+    capUp(wall, hat, y + 7.4, null, PIN_DARK);
     const [cx, cz] = ringCentroid(hat);
-    mastUp(trim, cx, cz, 1.1, y + 5.5, y + 22, c.ang, PIN_STONE);
+    mastUp(trim, cx, cz, 0.8, y + 7.4, y + 16, c.ang, PIN_STONE);
   },
 
   /** Two shrinking mechanical decks, the modern flat-top crown. */
@@ -2076,9 +2326,15 @@ const CROWNS = {
     band(trim, flare, y + atticH * 0.4, deck, y + atticH * 0.75, null, PIN_STONE);
     band(trim, deck, y + atticH * 0.75, deck, y + atticH, null, PIN_STONE);
     capUp(wall, deck, y + atticH, null, PIN_DARK);
-    alongRing(deck, 9, (x, z, edgeAng) => {
-      const post = rectRing(x, z, 1.4, 0.7, Math.cos(edgeAng), Math.sin(edgeAng));
-      extrudeConvex(trim, post, y + atticH, y + atticH + 1.3, null, PIN_STONE);
+    // A balustrade is a continuous dwarf wall with piers in it, not a row of
+    // separate blocks: at 9 m centres the blocks alone read as a dotted line of
+    // white specks hovering over the roof.
+    const rail = insetRing(deck, 0.3) || deck;
+    band(trim, rail, y + atticH, rail, y + atticH + 1.05, null, PIN_STONE);
+    band(trim, rail, y + atticH + 1.05, deck, y + atticH + 1.05, null, PIN_STONE);
+    alongRing(deck, 11, (x, z, edgeAng) => {
+      const post = rectRing(x, z, 1.7, 0.9, Math.cos(edgeAng), Math.sin(edgeAng));
+      extrudeConvex(trim, post, y + atticH + 0.9, y + atticH + 1.85, null, PIN_STONE);
     });
   },
 
@@ -2373,7 +2629,11 @@ export function buildArticulatedBuilding(opts) {
   // a landmark's silhouette is the crown's business, never a hashed hip roof
   if (lm) prog.roof = { form: 'flat', rise: 0 };
   const p = trimProportions(s, style, h, prog.typ);
-  const budget = lm ? 2600 : det === 2 ? 1900 : 420;
+  // A landmark may need its glass line pushed further in than the generic
+  // reveal: US Steel's box columns only read as columns if there is a wall
+  // plane behind them for them to stand proud of.
+  if (lm && lm.reveal) p.reveal = lm.reveal;
+  const budget = lm ? 3200 : det === 2 ? 2100 : 460;
   let deck = null;
   let pitch = null;
 
@@ -2382,7 +2642,7 @@ export function buildArticulatedBuilding(opts) {
     const ring = t.ring;
     const ty0 = i === 0 ? y0 : baseY + t.y0;
     const shaft = insetRing(ring, p.reveal) || ring;
-    const pitched = t.top && prog.roof.form === 'hip';
+    const pitched = t.top && prog.roof.form !== 'flat';
     const ty1 = baseY + t.y1 - (pitched ? prog.roof.rise : 0);
     if (ty1 - ty0 < 1.2) {
       band(wall, ring, ty0, ring, baseY + t.y1, null, PIN_NONE);
@@ -2401,11 +2661,11 @@ export function buildArticulatedBuilding(opts) {
       const friezeY = Math.max(sy0 + 0.3, ty1 - p.corniceH);
       emitShaft(wall, trim, shaftRing, sy0, friezeY, p, 0);
       band(trim, shaftRing, friezeY, ring, ty1, null, PIN_STONE);
-      deck = emitPitchedRoof(wall, ring, ty1, prog.roof.rise, prog.ang);
+      deck = emitPitchedRoof(wall, trim, ring, ty1, prog.roof, prog.ang);
       if (deck) pitch = { ring, eaveY: ty1 };
       else {
         // the ridge collapsed; fall back to a parapet so the shell stays closed
-        deck = emitCrown(wall, trim, ring, ring, ty1, baseY + t.y1, p, 'deck', p.corniceH);
+        deck = emitCrown(wall, trim, ring, ring, ty1, baseY + t.y1, p, 'deck', p.corniceH, det);
       }
       continue;
     }
@@ -2414,10 +2674,25 @@ export function buildArticulatedBuilding(opts) {
     const crownH = mode === 'cap' ? p.corniceH : p.parapetH + p.corniceH;
     const shaftTop = Math.max(sy0 + 0.4, ty1 - crownH);
     const ch = clamp(p.corniceH, 0.3, (ty1 - shaftTop) * 0.7);
-    emitShaft(wall, trim, shaftRing, sy0, shaftTop, p, courseCount(prog.typ, det, shaftTop - sy0));
+    // The mechanical floors of a curtain-walled tower are solid, and on a
+    // building whose whole expression is the frame that solid band is what
+    // stops the glass running straight into the parapet.
+    const solid = t.top && lm && lm.solidTop ? Math.min(lm.solidTop, (shaftTop - sy0) * 0.3) : 0;
+    emitShaft(
+      wall,
+      trim,
+      shaftRing,
+      sy0,
+      shaftTop,
+      p,
+      courseCount(prog.typ, det, shaftTop - sy0),
+      solid > 0.4 ? solid : p.capitalH,
+    );
 
     const room = Math.floor((budget - wall.triangles - trim.triangles) / 6);
-    const piers = Math.min(pierCount(prog.typ, det, ringPerimeter(shaftRing)), room);
+    const piers = lm && lm.piers === false
+      ? 0
+      : Math.min(pierCount(prog.typ, det, ringPerimeter(shaftRing)), room);
     if (piers > 1 && shaftRing !== ring && shaftTop - sy0 > 6) {
       // die into the cornice flare rather than stopping short: the flare closes
       // over the pier, so its top never needs capping and never reaches the
@@ -2425,7 +2700,7 @@ export function buildArticulatedBuilding(opts) {
       emitPiers(trim, shaftRing, ring, sy0, shaftTop + ch * 0.5, p, piers);
     }
 
-    const crown = emitCrown(wall, trim, ring, shaftRing, shaftTop, ty1, p, mode, ch);
+    const crown = emitCrown(wall, trim, ring, shaftRing, shaftTop, ty1, p, mode, ch, det);
     if (t.top) deck = crown;
   }
 
@@ -2474,14 +2749,7 @@ export function buildArticulatedBuilding(opts) {
     const rp = roofStructures(deck.ring, h, prog.typ, s, det);
     for (const b of rp.boxes) {
       if (wall.triangles + trim.triangles >= budget) break;
-      extrudeConvex(
-        trim,
-        rectRing(b.x, b.z, b.sx, b.sz, rp.ca, rp.sa),
-        deck.y,
-        deck.y + b.sy,
-        null,
-        PIN_STONE,
-      );
+      emitRoofHousing(wall, trim, b, rp, deck.y);
     }
   }
 
@@ -2492,11 +2760,21 @@ export function buildArticulatedBuilding(opts) {
 /* roofscape                                                           */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Linear-space vertex colours for the roofscape material.
+ *
+ * These used to sit at 0.46-0.52, which is sRGB 0.71-0.75 - brighter than every
+ * facade in the palette. A hundred pale boxes brighter than the roof they stand
+ * on is what made the roofscape read as scattered packing foam, so the whole
+ * set now sits below the wall it stands on: galvanised plant weathers to a
+ * middling grey, ducting is darker, and rails and louvres are close to black.
+ */
 const ROOF_COLORS = {
-  duct: [0.46, 0.47, 0.5],
-  metal: [0.52, 0.53, 0.55],
-  rail: [0.24, 0.25, 0.27],
-  tank: [0.32, 0.26, 0.2],
+  duct: [0.075, 0.078, 0.086],
+  metal: [0.095, 0.098, 0.106],
+  rail: [0.038, 0.04, 0.045],
+  louvre: [0.05, 0.052, 0.058],
+  tank: [0.062, 0.05, 0.04],
 };
 
 function tinted(base, k) {
@@ -2552,7 +2830,7 @@ export function buildRoofscape(opts) {
   const tiers = massingProfile(footprint, h, s, { style, maxVerts: MAX_RING_VERTS[det] });
   if (!tiers.length) return null;
   const prog = buildingProgram(tiers[0].ring, h, s, style);
-  if (prog.roof.form === 'hip') return null;
+  if (prog.roof.form !== 'flat') return null;
   if (!ring) {
     const top = tiers[tiers.length - 1];
     ring = insetRing(top.ring, 0.5) || top.ring;
@@ -2574,39 +2852,67 @@ export function buildRoofscape(opts) {
   const sa = rp.sa;
   const ang = rp.ang;
   const rich = det === 2;
-  const budget = maxTriangles ?? (rich ? 480 : 110);
+  const budget = maxTriangles ?? (rich ? 520 : 110);
   const b = new Builder({ colors: true, indexed });
-  const place = makePlacer(inner, s, ang, rp.taken);
+  // confined to the housekeeping pad when the shell managed to lay one: real
+  // plant is bolted to one pad with clear walkways round it, not sprinkled
+  const place = makePlacer(inner, s, ang, rp.taken, rp.zone);
+  const padY = deckY + rp.padH;
 
-  const boxAt = (x, z, sx, sz, sy, color) => {
-    extrudeConvex(b, rectRing(x, z, sx, sz, ca, sa), deckY, deckY + sy, color, PIN_NONE);
+  const boxAt = (x, z, sx, sz, sy, color, y = padY) => {
+    extrudeConvex(b, rectRing(x, z, sx, sz, ca, sa), y, y + sy, color, PIN_NONE);
   };
 
-  // 1. cooling units, half of them with a fan cowl
-  const chillers = clamp(Math.floor(area / 190), 1, rich ? 7 : 2);
+  // 1. Cooling towers: the big items, and the only ones with a silhouette worth
+  // modelling. Banded louvres down the sides and an axial fan cowl over the
+  // top, which is how you tell one from a shipping crate at any distance.
+  const towers = rich && area > 460 ? (area > 1400 ? 2 : 1) : 0;
+  for (let i = 0; i < towers && b.triangles < budget; i++) {
+    const r = h01(s, 40 + i);
+    const sx = clamp(w * 0.16, 3.4, 8);
+    const sz = clamp(w * 0.11, 2.4, 5.5);
+    const sy = 2.6 + r * 1.4;
+    const pt = place(sx + 1, sz + 1, 12);
+    if (!pt) continue;
+    boxAt(pt[0], pt[1], sx, sz, sy, ROOF_COLORS.metal);
+    for (let k = 0; k < 3; k++) {
+      const ly = padY + sy * (0.2 + k * 0.22);
+      const slat = rectRing(pt[0], pt[1], sx + 0.16, sz + 0.16, ca, sa);
+      band(b, slat, ly, slat, ly + sy * 0.13, ROOF_COLORS.louvre, PIN_NONE);
+    }
+    const cowl = regularRing(pt[0], pt[1], Math.min(sx, sz) * 0.34, 8, ang);
+    extrudeConvex(b, cowl, padY + sy, padY + sy + 0.7 + r * 0.4, ROOF_COLORS.rail, PIN_NONE);
+  }
+
+  // 2. chillers and air handlers, ganged in a row
+  const chillers = clamp(Math.floor(area / 240), 1, rich ? 5 : 2);
+  let prev = null;
   for (let i = 0; i < chillers && b.triangles < budget; i++) {
     const r = h01(s, 50 + i);
     const sx = 2 + r * 1.8;
     const sz = 1.6 + h01(s, 60 + i) * 1.5;
-    const sy = 1.2 + r * 0.9;
-    const pt = place(sx, sz);
+    const sy = 1.1 + r * 0.8;
+    // hint the next unit alongside the last so they gang up into a plant row
+    const gap = sx * 0.5 + (prev ? prev.sx * 0.5 : 0) + 0.9;
+    const pt = place(sx, sz, 10, prev ? [prev.x + gap * ca, prev.z + gap * sa] : null);
     if (!pt) continue;
-    boxAt(pt[0], pt[1], sx, sz, sy, tinted(ROOF_COLORS.duct, 0.9 + r * 0.2));
+    prev = { x: pt[0], z: pt[1], sx };
+    boxAt(pt[0], pt[1], sx, sz, sy, tinted(ROOF_COLORS.duct, 0.85 + r * 0.35));
     if (r > 0.5) {
       const cowl = regularRing(pt[0], pt[1], Math.min(sx, sz) * 0.36, 6, ang);
-      extrudeConvex(b, cowl, deckY + sy, deckY + sy + 0.4 + r * 0.3, ROOF_COLORS.metal, PIN_NONE);
+      extrudeConvex(b, cowl, padY + sy, padY + sy + 0.4 + r * 0.3, ROOF_COLORS.rail, PIN_NONE);
     }
   }
 
-  // 2. duct runs between the housings
+  // 3. duct runs between the housings
   if (rich && area > 320 && b.triangles < budget) {
     const r = h01(s, 45);
     const len = clamp(w * (0.3 + r * 0.25), 4, 26);
     const pt = place(len, 0.9 + r * 0.5, 10);
-    if (pt) boxAt(pt[0], pt[1], len, 0.9 + r * 0.5, 0.8 + r * 0.4, ROOF_COLORS.metal);
+    if (pt) boxAt(pt[0], pt[1], len, 0.9 + r * 0.5, 0.8 + r * 0.4, ROOF_COLORS.duct);
   }
 
-  // 3. guardrail set back from the parapet
+  // 4. guardrail set back from the parapet
   if (rich && area > 260 && b.triangles + inner.length * 4 < budget) {
     const railRing = insetRing(inner, 0.9);
     if (railRing) {
@@ -2617,35 +2923,35 @@ export function buildRoofscape(opts) {
     }
   }
 
-  // 4. mast / antenna on the tall ones
+  // 5. mast / antenna on the tall ones - free of the plant pad
   if (h > 85 || (h > 55 && h01(s, 70) < 0.3)) {
-    const pt = place(3.4, 1.9);
+    const pt = place(3.4, 1.9, 14, null, false);
     if (pt) {
       const mh = clamp(h * 0.1, 6, 26);
-      const foot = rectRing(pt[0], pt[1], 1.1, 1.1, ca, sa);
-      const tip = scaleRing(foot, pt[0], pt[1], 0.3);
-      band(b, foot, deckY, tip, deckY + mh, ROOF_COLORS.metal, PIN_NONE);
-      capUpConvex(b, tip, deckY + mh, ROOF_COLORS.metal, PIN_NONE);
-      const bar = rectRing(pt[0], pt[1], 3.4, 0.28, ca, sa);
-      extrudeConvex(b, bar, deckY + mh * 0.62, deckY + mh * 0.62 + 0.24, ROOF_COLORS.metal, PIN_NONE);
+      const foot = rectRing(pt[0], pt[1], 0.9, 0.9, ca, sa);
+      const tip = scaleRing(foot, pt[0], pt[1], 0.28);
+      band(b, foot, deckY, tip, deckY + mh, ROOF_COLORS.rail, PIN_NONE);
+      capUpConvex(b, tip, deckY + mh, ROOF_COLORS.rail, PIN_NONE);
+      const bar = rectRing(pt[0], pt[1], 3.4, 0.24, ca, sa);
+      extrudeConvex(b, bar, deckY + mh * 0.62, deckY + mh * 0.62 + 0.22, ROOF_COLORS.rail, PIN_NONE);
     }
   }
 
-  // 5. vents
-  const vents = rich ? clamp(Math.floor(area / 140), 1, 9) : clamp(Math.floor(area / 320), 0, 3);
+  // 6. vents: small, dark and few, spread over the deck rather than the pad
+  const vents = rich ? clamp(Math.floor(area / 320), 1, 5) : clamp(Math.floor(area / 600), 0, 2);
   for (let i = 0; i < vents && b.triangles < budget; i++) {
     const r = h01(s, 80 + i);
-    const sx = 0.5 + r * 0.6;
-    const pt = place(sx, sx, 8);
+    const sx = 0.45 + r * 0.5;
+    const pt = place(sx, sx, 8, null, false);
     if (!pt) continue;
-    boxAt(pt[0], pt[1], sx, sx, 0.6 + r * 0.9, tinted(ROOF_COLORS.metal, 0.85 + r * 0.3));
+    boxAt(pt[0], pt[1], sx, sx, 0.5 + r * 0.8, tinted(ROOF_COLORS.rail, 1 + r * 0.6), deckY);
   }
 
-  // 6. the occasional water tower
+  // 7. the occasional water tower
   if (rich && area > 220 && h01(s, 90) < 0.16) {
     const r = h01(s, 91);
     const rad = clamp(w * 0.11, 1.6, 3.4);
-    const pt = place(rad * 2.2, rad * 2.2);
+    const pt = place(rad * 2.2, rad * 2.2, 14, null, false);
     if (pt) {
       const legH = 2.6 + r * 1.8;
       for (let i = 0; i < 4; i++) {
@@ -2674,9 +2980,13 @@ export function createRoofscapeMaterial({ dayMode = true } = {}) {
   return new THREE.MeshStandardMaterial({
     color: 0xffffff,
     vertexColors: true,
-    roughness: 0.68,
-    metalness: 0.34,
-    envMapIntensity: dayMode ? 0.45 : 0.3,
+    // Roof plant is painted or galvanised sheet, not chrome. At metalness 0.34
+    // against a bright sky envmap the specular term washed every box out to
+    // near white whatever vertex colour it carried, which is half of why the
+    // roofscape read as polystyrene.
+    roughness: 0.78,
+    metalness: 0.18,
+    envMapIntensity: dayMode ? 0.55 : 0.35,
   });
 }
 
