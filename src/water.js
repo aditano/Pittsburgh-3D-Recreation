@@ -48,10 +48,11 @@ const NOISE_GLSL = `
   }
 
   /**
-   * Value noise returned as (value, d/dx, d/dy). The analytic derivative is the
-   * whole point: finite-differencing the field costs three evaluations per
-   * octave, and because neighbouring taps share hash corners the difference
-   * steps at every cell boundary, which faceting a surface this shiny shows up.
+   * Value noise returned as (value, d/dx, d/dy). The analytic derivative earns
+   * its keep twice over: finite-differencing costs three evaluations per octave
+   * instead of one, and because neighbouring taps share hash corners the
+   * difference is piecewise constant across a cell, which a surface this shiny
+   * renders as visible facets.
    */
   vec3 vnoiseD(vec2 p) {
     vec2 i = floor(p);
@@ -104,8 +105,8 @@ const SURFACE_GLSL = `
   const mat2 ROT2 = mat2(0.5446, 0.8387, -0.8387, 0.5446);
   const mat2 ROT3 = mat2(0.1219, 0.9925, -0.9925, 0.1219);
 
-  // A wavelength has to span this many pixels before it is drawn at full
-  // strength; below the lower bound it is dropped entirely.
+  // An octave is drawn at full strength once its wavelength spans five pixels
+  // and dropped entirely below two, where it can only contribute shimmer.
   float bandLimit(float wavelength, float px) {
     return smoothstep(1.8, 5.0, wavelength / px);
   }
@@ -172,7 +173,7 @@ const SURFACE_GLSL = `
     // surface. Calibrated so the mean lands near 0.35.
     r.chop = clamp(
       ((abs(n2.y) + abs(n2.z)) * w2 + (abs(n3.y) + abs(n3.z)) * w3) * 0.30
-      + (lines - 0.5) * 0.18 * wl,
+      + (lines - 0.5) * 0.26 * wl,
       0.0, 1.0);
     return r;
   }`;
@@ -182,9 +183,8 @@ const SURFACE_GLSL = `
  *
  * This is analytic rather than left to `scene.environment` because the shared
  * environment map is sky in every direction. Water's Fresnel reflectance really
- * does reach 40% by six degrees above the surface, so reflecting an all-sky
- * probe turns every grazing view of a river into a flat white sheet — which is
- * exactly the blown-out look being fixed here.
+ * does reach 40% by six degrees above the surface, so an all-sky probe turns
+ * every grazing view of a river into a flat white sheet.
  *
  * What a near-horizontal ray off these rivers actually hits is the valley:
  * Mount Washington stands 120 m over the Monongahela, and the far bank is city
@@ -201,7 +201,8 @@ function skyGlsl(dayMode) {
     vec3 riverSurround(vec3 dir) {
       vec3 sky = mix(${horizon}, ${zenith}, pow(clamp(dir.y, 0.0, 1.0), 0.55));
       // The bluffs and the North Shore blocks subtend 15-30 degrees from
-      // mid-channel, so the crossover sits well above the geometric horizon.
+      // mid-channel, so the crossover into open sky sits around 20 degrees,
+      // well above the geometric horizon.
       return mix(${valley}, sky, smoothstep(0.055, 0.620, dir.y));
     }`;
 }
@@ -213,9 +214,10 @@ export function createWaterMaterial({ dayMode = true } = {}) {
   // cent diffusely and almost everything you see in it is reflection. Anything
   // lighter here immediately reads as a swimming pool.
   //
-  // Water is a dielectric, so metalness stays at zero. The previous 0.34 tinted
-  // the specular lobe with the albedo and roughly tripled it in blue, so the
-  // sun lobe clipped to a hard-edged white blob before the tone mapper had any
+  // Water is a dielectric, so metalness stays at zero and the specular runs off
+  // the default F0 of 0.04. Any metalness at all tints the specular lobe with
+  // the albedo and multiplies it, which on a near-mirror plane clips the sun
+  // reflection to a hard-edged white blob before the tone mapper has any
   // headroom left to roll off.
   //
   // There is deliberately no envMapIntensity here: the renderer overwrites it
@@ -224,7 +226,7 @@ export function createWaterMaterial({ dayMode = true } = {}) {
   // environment probe's specular contribution is replaced in the shader instead;
   // its irradiance is kept, since that skylight is real.
   const mat = new THREE.MeshStandardMaterial({
-    color: dayMode ? 0x2d3c33 : 0x081014,
+    color: dayMode ? 0x2f3a35 : 0x081014,
     roughness: dayMode ? 0.28 : 0.26,
     metalness: 0.0,
     transparent: true,
@@ -285,11 +287,14 @@ export function createWaterMaterial({ dayMode = true } = {}) {
            // enters from the south-east.
            float mon = smoothstep(-140.0, 430.0, vWorldPos.z) * smoothstep(-1400.0, -720.0, vWorldPos.x);
            float ohio = 1.0 - smoothstep(-1500.0, -650.0, vWorldPos.x);
-           // Suspended shale silt both warms the water and raises its diffuse
-           // albedo, which is the whole reason the Mon reads brown alongside a
-           // green Allegheny. A tint multiplier cannot express that, because the
-           // base albedo is green-dominant and scaling it keeps it green.
-           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.082, 0.054, 0.027), max(mon, ohio * 0.45) * 0.88);
+           // Suspended silt both warms the water and raises its diffuse albedo,
+           // so this has to be a mix towards a sediment colour rather than a
+           // tint multiplier: the base albedo is green-dominant, and scaling it
+           // by anything keeps it green. Load is not uniform either — silt comes
+           // down in plumes and hangs over the shallow inside of every bend.
+           float plume = smoothstep(0.56, 0.96, rField.shade) * 0.22;
+           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.055, 0.039, 0.021),
+             clamp(max(mon, ohio * 0.45) * 0.82 + plume, 0.0, 1.0));
            diffuseColor.rgb *= 0.82 + rField.shade * 0.38;
          }`,
       )
@@ -321,29 +326,37 @@ export function createWaterMaterial({ dayMode = true } = {}) {
            // patch takes the mirror direction alone. On a river that difference
            // is most of the visible mottling, because up is bright sky and the
            // mirror direction is usually the dark far bank.
-           vec3 refl = normalize(mix(reflect(-rViewW, rNormalW), rNormalW, 0.03 + rField.chop * 0.15));
+           vec3 refl = normalize(mix(reflect(-rViewW, rNormalW), rNormalW, 0.03 + rField.chop * 0.20));
            reflectedLight.indirectSpecular = riverSurround(refl) * fres;
          }
          // The scene lights the city with a sun plus a low fill from the
-         // opposite quarter. On matte surfaces the fill just softens shadows,
+         // opposite quarter. On matte surfaces the fill only softens shadows,
          // but a near-mirror plane resolves it as a second sun: its half-vector
-         // with any downward view is almost straight up, so it paints one
-         // enormous specular sheet over every river at once. That sheet was the
-         // blowout. Only the primary sun gets a lobe here, and it is deliberately
-         // wide and rolled off so the glitter reads as a soft path rather than
-         // a blob with an edge.
+         // with any downward view is almost straight up, so its GGX lobe covers
+         // every river at once as a single enormous sheet an order of magnitude
+         // brighter than the water under it. Only the primary sun gets a lobe
+         // here, wide and rolled off so the glitter reads as a soft path.
+         //
+         // The cost is that the glitter ignores shadows. That is close to free
+         // on water this dark — a bridge shadow was already invisible in the
+         // diffuse term — but it does mean the lobe follows directionalLights[0],
+         // so the sun has to stay the first directional light added to the scene.
          reflectedLight.directSpecular = vec3(0.0);
          #if NUM_DIR_LIGHTS > 0
          {
            vec3 sunW = inverseTransformDirection(directionalLights[0].direction, viewMatrix);
            vec3 halfW = normalize(sunW + rViewW);
            float ndl = max(dot(rNormalW, sunW), 0.0);
-           float alpha = 0.075 + rField.chop * 0.30;
+           // Effective slope distribution of the ripple field, wider than the
+           // shading roughness on purpose: a glitter path on a river a kilometre
+           // off is tens of degrees long, and a tight lobe is what collapses it
+           // into a blob.
+           float alpha = 0.130 + rField.chop * 0.32;
            vec3 lobe = directionalLights[0].color * ndl
              * F_Schlick(vec3(0.02), 1.0, max(dot(rViewW, halfW), 0.0))
              * V_GGX_SmithCorrelated(alpha, ndl, rNdv)
              * D_GGX(alpha, max(dot(rNormalW, halfW), 0.0));
-           reflectedLight.directSpecular += lobe / (1.0 + lobe * 2.2);
+           reflectedLight.directSpecular += lobe / (1.0 + lobe * 3.4);
          }
          #endif`,
       );
