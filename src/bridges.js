@@ -354,14 +354,47 @@ function addApproach(geoms, deckGeoms, frame, deckY, width, yFn, thick) {
   }
 }
 
-function addCatenary(lines, a, b, sag, segs = 20) {
-  for (let i = 0; i < segs; i++) {
-    const t0 = i / segs;
-    const t1 = (i + 1) / segs;
-    const drop0 = sag * 4 * t0 * (1 - t0);
-    const drop1 = sag * 4 * t1 * (1 - t1);
-    lines.push(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0 - drop0, a.z + (b.z - a.z) * t0);
-    lines.push(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1 - drop1, a.z + (b.z - a.z) * t1);
+/**
+ * Tower height above the deck, deliberately overscaled.
+ *
+ * The published figures are unusably small on screen. The Three Sisters' towers
+ * stand 78 ft over the pool against 40.3 ft of clearance, so 11.6 m above the
+ * deck; from the `bridges` camera that is about a dozen pixels and from
+ * `downtown` it is three, and a tower that small disappears into the deck edge
+ * whatever it is made of. As with the U.S. Steel columns the section has to be
+ * roughly doubled before the silhouette survives rasterisation.
+ *
+ * The two families are scaled by different factors on purpose. A self-anchored
+ * eyebar chain is shallow and its towers are stubby, so exaggerating them at the
+ * same rate as Tenth Street's wire cables would erase the one proportion that
+ * tells the types apart. At 2.15x the sisters land near 25 m and Tenth Street,
+ * at 1.5x, near 50 m, which keeps the sisters visibly squat next to it.
+ */
+function towerHeight(rec) {
+  return rec.tower * (rec.eyebar ? 2.15 : 1.5);
+}
+
+/**
+ * A chain or cable as a run of meshed boxes rather than line segments.
+ *
+ * `THREE.LineSegments` was the wrong primitive here: a 1-pixel unlit line of
+ * Aztec gold, alpha-blended over a dark river, is invisible from the `bridges`
+ * preset and reads as speckle on the railing. A box has real width in world
+ * units and takes the lighting, so it survives at city viewing distance. The
+ * widths are 2-4x the real steel for the same reason the towers are.
+ */
+function addChainRun(geoms, a, b, sag, segs, thick) {
+  let prev = null;
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const drop = sag * 4 * t * (1 - t);
+    const p = new THREE.Vector3(
+      a.x + (b.x - a.x) * t,
+      a.y + (b.y - a.y) * t - drop,
+      a.z + (b.z - a.z) * t,
+    );
+    if (prev) boxBetween(geoms, prev, p, thick, thick);
+    prev = p;
   }
 }
 
@@ -370,49 +403,81 @@ function addCatenary(lines, a, b, sag, segs = 20) {
  * is taken by the deck's stiffening girders, so they have no anchorages; the
  * Tenth Street bridge carries smooth wire cables into anchor blocks past the
  * deck ends.
+ *
+ * The chain is hung between the ends of the main structure, not the ends of the
+ * deck: these bridges carry girder approach bays outside the suspended span, and
+ * running the backstays out to the last abutment draped cable over roadway that
+ * is really sitting on bents.
  */
-function addSuspension(geoms, lines, concrete, frame, deckY, width, rec, fracs) {
+function addSuspension(geoms, concrete, frame, deckY, width, rec, fracs, main) {
   const eyebar = !!rec.eyebar;
-  const towerTop = deckY + rec.tower;
-  const endY = deckY + 1.8;
+  const towerH = towerHeight(rec);
+  const towerTop = deckY + towerH;
   const off = width * 0.42;
   const t0 = fracs[0];
   const t1 = fracs[fracs.length - 1];
-  const midY = deckY + rec.tower * (eyebar ? 0.34 : 0.24);
+  // The chain is anchored into the top of the stiffening truss.
+  const girderTop = deckY + 2.4;
+  const endY = girderTop;
+  /**
+   * Where the chain passes midspan. On the sisters it comes right down onto the
+   * stiffening truss, which is the signature of the type and worth keeping: the
+   * suspenders shorten to nothing at the centre and the chain reads as a shallow
+   * polygonal drape rather than a deep catenary.
+   */
+  const midY = eyebar ? girderTop + 0.8 : deckY + towerH * 0.26;
+  const chainThick = eyebar ? 0.9 : 0.7;
+  const hangThick = eyebar ? 0.38 : 0.3;
 
   for (const t of fracs) {
+    const legBase = deckY - 4;
     for (const side of [-1, 1]) {
-      const legBase = deckY - 4;
       const leg = at(frame, t, (legBase + towerTop) * 0.5, side, off);
-      addBox(geoms, leg, new THREE.Vector3(2.8, towerTop - legBase, 2.4), frame.quat);
+      addBox(geoms, leg, new THREE.Vector3(4.4, towerTop - legBase, 3.8), frame.quat);
+      // Finial above the saddle, so the top of the tower has a profile.
+      addBox(geoms, at(frame, t, towerTop + 2.9, side, off), new THREE.Vector3(2.2, 3.4, 2.0), frame.quat);
     }
-    addBox(geoms, at(frame, t, towerTop + 0.9), new THREE.Vector3(3.4, 1.8, width * 0.98), frame.quat);
-    addBox(geoms, at(frame, t, deckY + rec.tower * 0.6), new THREE.Vector3(2.2, 1.3, width * 0.92), frame.quat);
+    // Portal beam over the roadway, plus a strut and cross bracing beneath it.
+    // The braced rectangle is what makes the pair of posts read as a tower
+    // rather than as two unrelated flecks of gold.
+    const strutY = deckY + towerH * 0.52;
+    addBox(geoms, at(frame, t, towerTop + 0.9), new THREE.Vector3(5.0, 2.6, width * 1.04), frame.quat);
+    addBox(geoms, at(frame, t, strutY), new THREE.Vector3(3.2, 1.9, width * 0.96), frame.quat);
+    for (const rising of [-1, 1]) {
+      boxBetween(
+        geoms,
+        at(frame, t, rising > 0 ? strutY : towerTop - 0.6, -1, off),
+        at(frame, t, rising > 0 ? towerTop - 0.6 : strutY, 1, off),
+        0.8,
+        0.8,
+      );
+    }
   }
 
   const chainAt = (t) => {
-    if (t <= t0) return endY + ((towerTop - endY) * (t - 0)) / (t0 || 1);
-    if (t >= t1) return towerTop + ((endY - towerTop) * (t - t1)) / (1 - t1 || 1);
+    if (t <= t0) return endY + ((towerTop - endY) * (t - main[0])) / (t0 - main[0] || 1);
+    if (t >= t1) return towerTop + ((endY - towerTop) * (t - t1)) / (main[1] - t1 || 1);
     const u = (t - t0) / (t1 - t0);
     return towerTop - (towerTop - midY) * 4 * u * (1 - u);
   };
 
   for (const side of [-1, 1]) {
     const p = (t, y) => at(frame, t, y, side, off);
-    const links = eyebar ? 5 : 9;
-    addCatenary(lines, p(0, endY), p(t0, towerTop), 0, links);
-    addCatenary(lines, p(t0, towerTop), p(t1, towerTop), towerTop - midY, eyebar ? 12 : 22);
-    addCatenary(lines, p(t1, towerTop), p(1, endY), 0, links);
+    const links = eyebar ? 4 : 8;
+    addChainRun(geoms, p(main[0], endY), p(t0, towerTop), 0, links, chainThick);
+    addChainRun(geoms, p(t0, towerTop), p(t1, towerTop), towerTop - midY, eyebar ? 12 : 22, chainThick);
+    addChainRun(geoms, p(t1, towerTop), p(main[1], endY), 0, links, chainThick);
 
-    const panel = eyebar ? 12 : 8;
-    const hangN = Math.max(8, Math.round(frame.len / panel));
+    const panel = eyebar ? 12 : 9;
+    const suspended = (main[1] - main[0]) * frame.len;
+    const hangN = Math.max(8, Math.round(suspended / panel));
     for (let i = 1; i < hangN; i++) {
-      const t = i / hangN;
-      if (Math.abs(t - t0) < 0.02 || Math.abs(t - t1) < 0.02) continue;
+      const t = main[0] + ((main[1] - main[0]) * i) / hangN;
+      if (Math.abs(t - t0) < 0.015 || Math.abs(t - t1) < 0.015) continue;
       const top = p(t, chainAt(t));
-      const foot = p(t, deckY + 1.1);
-      if (top.y - foot.y < 1.2) continue;
-      lines.push(top.x, top.y, top.z, foot.x, foot.y, foot.z);
+      const foot = p(t, girderTop - 0.4);
+      if (top.y - foot.y < 1.4) continue;
+      boxBetween(geoms, top, foot, hangThick, hangThick);
     }
 
     // Stiffening girders: the reason a self-anchored span needs no anchorage.
@@ -428,8 +493,13 @@ function addSuspension(geoms, lines, concrete, frame, deckY, width, rec, fracs) 
   }
 }
 
-/** Arch rib through one span, with hangers or spandrel columns to the deck. */
-function addArchRib(geoms, lines, frame, a, b, springY, crownY, deckY, off, segs = 16) {
+/**
+ * Arch rib through one span, with hangers or spandrel columns to the deck. The
+ * hangers are boxes for the same reason the suspension chains are: as lines they
+ * left West End's and Fort Pitt's ribs floating over the deck with nothing
+ * visible tying them down.
+ */
+function addArchRib(geoms, frame, a, b, springY, crownY, deckY, off, segs = 16) {
   for (const side of [-1, 1]) {
     let prev = null;
     for (let i = 0; i <= segs; i++) {
@@ -442,7 +512,7 @@ function addArchRib(geoms, lines, frame, a, b, springY, crownY, deckY, off, segs
       if (i === 0 || i === segs) continue;
       const foot = at(frame, t, deckY, side, off);
       if (Math.abs(p.y - foot.y) < 1.5) continue;
-      if (p.y > foot.y) lines.push(p.x, p.y, p.z, foot.x, foot.y, foot.z);
+      if (p.y > foot.y) boxBetween(geoms, p, foot, 0.4, 0.4);
       else if (i % 2 === 0) boxBetween(geoms, p, foot, 0.8, 0.8);
     }
   }
@@ -505,21 +575,31 @@ function addThroughTruss(geoms, frame, a, b, deckY, width, depth) {
   }
 }
 
-/** Lens-shaped Pauli truss: both chords curve, meeting at the pier points. */
+/**
+ * Lens-shaped Pauli truss: both chords curve, meeting at the pier points.
+ *
+ * The lens is the whole point of Smithfield, and at the published 12 m rise over
+ * a 5.5 m drop it was closing up into a flat lattice smear by the time the
+ * bridge was 800 m away. The lens is opened up by half again, and the two chords
+ * are drawn markedly heavier than the web members so the eye reads as an
+ * outline rather than as uniform grey mesh.
+ */
 function addLenticular(geoms, frame, a, b, deckY, width, rise, drop) {
   const off = width * 0.44;
   const segs = Math.max(6, Math.round(((b - a) * frame.len) / 14));
+  const lensUp = rise * 1.65;
+  const lensDown = drop * 1.65;
   for (const side of [-1, 1]) {
-    const topAt = (u) => at(frame, a + (b - a) * u, deckY + 1 + rise * Math.sin(Math.PI * u), side, off);
-    const botAt = (u) => at(frame, a + (b - a) * u, deckY + 0.4 - drop * Math.sin(Math.PI * u), side, off);
+    const topAt = (u) => at(frame, a + (b - a) * u, deckY + 1 + lensUp * Math.sin(Math.PI * u), side, off);
+    const botAt = (u) => at(frame, a + (b - a) * u, deckY + 0.4 - lensDown * Math.sin(Math.PI * u), side, off);
     for (let i = 0; i <= segs; i++) {
       const u = i / segs;
-      boxBetween(geoms, botAt(u), topAt(u), 0.5, 0.5);
+      boxBetween(geoms, botAt(u), topAt(u), 0.8, 0.8);
       if (i === segs) continue;
       const u2 = (i + 1) / segs;
-      boxBetween(geoms, topAt(u), topAt(u2), 0.75, 0.75);
-      boxBetween(geoms, botAt(u), botAt(u2), 0.65, 0.65);
-      boxBetween(geoms, botAt(u), topAt(u2), 0.4, 0.4);
+      boxBetween(geoms, topAt(u), topAt(u2), 1.4, 1.3);
+      boxBetween(geoms, botAt(u), botAt(u2), 1.2, 1.1);
+      boxBetween(geoms, botAt(u), topAt(u2), 0.6, 0.6);
     }
   }
   for (const u of [0, 1]) {
@@ -580,7 +660,6 @@ function addGirders(geoms, frame, a, b, deckY, width, depth) {
 export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = true }) {
   const group = new THREE.Group();
   const steelGeoms = new Map();
-  const steelLines = new Map();
   const concreteGeoms = [];
   const deckGeoms = [];
   const walkGeoms = [];
@@ -611,7 +690,6 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
       const deckY = Math.max(rec.clear + thick * 0.5 + 0.6, Math.max(h0, h1) + 2.4);
       const width = rec.width;
       const steel = bucket(steelGeoms, rec.paint);
-      const lines = bucket(steelLines, rec.paint);
       const { main, ranges, bays } = layout(frame, rec.spans, waterIndex);
       const fracs = ranges.slice(0, -1).map((r) => r[1]);
       const upperY = rec.upper ? deckY + rec.upper : null;
@@ -643,11 +721,11 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
       const archIndex = rec.arch ?? -1;
       switch (rec.form) {
         case 'suspension':
-          addSuspension(steel, lines, concreteGeoms, frame, deckY, width, rec, fracs);
+          addSuspension(steel, concreteGeoms, frame, deckY, width, rec, fracs, main);
           break;
         case 'tied-arch':
           ranges.forEach(([a, c], i) => {
-            if (i === archIndex) addArchRib(steel, lines, frame, a, c, deckY + 1, deckY + rec.rise, deckY + 1.2, width * 0.42);
+            if (i === archIndex) addArchRib(steel, frame, a, c, deckY + 1, deckY + rec.rise, deckY + 1.2, width * 0.42);
             else addPonyTruss(steel, frame, a, c, deckY + 1, width, 3.4);
           });
           break;
@@ -656,7 +734,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
           // upper deck rides inside the arch rather than under it.
           ranges.forEach(([a, c], i) => {
             if (i === archIndex)
-              addArchRib(steel, lines, frame, a, c, deckY + 1, deckY + rec.rise, deckY + 1.2, width * 0.54, 18);
+              addArchRib(steel, frame, a, c, deckY + 1, deckY + rec.rise, deckY + 1.2, width * 0.54, 18);
             else addPonyTruss(steel, frame, a, c, deckY + 1, width, 3.4);
           });
           for (const [a, c] of ranges) {
@@ -672,7 +750,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
           break;
         case 'through-arch':
           for (const [a, c] of ranges) {
-            addArchRib(steel, lines, frame, a, c, deckY - 3.5, deckY + rec.rise, deckY + 1.2, width * 0.46, 18);
+            addArchRib(steel, frame, a, c, deckY - 3.5, deckY + rec.rise, deckY + 1.2, width * 0.46, 18);
           }
           break;
         case 'deck-arch':
@@ -716,7 +794,7 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
       }
 
       if (!lateral) {
-        const crest = rec.tower ?? rec.rise ?? rec.depth ?? 12;
+        const crest = rec.tower ? towerHeight(rec) + 4 : rec.rise ?? rec.depth ?? 12;
         addLabel(b.n, at(frame, (main[0] + main[1]) * 0.5, (upperY ?? deckY) + crest + 22));
       }
     }
@@ -764,22 +842,6 @@ export function buildBridges(bridges, { yFn, waterIndex, addLabel, dayMode = tru
   addMerged(concreteGeoms, concreteMat);
   addMerged(deckGeoms, deckMat);
   addMerged(walkGeoms, walkMat, false);
-
-  for (const [name, arr] of steelLines) {
-    if (arr.length < 6) continue;
-    const geom = new THREE.BufferGeometry();
-    geom.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
-    group.add(
-      new THREE.LineSegments(
-        geom,
-        new THREE.LineBasicMaterial({
-          color: PAINT[name] || PAINT.steel,
-          transparent: true,
-          opacity: 0.85,
-        }),
-      ),
-    );
-  }
 
   return group;
 }
