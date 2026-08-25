@@ -14,12 +14,6 @@
  */
 import { overpass, project } from './osm.mjs';
 
-/** The extent the dataset is authored for; see scripts/rebuild-water.mjs. */
-export const SCENE = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
-
-export const inScene = (x, z) =>
-  x > SCENE.minX && x < SCENE.maxX && z > SCENE.minZ && z < SCENE.maxZ;
-
 export function pointInRing(x, z, ring) {
   let inside = false;
   for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i++) {

@@ -16,7 +16,7 @@
  *
  * Read-only. Run: node scripts/audit-bridges.mjs
  */
-import { readData } from './osm.mjs';
+import { inScene, readData } from './osm.mjs';
 import { RIVER_BRIDGES } from './landmark-checklist.mjs';
 import { nameKey, pointSegDist } from './osm-features.mjs';
 import {
@@ -24,7 +24,6 @@ import {
   angleGap,
   bearing180,
   fetchBridgeWays,
-  inScene,
   makeWetTest,
   solveDeck,
 } from './bridge-geom.mjs';

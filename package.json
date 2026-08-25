@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "audit:geo": "node scripts/verify-geography.mjs",
+    "repair:geo": "node scripts/repair-footprints.mjs && node scripts/repair-heights.mjs"
   },
   "dependencies": {
     "pngjs": "^7.0.0",

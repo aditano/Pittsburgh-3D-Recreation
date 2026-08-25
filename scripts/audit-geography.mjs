@@ -19,7 +19,7 @@
  * Read-only. Run: node scripts/audit-geography.mjs
  */
 import polygonClipping from 'polygon-clipping';
-import { overpass, project, readData, ringArea, ringFromGeometry } from './osm.mjs';
+import { overpass, project, readData, ringArea, ringFromGeometry, SCENE } from './osm.mjs';
 import {
   areaCentroid,
   AUDIT_BBOX,
@@ -32,9 +32,6 @@ import {
 } from './osm-features.mjs';
 
 const fmt = (n, d = 1) => Number(n).toFixed(d);
-
-/** The extent rebuild-water.mjs clips the river surfaces to. */
-const SCENE = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
 
 function absArea(ring) {
   return Math.abs(ringArea(ring));

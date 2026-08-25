@@ -90,16 +90,21 @@ export const CHECKLIST = [
 /**
  * The two funiculars, for checking the hard-coded alignments in
  * src/landmarks.js against the station houses in the dataset.
- * Track lengths are the operators' published figures.
+ *
+ * `run` is the HORIZONTAL run, not the track length: src/landmarks.js stores
+ * `lower` and `upper` as x/z points and the distance between them is a plan
+ * distance, so comparing it against the operators' published slope length
+ * charges the model 20% of error it does not have. Derived from the published
+ * track length and rise, which for these grades is the same as length x cos(grade).
  */
 export const INCLINE_STATIONS = {
   'Duquesne Incline': {
-    run: 241.7, // 793 ft of track
+    run: 208.4, // 793.7 ft of track rising 400 ft, so 684 ft of plan run
     lower: 'Duquesne Lower Station',
     upper: 'Duquesne Upper Station',
   },
   'Monongahela Incline': {
-    run: 193.5, // 635 ft of track
+    run: 157.6, // 635 ft of track rising 369.39 ft, so 517 ft of plan run
     lower: 'Monongahela Lower Station',
     upper: 'Monongahela Upper Station',
   },

@@ -35,6 +35,17 @@ export function project(lat, lon, p = PROJECTION) {
   return [(lon - p.lon0) * p.mPerDegLon, -(lat - p.lat0) * p.mPerDegLat];
 }
 
+/**
+ * The extent the dataset is authored for: 13.2 km east-west by 8.6 km
+ * north-south, the box the river surfaces and the terrain grid are clipped to.
+ * OSM geometry outside it is out of frame, not missing, and every audit has to
+ * agree on where that edge is or they contradict each other.
+ */
+export const SCENE = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
+
+export const inScene = (x, z) =>
+  x > SCENE.minX && x < SCENE.maxX && z > SCENE.minZ && z < SCENE.maxZ;
+
 export function unproject(x, z, p = PROJECTION) {
   return [p.lat0 - z / p.mPerDegLat, p.lon0 + x / p.mPerDegLon];
 }

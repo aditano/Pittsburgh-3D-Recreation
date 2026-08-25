@@ -12,23 +12,30 @@
  *   - the same, per neighbourhood tile, so a hole in one district cannot be
  *     hidden by a good average across the city
  *
- * Centroids are fetched with `out center`, which is two orders of magnitude
- * smaller than `out geom` for ~40k footprints and is all a placement test needs.
+ * Positions come from `out center`, which is two orders of magnitude smaller
+ * than `out geom` over 86k footprints. Overpass `center` is the centre of a
+ * way's bounding box, not its area centroid, so the dataset side is reduced the
+ * same way: comparing a bbox centre against an area centroid reports 45 m of
+ * "error" for Pittsburgh Union Station, whose footprint actually overlays OSM's
+ * to within 0.5 m — the L-shaped head house simply has its mass off to one side
+ * of its own bounding box.
  *
  * Read-only. Run: node scripts/audit-coverage.mjs
  */
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { overpass, project, readData, ringArea, ROOT } from './osm.mjs';
-import { areaCentroid, percentile } from './osm-features.mjs';
+import { inScene, overpass, project, readData, ringArea, ROOT } from './osm.mjs';
+import { AUDIT_BBOX, bbox, percentile } from './osm-features.mjs';
 
 const fmt = (n, d = 1) => Number(n).toFixed(d);
 
-/** The extent the dataset was built for; OSM outside it is not a dataset fault. */
-const SCENE = { minX: -4600, maxX: 8600, minZ: -4000, maxZ: 4600 };
-const BBOX = '40.400,-80.090,40.490,-79.880';
+const framed = ([x, z]) => inScene(x, z);
 
-const inScene = ([x, z]) => x > SCENE.minX && x < SCENE.maxX && z > SCENE.minZ && z < SCENE.maxZ;
+/** Matches Overpass `center`: the middle of the ring's bounding box. */
+function bboxCentre(ring) {
+  const b = bbox(ring);
+  return [(b.minX + b.maxX) / 2, (b.minZ + b.maxZ) / 2];
+}
 
 /** Uniform grid index; the scene is 13 km x 8.6 km so a 200 m cell is ample. */
 function grid(points, cell = 200) {
@@ -80,11 +87,11 @@ async function fetchStockDigest() {
 
   const res = await overpass(
     'coverage-centres',
-    `[out:json][timeout:300];(way["building"](${BBOX});relation["building"](${BBOX}););out ids center;`,
+    `[out:json][timeout:300];(way["building"](${AUDIT_BBOX});relation["building"](${AUDIT_BBOX}););out ids center;`,
   );
   const named = await overpass(
     'coverage-named-centres',
-    `[out:json][timeout:240];(way["building"]["name"](${BBOX});relation["building"]["name"](${BBOX}););out ids center tags;`,
+    `[out:json][timeout:240];(way["building"]["name"](${AUDIT_BBOX});relation["building"]["name"](${AUDIT_BBOX}););out ids center tags;`,
   );
   const namesById = new Map();
   for (const el of named.elements) {
@@ -97,7 +104,7 @@ async function fetchStockDigest() {
     const c = el.center || (el.lat != null ? { lat: el.lat, lon: el.lon } : null);
     if (!c) continue;
     const p = project(c.lat, c.lon);
-    if (!inScene(p)) continue;
+    if (!framed(p)) continue;
     pts.push([+p[0].toFixed(1), +p[1].toFixed(1)]);
     names.push(namesById.get(`${el.type}/${el.id}`) || null);
   }
@@ -119,8 +126,8 @@ const ours = [];
 const oursMeta = [];
 for (const b of data.buildings) {
   if (!b.f || b.f.length < 4) continue;
-  const c = areaCentroid(b.f);
-  if (!inScene(c)) continue;
+  const c = bboxCentre(b.f);
+  if (!framed(c)) continue;
   ours.push(c);
   oursMeta.push(b);
 }
