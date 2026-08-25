@@ -1115,7 +1115,7 @@ export function buildPncPark(spec = {}) {
   // east. Bisecting the two foul lines of the OSM pitch ring gives 110.8 deg and
   // Clem's survey gives 111.2; that also puts the foul poles on Federal Street
   // (left, bearing 76) and the riverfront trail (right, bearing 156), which is
-  // how the park is described. `field.open` is 104 deg and reads ~7 deg short.
+  // how the park is described. `field.open` is now 21 deg (bearing 111).
   const yaw = surveyedAxis(spec.orientYaw, 21 * DEG);
 
   const oriented = new THREE.Group();
