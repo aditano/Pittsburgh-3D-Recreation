@@ -755,7 +755,7 @@ function makeParkMask(parks) {
  * Trees go where Pittsburgh actually has them: inside mapped parks and on the
  * steep wooded hillsides that wall in the river valleys.
  */
-function plantTrees(parks, terrainFn, waterIndex, yFn, wooded) {
+function plantTrees(parks, terrainFn, waterIndex, yFn, wooded, exclude = null) {
   const dummy = new THREE.Object3D();
   const inPark = makeParkMask(parks);
   const positions = [];
@@ -768,6 +768,10 @@ function plantTrees(parks, terrainFn, waterIndex, yFn, wooded) {
       const jx = x + (hash01(x, z) - 0.5) * 14;
       const jz = z + (hash01(z, x) - 0.5) * 14;
       if (waterIndex.inside(jx, jz) || waterIndex.nearBank(jx, jz)) continue;
+      // Point State Park plants itself, to its own path layout. Letting the
+      // generic pass plant it as well doubled the canopy there and closed over
+      // the lawn, which on the real Point is the whole point of it.
+      if (exclude && pointInPoly(jx, jz, exclude)) continue;
 
       const slope =
         Math.hypot(
@@ -1218,7 +1222,7 @@ async function buildCity(data, landcover) {
   });
   scene.add(bridgeGroup);
 
-  const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn, wooded);
+  const trees = plantTrees(data.parks || [], terrainFn, waterIndex, yFn, wooded, pointRing);
   if (trees) scene.add(trees);
 
   placeLandmarkLabels(data, yFn);
