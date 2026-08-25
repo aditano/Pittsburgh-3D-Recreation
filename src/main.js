@@ -370,6 +370,44 @@ function makeWoodIndex(polys) {
   };
 }
 
+/**
+ * Per-vertex variation for a mown-turf surface.
+ *
+ * A park polygon drawn in one flat colour reads as a green rug laid over the
+ * terrain: the ground under it carries 30 m vertex-colour noise and the polygon
+ * carries none, so the seam at its edge is the strongest line in the frame even
+ * though the two surfaces are 45 cm apart. Giving the polygon its own variation
+ * on a comparable scale puts the two on the same footing, and the edge then
+ * reads as a mowing line rather than as a pasted decal.
+ *
+ * Two octaves: a broad one for the drift between a sunny and a shaded sward,
+ * and a fine one for mower stripes and wear.
+ */
+function tintTurf(geom, base) {
+  const pos = geom.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const z = pos.getZ(i);
+    const broad = hash01(Math.floor(x / 34), Math.floor(z / 34)) - 0.5;
+    const fine = hash01(Math.floor(x / 9) * 1.7, Math.floor(z / 9) * 1.3) - 0.5;
+    const v = 1 + broad * 0.30 + fine * 0.14;
+    // Drier grass is yellower as well as lighter, so the hue rides with the
+    // value rather than wandering independently of it.
+    c.setRGB(
+      Math.min(1, base[0] * v * (1 + broad * 0.10)),
+      Math.min(1, base[1] * v),
+      Math.min(1, base[2] * v * (1 - broad * 0.14)),
+    );
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geom;
+}
+
 function groundColor(x, y, z, slope, waterIndex, density, wooded, dayMode = true) {
   const tint = dayMode ? GROUND_TINTS.day : GROUND_TINTS.night;
   if (waterIndex.inside(x, z)) return tint.bed;
@@ -907,6 +945,21 @@ function buildingTint(b, cx, cz) {
 }
 
 /**
+ * The park material with per-vertex variation switched on. Cloned rather than
+ * changed in place because the mown surfaces are the only ones that carry
+ * vertex colours, and turning the flag on for the shared material would make
+ * every other mesh drawn with it render untinted white.
+ */
+let turfMatCache = null;
+function turfMat() {
+  if (!turfMatCache) {
+    turfMatCache = materials.parkMat.clone();
+    turfMatCache.vertexColors = true;
+  }
+  return turfMatCache;
+}
+
+/**
  * Flat land-cover surfaces from OSM: car parks, yards, plazas and lawns.
  *
  * Drawn as polygons rather than baked into the ground mesh's vertex colours
@@ -934,7 +987,7 @@ function buildLandcover(polys, yFn, waterIndex) {
     try {
       const g = flatPolygon(p.f, 0.45, yFn);
       applyXZUvs(g, 0.045);
-      bucket.push(g);
+      bucket.push(p.c === 1 ? tintTurf(g, [1, 1, 1]) : g);
     } catch {
       /* self-intersecting OSM ring; the ground tint still covers it */
     }
@@ -943,7 +996,7 @@ function buildLandcover(polys, yFn, waterIndex) {
   const surfaces = [
     { cls: 0, mat: materials.pavingMat },
     { cls: 3, mat: materials.sandMat },
-    { cls: 1, mat: materials.parkMat },
+    { cls: 1, mat: turfMat() },
   ];
   for (const { cls, mat } of surfaces) {
     const geoms = byClass[cls];
@@ -985,15 +1038,15 @@ async function buildCity(data, landcover) {
       if (pointInPoly(pcx, pcz, pointRing)) continue;
     }
     try {
-      const g = flatPolygon(p.f, 0.85, yFn);
+      const g = flatPolygon(p.f, 0.5, yFn);
       applyXZUvs(g, 0.012);
-      parkGeoms.push(g);
+      parkGeoms.push(tintTurf(g, [1, 1, 1]));
     } catch {
       /* skip bad poly */
     }
   }
   if (parkGeoms.length) {
-    const parkMesh = new THREE.Mesh(mergeGeometries(parkGeoms, false), materials.parkMat);
+    const parkMesh = new THREE.Mesh(mergeGeometries(parkGeoms, false), turfMat());
     parkMesh.receiveShadow = true;
     scene.add(parkMesh);
   }
@@ -1036,6 +1089,11 @@ async function buildCity(data, landcover) {
   let buildingCount = 0;
   const roofGeoms = [];
   const tiers = [0, 0, 0];
+  // Rooftop clutter is placed in a second pass from the source records, so it
+  // has to be told which of them actually became a building. Otherwise the
+  // culled river footprints and the floating landings sprout vents and cooling
+  // towers over open water with nothing underneath them.
+  const roofSubjects = [];
 
   for (const b of data.buildings) {
     if (!b.f || b.f.length < 4) continue;
@@ -1097,6 +1155,7 @@ async function buildCity(data, landcover) {
         if (roof) roofGeoms.push(roof);
       }
 
+      if (!afloat) roofSubjects.push(b);
       tiers[tier] += 1;
       buildingCount += 1;
     } catch {
@@ -1124,7 +1183,7 @@ async function buildCity(data, landcover) {
   }
 
   scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex, data.pointPark, waterCull));
-  scene.add(buildRooftopDetails(data.buildings, yFn));
+  scene.add(buildRooftopDetails(roofSubjects, yFn));
   scene.add(buildStreetLights(data.streets || [], yFn, waterIndex, { dayMode: DAY_MODE }));
   if (!DAY_MODE) buildStreetLightGlows(data.streets || [], yFn, waterIndex, scene);
 
