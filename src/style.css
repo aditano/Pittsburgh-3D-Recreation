@@ -17,7 +17,11 @@ html,
 body {
   width: 100%;
   height: 100%;
+  height: 100dvh;
   overflow: hidden;
+  position: fixed;
+  inset: 0;
+  overscroll-behavior: none;
   background: var(--bg);
   color: var(--ink);
   font-family: "DM Sans", system-ui, sans-serif;
@@ -27,6 +31,8 @@ body {
 #app {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 0;
 }
 

@@ -1,12 +1,18 @@
 import * as THREE from 'three';
 
-export function createSkyDome({ day = true } = {}) {
-  const geo = new THREE.SphereGeometry(12000, 48, 32);
+export function createSkyDome({ day = true, sunDir = null } = {}) {
+  // Sit on the camera, well inside the far plane. A 12 km sphere at the world
+  // origin is clipped by `camera.far` from the outer neighbourhoods, and the
+  // composer/clear colour behind those holes is black — the "big black box"
+  // at some headings on phones.
+  const geo = new THREE.SphereGeometry(4000, 32, 24);
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
+    depthTest: true,
     depthWrite: false,
+    fog: false,
     uniforms: {
-      uSunDir: { value: new THREE.Vector3(0.55, 0.42, 0.22).normalize() },
+      uSunDir: { value: (sunDir ? sunDir.clone() : new THREE.Vector3(0.55, 0.42, 0.22)).normalize() },
       uHorizon: { value: new THREE.Color(day ? 0xb8d4f0 : 0x1a2838) },
       uZenith: { value: new THREE.Color(day ? 0x4a90d9 : 0x050810) },
       uGlow: { value: new THREE.Color(day ? 0xfff4d8 : 0x2a3a4a) },
@@ -14,11 +20,10 @@ export function createSkyDome({ day = true } = {}) {
       uDay: { value: day ? 1.0 : 0.0 },
     },
     vertexShader: `
-      varying vec3 vWorldPos;
+      varying vec3 vDir;
       void main() {
-        vec4 wp = modelMatrix * vec4(position, 1.0);
-        vWorldPos = wp.xyz;
-        gl_Position = projectionMatrix * viewMatrix * wp;
+        vDir = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
@@ -28,9 +33,9 @@ export function createSkyDome({ day = true } = {}) {
       uniform vec3 uGlow;
       uniform vec3 uCityGlow;
       uniform float uDay;
-      varying vec3 vWorldPos;
+      varying vec3 vDir;
       void main() {
-        vec3 dir = normalize(vWorldPos);
+        vec3 dir = normalize(vDir);
         float h = dir.y * 0.5 + 0.5;
         vec3 col = mix(uHorizon, uZenith, pow(h, mix(0.65, 0.85, uDay)));
         float sun = pow(max(dot(dir, uSunDir), 0.0), mix(64.0, 128.0, uDay));
@@ -45,6 +50,11 @@ export function createSkyDome({ day = true } = {}) {
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
+  mesh.fog = false;
+  mesh.renderOrder = -1000;
+  mesh.onBeforeRender = (_renderer, _scene, camera) => {
+    mesh.position.copy(camera.position);
+  };
   return mesh;
 }
 

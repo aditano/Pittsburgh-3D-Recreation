@@ -42,9 +42,33 @@ const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
 
 const DAY_MODE = true;
+const CLEAR_COLOR = DAY_MODE ? 0x8ec8f0 : 0x05070c;
+
+/**
+ * Phones (especially iOS Safari) will silently shrink the WebGL drawing buffer
+ * and leak bloom-pass viewports when the scene is this heavy. Treat coarse
+ * pointers, iOS, and Android as constrained; desktop keeps the full path.
+ */
+function isConstrainedGpu() {
+  const ua = navigator.userAgent || '';
+  const iOS =
+    /iP(hone|ad|od)/.test(ua) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const android = /Android/i.test(ua);
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+  const small = Math.min(window.innerWidth, window.innerHeight) < 820;
+  return iOS || android || (coarse && small);
+}
+
+const CONSTRAINED_GPU = isConstrainedGpu();
+
+function targetPixelRatio() {
+  const dpr = window.devicePixelRatio || 1;
+  return CONSTRAINED_GPU ? 1 : Math.min(dpr, 2);
+}
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(DAY_MODE ? 0x8ec8f0 : 0x05070c);
+scene.background = new THREE.Color(CLEAR_COLOR);
 // Real Allegheny valley haze is a warm-grey blue, not the near-white the old
 // value read as once the ambient came down.
 scene.fog = new THREE.FogExp2(DAY_MODE ? 0x9dbcd8 : 0x05070c, DAY_MODE ? 0.00009 : 0.00026);
@@ -54,16 +78,19 @@ camera.position.set(900, 650, 1100);
 
 const renderer = new THREE.WebGLRenderer({
   canvas,
-  antialias: true,
+  antialias: !CONSTRAINED_GPU,
+  alpha: false,
+  stencil: false,
   powerPreference: 'high-performance',
   logarithmicDepthBuffer: false,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(CLEAR_COLOR, 1);
+renderer.setPixelRatio(targetPixelRatio());
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = DAY_MODE ? 1.0 : 1.08;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = CONSTRAINED_GPU ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
 
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.domElement.className = 'label-layer';
@@ -104,7 +131,7 @@ const SHADOW_HALF = 1500;
 
 const sun = new THREE.DirectionalLight(0xfff6e8, DAY_MODE ? 2.9 : 1.15);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(CONSTRAINED_GPU ? 1024 : 2048, CONSTRAINED_GPU ? 1024 : 2048);
 sun.shadow.camera.near = 20;
 sun.shadow.camera.far = 6500;
 sun.shadow.camera.left = -SHADOW_HALF;
@@ -151,20 +178,31 @@ const materials = createCityMaterials({ dayMode: DAY_MODE });
 materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
 scene.environmentIntensity = DAY_MODE ? 0.42 : 0.55;
-scene.add(createSkyDome({ day: DAY_MODE }));
+scene.add(createSkyDome({ day: DAY_MODE, sunDir: SUN_DIR }));
 
 let composer;
 function initComposer() {
+  // UnrealBloomPass renders into a chain of smaller half-float targets and
+  // composites back to the default framebuffer. On iOS that FBO/viewport
+  // round-trip leaves the top of the canvas uncleared — a solid black
+  // rectangle, HTML labels still visible on top. Daytime bloom is 0.12
+  // anyway; skip the composer on constrained GPUs and render straight out.
+  if (CONSTRAINED_GPU) {
+    composer = null;
+    return;
+  }
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(
-    new THREE.Vector2(window.innerWidth, window.innerHeight),
+    new THREE.Vector2(viewW, viewH),
     DAY_MODE ? 0.12 : 0.42,
     DAY_MODE ? 0.35 : 0.55,
     DAY_MODE ? 0.92 : 0.72,
   );
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(viewW, viewH);
 }
 
 const roadLineMats = {
@@ -1452,22 +1490,63 @@ window.addEventListener('hashchange', () => {
 let viewW = window.innerWidth;
 let viewH = window.innerHeight;
 
+function viewportCssSize() {
+  const el = renderer.domElement;
+  let w = Math.round(el.clientWidth);
+  let h = Math.round(el.clientHeight);
+  if (w < 2 || h < 2) {
+    const vv = window.visualViewport;
+    w = Math.round(vv?.width || window.innerWidth);
+    h = Math.round(vv?.height || window.innerHeight);
+  }
+  return { w, h };
+}
+
 function onResize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
+  const { w, h } = viewportCssSize();
   viewW = w;
-  viewH = h;
-  camera.aspect = w / h;
+  viewH = Math.max(h, 1);
+  camera.aspect = viewW / viewH;
   camera.updateProjectionMatrix();
-  renderer.setSize(w, h, false);
-  labelRenderer.setSize(w, h);
-  if (composer) composer.setSize(w, h);
+
+  const ratio = targetPixelRatio();
+  renderer.setPixelRatio(ratio);
+  renderer.setSize(viewW, viewH, false);
+
+  // Safari will quietly give you a smaller drawing buffer than you asked for
+  // when GPU memory is tight. Three.js still sizes the viewport to the request,
+  // so the extra rows (WebGL origin is bottom-left) stay uncleared — a black
+  // slab across the top of the canvas at some camera angles / memory loads.
+  const gl = renderer.getContext();
+  const expectedW = Math.max(1, Math.floor(viewW * renderer.getPixelRatio()));
+  const expectedH = Math.max(1, Math.floor(viewH * renderer.getPixelRatio()));
+  if (gl.drawingBufferWidth < expectedW || gl.drawingBufferHeight < expectedH) {
+    const fit = Math.min(gl.drawingBufferWidth / viewW, gl.drawingBufferHeight / viewH);
+    renderer.setPixelRatio(Math.max(0.75, Math.floor(fit * 100) / 100));
+    renderer.setSize(viewW, viewH, false);
+  }
+
+  renderer.setViewport(0, 0, viewW, viewH);
+  renderer.setScissorTest(false);
+
+  labelRenderer.setSize(viewW, viewH);
+  if (composer) {
+    composer.setPixelRatio(renderer.getPixelRatio());
+    composer.setSize(viewW, viewH);
+  }
 }
 window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', onResize);
+window.visualViewport?.addEventListener('resize', onResize);
+window.visualViewport?.addEventListener('scroll', onResize);
 onResize();
 
 function tick(now) {
   requestAnimationFrame(tick);
+
+  const cw = Math.round(renderer.domElement.clientWidth);
+  const ch = Math.round(renderer.domElement.clientHeight);
+  if (cw !== viewW || ch !== viewH) onResize();
 
   if (anim) {
     const t = Math.min(1, (now - anim.start) / anim.duration);
@@ -1495,8 +1574,12 @@ function tick(now) {
   focusGlow.position.z = controls.target.z;
 
   controls.update();
-  if (composer) composer.render();
-  else renderer.render(scene, camera);
+  if (composer) {
+    composer.render();
+    renderer.setViewport(0, 0, viewW, viewH);
+  } else {
+    renderer.render(scene, camera);
+  }
   camera.updateMatrixWorld();
   updateLabels(viewW, viewH);
   labelRenderer.render(scene, camera);
