@@ -48,6 +48,7 @@ body {
 .hud-tl,
 .hud-tr,
 .hud-nav,
+.hud-weather,
 .loader {
   position: absolute;
   z-index: 20;
@@ -69,6 +70,125 @@ body {
   top: 28px;
   right: 32px;
   text-align: right;
+  pointer-events: none;
+  z-index: 110;
+}
+
+.hud-tr .layers {
+  max-width: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-toggle {
+  appearance: none;
+  display: inline-block;
+  margin-top: 12px;
+  pointer-events: auto;
+  border: 1px solid var(--line);
+  background: rgba(8, 12, 20, 0.55);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.settings-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: min(280px, 78vw);
+  padding: 14px;
+  text-align: left;
+  background: rgba(8, 12, 20, 0.82);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  pointer-events: auto;
+  z-index: 30;
+}
+
+.settings-panel[hidden] {
+  display: none;
+}
+
+.settings-kicker {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.settings-kicker + .seg + .settings-kicker {
+  margin-top: 14px;
+}
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.seg button {
+  appearance: none;
+  flex: 1 1 auto;
+  border: 0;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 6px;
+  cursor: pointer;
+}
+
+.seg button.active,
+.hud-weather button.active {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.settings-note {
+  margin-top: 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.hud-weather {
+  top: 28px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 4px;
+  padding: 6px;
+  background: rgba(8, 12, 20, 0.55);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  pointer-events: auto;
+  border-radius: 2px;
+  z-index: 100;
+}
+
+.hud-weather button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  cursor: pointer;
+  white-space: nowrap;
 }
 
 .eyebrow {
@@ -95,11 +215,6 @@ body {
   color: var(--muted);
   font-weight: 400;
   max-width: 36ch;
-}
-
-.hud-tr .layers {
-  max-width: none;
-  font-variant-numeric: tabular-nums;
 }
 
 .crosshair {
@@ -172,7 +287,9 @@ body {
 }
 
 .hud-nav button:hover,
-.hud-nav button.active {
+.hud-nav button.active,
+.hud-weather button:hover,
+.seg button:hover {
   color: var(--ink);
   background: rgba(255, 255, 255, 0.06);
 }
@@ -237,6 +354,23 @@ body {
 
   .hud-tr {
     right: 16px;
+  }
+
+  .hud-weather {
+    top: 72px;
+    left: 16px;
+    right: 16px;
+    transform: none;
+    justify-content: flex-start;
+  }
+
+  .hud-weather button {
+    padding: 8px 12px;
+  }
+
+  .settings-toggle {
+    margin-top: 8px;
+    padding: 7px 10px;
   }
 
   .meta {

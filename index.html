@@ -35,7 +35,34 @@
     <aside class="hud-tr">
       <div class="eyebrow">Layers</div>
       <div class="layers" id="layers">buildings · loading</div>
+      <button type="button" class="settings-toggle" id="settings-toggle" aria-expanded="false" aria-controls="settings">
+        Settings
+      </button>
+      <div class="settings-panel" id="settings" hidden>
+        <div class="settings-kicker">Quality</div>
+        <div class="seg" id="quality-seg" role="group" aria-label="Quality">
+          <button type="button" data-quality="low">Low</button>
+          <button type="button" data-quality="medium">Medium</button>
+          <button type="button" data-quality="high">High</button>
+          <button type="button" data-quality="ultra">Ultra</button>
+        </div>
+        <div class="settings-kicker">Resolution</div>
+        <div class="seg" id="resolution-seg" role="group" aria-label="Resolution">
+          <button type="button" data-resolution="50">50%</button>
+          <button type="button" data-resolution="75">75%</button>
+          <button type="button" data-resolution="100">100%</button>
+          <button type="button" data-resolution="150">150%</button>
+          <button type="button" data-resolution="200">200%</button>
+        </div>
+        <p class="settings-note">Lower either if the city stutters. Bloom stays off on phones.</p>
+      </div>
     </aside>
+
+    <nav class="hud-weather" id="weather" aria-label="Weather">
+      <button type="button" data-weather="sunny" class="active">Sunny</button>
+      <button type="button" data-weather="rain">Rain</button>
+      <button type="button" data-weather="snow">Snow</button>
+    </nav>
 
     <nav class="hud-nav" id="nav">
       <button type="button" data-view="aerial">Aerial</button>

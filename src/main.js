@@ -31,6 +31,13 @@ import { buildBridges } from './bridges.js';
 import { buildLandmarkMeshes, isLandmarkMeshBuilding, INCLINES } from './landmarks.js';
 import { buildStreetLights, buildRooftopDetails, buildStreetLightGlows } from './details.js';
 import { createSkyDome, createEnvironmentMap } from './sky.js';
+import { createWeatherFX, applyWeatherLook } from './weather.js';
+import {
+  QUALITY,
+  loadSettings,
+  saveSettings,
+  pixelRatioFor,
+} from './quality.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -40,6 +47,9 @@ const canvas = document.getElementById('c');
 const layersEl = document.getElementById('layers');
 const loaderEl = document.getElementById('loader');
 const navEl = document.getElementById('nav');
+const weatherEl = document.getElementById('weather');
+const settingsToggle = document.getElementById('settings-toggle');
+const settingsPanel = document.getElementById('settings');
 
 const DAY_MODE = true;
 const CLEAR_COLOR = DAY_MODE ? 0x8ec8f0 : 0x05070c;
@@ -61,10 +71,10 @@ function isConstrainedGpu() {
 }
 
 const CONSTRAINED_GPU = isConstrainedGpu();
+let settings = loadSettings(CONSTRAINED_GPU);
 
 function targetPixelRatio() {
-  const dpr = window.devicePixelRatio || 1;
-  return CONSTRAINED_GPU ? 1 : Math.min(dpr, 2);
+  return pixelRatioFor(settings.resolution);
 }
 
 const scene = new THREE.Scene();
@@ -89,8 +99,10 @@ renderer.setPixelRatio(targetPixelRatio());
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = DAY_MODE ? 1.0 : 1.08;
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = CONSTRAINED_GPU ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
+renderer.shadowMap.enabled = QUALITY[settings.quality].shadows;
+renderer.shadowMap.type = QUALITY[settings.quality].shadowSoft
+  ? THREE.PCFSoftShadowMap
+  : THREE.PCFShadowMap;
 
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.domElement.className = 'label-layer';
@@ -130,8 +142,11 @@ const SUN_DIR = new THREE.Vector3(DAY_MODE ? 0.55 : 0.5, DAY_MODE ? 0.72 : 0.74,
 const SHADOW_HALF = 1500;
 
 const sun = new THREE.DirectionalLight(0xfff6e8, DAY_MODE ? 2.9 : 1.15);
-sun.castShadow = true;
-sun.shadow.mapSize.set(CONSTRAINED_GPU ? 1024 : 2048, CONSTRAINED_GPU ? 1024 : 2048);
+sun.castShadow = QUALITY[settings.quality].shadows;
+sun.shadow.mapSize.set(
+  QUALITY[settings.quality].shadowSize,
+  QUALITY[settings.quality].shadowSize,
+);
 sun.shadow.camera.near = 20;
 sun.shadow.camera.far = 6500;
 sun.shadow.camera.left = -SHADOW_HALF;
@@ -178,19 +193,29 @@ const materials = createCityMaterials({ dayMode: DAY_MODE });
 materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
 scene.environmentIntensity = DAY_MODE ? 0.42 : 0.55;
-scene.add(createSkyDome({ day: DAY_MODE, sunDir: SUN_DIR }));
+const sky = createSkyDome({ day: DAY_MODE, sunDir: SUN_DIR });
+scene.add(sky);
+
+const weatherFx = createWeatherFX();
+scene.add(weatherFx.root);
 
 let composer;
+function bloomAllowed() {
+  return !CONSTRAINED_GPU && QUALITY[settings.quality].bloom;
+}
+function disposeComposer() {
+  if (!composer) return;
+  composer.dispose();
+  composer = null;
+}
 function initComposer() {
   // UnrealBloomPass renders into a chain of smaller half-float targets and
   // composites back to the default framebuffer. On iOS that FBO/viewport
   // round-trip leaves the top of the canvas uncleared — a solid black
   // rectangle, HTML labels still visible on top. Daytime bloom is 0.12
   // anyway; skip the composer on constrained GPUs and render straight out.
-  if (CONSTRAINED_GPU) {
-    composer = null;
-    return;
-  }
+  disposeComposer();
+  if (!bloomAllowed()) return;
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
   const bloom = new UnrealBloomPass(
@@ -204,6 +229,88 @@ function initComposer() {
   composer.setPixelRatio(renderer.getPixelRatio());
   composer.setSize(viewW, viewH);
 }
+
+function syncSettingsUi() {
+  for (const btn of document.querySelectorAll('#quality-seg [data-quality]')) {
+    btn.classList.toggle('active', btn.dataset.quality === settings.quality);
+  }
+  for (const btn of document.querySelectorAll('#resolution-seg [data-resolution]')) {
+    btn.classList.toggle('active', Number(btn.dataset.resolution) === settings.resolution);
+  }
+  for (const btn of weatherEl.querySelectorAll('[data-weather]')) {
+    btn.classList.toggle('active', btn.dataset.weather === settings.weather);
+  }
+}
+
+function applyQuality() {
+  const q = QUALITY[settings.quality];
+  renderer.shadowMap.enabled = q.shadows;
+  renderer.shadowMap.type = q.shadowSoft ? THREE.PCFSoftShadowMap : THREE.PCFShadowMap;
+  sun.castShadow = q.shadows;
+  if (sun.shadow.map && sun.shadow.mapSize.x !== q.shadowSize) {
+    sun.shadow.map.dispose();
+    sun.shadow.map = null;
+  }
+  sun.shadow.mapSize.set(q.shadowSize, q.shadowSize);
+  weatherFx.setParticleScale(q.particles);
+  if (bloomAllowed()) {
+    if (!composer) initComposer();
+  } else {
+    disposeComposer();
+  }
+  onResize();
+  syncSettingsUi();
+}
+
+function setWeather(kind) {
+  settings.weather = kind;
+  saveSettings(settings);
+  weatherFx.setWeather(kind);
+  applyWeatherLook(kind, {
+    sky,
+    scene,
+    sun,
+    hemi,
+    fill,
+    renderer,
+    waterUniforms: materials.waterUniforms,
+  });
+  syncSettingsUi();
+}
+
+settingsToggle.addEventListener('click', (ev) => {
+  ev.stopPropagation();
+  const open = settingsPanel.hasAttribute('hidden');
+  settingsPanel.toggleAttribute('hidden', !open);
+  settingsToggle.setAttribute('aria-expanded', String(open));
+});
+document.addEventListener('click', (ev) => {
+  if (settingsPanel.hasAttribute('hidden')) return;
+  if (settingsPanel.contains(ev.target) || settingsToggle.contains(ev.target)) return;
+  settingsPanel.setAttribute('hidden', '');
+  settingsToggle.setAttribute('aria-expanded', 'false');
+});
+document.getElementById('quality-seg').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-quality]');
+  if (!btn) return;
+  settings.quality = btn.dataset.quality;
+  saveSettings(settings);
+  applyQuality();
+});
+document.getElementById('resolution-seg').addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-resolution]');
+  if (!btn) return;
+  settings.resolution = Number(btn.dataset.resolution);
+  saveSettings(settings);
+  onResize();
+  syncSettingsUi();
+});
+weatherEl.addEventListener('click', (ev) => {
+  const btn = ev.target.closest('[data-weather]');
+  if (!btn) return;
+  setWeather(btn.dataset.weather);
+});
+syncSettingsUi();
 
 const roadLineMats = {
   0: new THREE.LineBasicMaterial({ color: 0x2e3440, transparent: true, opacity: 0.55 }),
@@ -611,7 +718,7 @@ const keptBoxes = [];
  * boxes means the existing nearest-wins pass handles it: the chrome is simply a
  * region already claimed by something more important than any label.
  */
-const chromeSelectors = ['.hud-tl', '.hud-tr', '#nav'];
+const chromeSelectors = ['.hud-tl', '.hud-tr', '#nav', '#weather'];
 function reserveChrome() {
   for (const sel of chromeSelectors) {
     const el = document.querySelector(sel);
@@ -1541,8 +1648,11 @@ window.visualViewport?.addEventListener('resize', onResize);
 window.visualViewport?.addEventListener('scroll', onResize);
 onResize();
 
+let lastTick = performance.now();
 function tick(now) {
   requestAnimationFrame(tick);
+  const dt = Math.min(0.05, (now - lastTick) / 1000);
+  lastTick = now;
 
   const cw = Math.round(renderer.domElement.clientWidth);
   const ch = Math.round(renderer.domElement.clientHeight);
@@ -1567,6 +1677,7 @@ function tick(now) {
   }
 
   materials.waterUniforms.uTime.value = now * 0.001;
+  weatherFx.update(dt, camera, now);
   aimSun(controls.target);
   focusLight.position.set(controls.target.x, 750, controls.target.z);
   focusLight.target.position.copy(controls.target);
@@ -1603,7 +1714,8 @@ requestAnimationFrame(tick);
     // working downtown rather than no city at all.
     const fabric = fabricRes.ok ? await fabricRes.json() : null;
     await buildCity(data, landcover, fabric);
-    initComposer();
+    applyQuality();
+    setWeather(settings.weather);
     const start = viewFromHash() || 'downtown';
     setView(start);
     // Land on a hash-selected view immediately rather than flying in, so a

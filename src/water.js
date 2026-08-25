@@ -97,6 +97,7 @@ const SURFACE_GLSL = `
     float shade;
     vec2 slope;
     float chop;
+    float foam;
   };
 
   // 26, 57 and 83 degrees: mutually non-parallel, and none a multiple of
@@ -122,20 +123,23 @@ const SURFACE_GLSL = `
     float w2 = bandLimit(17.0, px);
     float w3 = bandLimit(7.0, px);
 
-    vec3 n0 = vnoiseD(vec2(along * 0.00435 - t * 0.021, side * 0.0096));
+    // t is seconds; uFlow is a cinematic multiplier so the current reads from
+    // a downtown camera instead of waiting a minute for a 200 m wave to pass.
+    float adv = t;
+    vec3 n0 = vnoiseD(vec2(along * 0.00435 - adv * 0.055, side * 0.0096));
     // Warp is measured in cells of the octave it is applied to, so a little
     // goes a long way: half a cell is enough to break the lattice alignment,
     // while a couple of cells shears the whole field into paint marbling.
     vec2 warp = n0.yz * 0.55;
 
     vec3 n1 = w1 > 0.0
-      ? vnoiseD(ROT1 * vec2(along * 0.0109 - t * 0.053, side * 0.0238) + warp)
+      ? vnoiseD(ROT1 * vec2(along * 0.0109 - adv * 0.14, side * 0.0238) + warp)
       : vec3(0.5, 0.0, 0.0);
     vec3 n2 = w2 > 0.0
-      ? vnoiseD(ROT2 * vec2(along * 0.027 - t * 0.13, side * 0.059) + warp * 1.35)
+      ? vnoiseD(ROT2 * vec2(along * 0.027 - adv * 0.34, side * 0.059) + warp * 1.35)
       : vec3(0.5, 0.0, 0.0);
     vec3 n3 = w3 > 0.0
-      ? vnoiseD(ROT3 * vec2(along * 0.067 - t * 0.32, side * 0.145) + warp * 1.7)
+      ? vnoiseD(ROT3 * vec2(along * 0.067 - adv * 0.82, side * 0.145) + warp * 1.7)
       : vec3(0.5, 0.0, 0.0);
 
     // Current lines: 8:1 anisotropy, which on its own would be exactly the
@@ -147,7 +151,15 @@ const SURFACE_GLSL = `
     // invisible from the air.
     float wl = bandLimit(28.0, px);
     float lines = wl > 0.0
-      ? vnoiseD(vec2(along * 0.0046 - t * 0.037, side * 0.0357) + warp * 0.8).x
+      ? vnoiseD(vec2(along * 0.0046 - adv * 0.095, side * 0.0357) + warp * 0.8).x
+      : 0.5;
+
+    // A dedicated current sheet, more elongated than the ripple stack, so the
+    // eye can track features moving downstream. Contrast stays in roughness
+    // and a little foam rather than a painted stripe.
+    float wc = bandLimit(14.0, px);
+    float current = wc > 0.0
+      ? vnoiseD(vec2(along * 0.016 - adv * 0.26, side * 0.095) + warp * 1.1).x
       : 0.5;
 
     River r;
@@ -173,8 +185,10 @@ const SURFACE_GLSL = `
     // surface. Calibrated so the mean lands near 0.35.
     r.chop = clamp(
       ((abs(n2.y) + abs(n2.z)) * w2 + (abs(n3.y) + abs(n3.z)) * w3) * 0.30
-      + (lines - 0.5) * 0.26 * wl,
+      + (lines - 0.5) * 0.26 * wl
+      + (current - 0.5) * 0.34 * wc,
       0.0, 1.0);
+    r.foam = clamp((current - 0.58) * 2.4 * wc + (lines - 0.62) * 1.4 * wl, 0.0, 1.0);
     return r;
   }`;
 
@@ -208,7 +222,11 @@ function skyGlsl(dayMode) {
 }
 
 export function createWaterMaterial({ dayMode = true } = {}) {
-  const uniforms = { uTime: { value: 0 } };
+  const uniforms = {
+    uTime: { value: 0 },
+    uFlow: { value: 1 },
+    uPrecip: { value: 0 },
+  };
 
   // Albedo is deliberately near-black: a silty river reflects only a few per
   // cent diffusely and almost everything you see in it is reflection. Anything
@@ -236,8 +254,11 @@ export function createWaterMaterial({ dayMode = true } = {}) {
     polygonOffsetUnits: 1,
   });
 
+  mat.customProgramCacheKey = () => 'river-surface-flow-v2';
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uFlow = uniforms.uFlow;
+    shader.uniforms.uPrecip = uniforms.uPrecip;
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -252,6 +273,8 @@ export function createWaterMaterial({ dayMode = true } = {}) {
 
     const flowCommon = `
       uniform float uTime;
+      uniform float uFlow;
+      uniform float uPrecip;
       varying vec3 vWorldPos;
       ${RIVER_FLOW_GLSL}
       ${NOISE_GLSL}
@@ -269,7 +292,7 @@ export function createWaterMaterial({ dayMode = true } = {}) {
          // world position. At grazing angles this grows fast, which is exactly
          // where the fine octaves have to go away.
          float rPx = max(length(fwidth(vWorldPos.xz)), 0.02);
-         River rField = riverField(vWorldPos.xz, rFlow, uTime, rPx);
+         River rField = riverField(vWorldPos.xz, rFlow, uTime * uFlow, rPx);
          vec3 rNormalW = normalize(vec3(
            -(rField.slope.x * rFlow.x + rField.slope.y * rAcross.x),
            1.0,
@@ -296,6 +319,14 @@ export function createWaterMaterial({ dayMode = true } = {}) {
            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.055, 0.039, 0.021),
              clamp(max(mon, ohio * 0.45) * 0.82 + plume, 0.0, 1.0));
            diffuseColor.rgb *= 0.82 + rField.shade * 0.38;
+           // Moving foam on the current sheet is what makes the river read as
+           // flowing from a few hundred metres up, where the ripple stack is
+           // only a slow morph.
+           float foam = rField.foam;
+           foam += step(0.5, uPrecip) * step(uPrecip, 1.5) * rField.chop * 0.35;
+           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.46, 0.52, 0.50), clamp(foam, 0.0, 1.0) * 0.55);
+           // Snow: paler, quieter surface.
+           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.26, 0.28), step(1.5, uPrecip) * 0.28);
          }`,
       )
       .replace(
@@ -305,7 +336,9 @@ export function createWaterMaterial({ dayMode = true } = {}) {
          // energy. Varying it this way is what turns one hard specular blob
          // into a broken glitter path, and because chop is already band-limited
          // the far bank stops sparkling once the ripples go subpixel.
-         roughnessFactor = clamp(roughnessFactor + rField.chop * 0.30 - 0.07, 0.09, 0.70);`,
+         roughnessFactor = clamp(roughnessFactor + rField.chop * 0.30 - 0.07
+           + step(0.5, uPrecip) * step(uPrecip, 1.5) * 0.10
+           - step(1.5, uPrecip) * 0.08, 0.09, 0.70);
       )
       .replace(
         '#include <normal_fragment_maps>',
