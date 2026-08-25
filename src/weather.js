@@ -66,10 +66,10 @@ export function createWeatherFX() {
     new THREE.PointsMaterial({
       map: streakTexture(),
       color: 0xeef4fb,
-      size: 42,
+      size: 24,
       sizeAttenuation: false,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.58,
       depthWrite: false,
       fog: false,
       toneMapped: false,
