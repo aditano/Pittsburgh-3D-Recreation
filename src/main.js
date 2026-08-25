@@ -127,8 +127,24 @@ function aimSun(at) {
 }
 aimSun(new THREE.Vector3(0, 0, 0));
 
+/**
+ * Skylight fill for the shadow side, kept deliberately low to the horizon.
+ *
+ * It used to sit at 38 degrees of elevation, opposite the usual camera, and that
+ * is the worst possible place for it: looking down at any horizontal surface the
+ * half-vector lands within a few degrees of straight up, so `dot(N,H)` hits 0.995
+ * across the whole surface at once and the entire river sat at the peak of the
+ * specular lobe. It measured ~1.7 in linear radiance, an order of magnitude over
+ * the water beneath it. Dropping it to 9 degrees keeps what it is for - lifting
+ * vertical walls out of shadow - and takes it off the mirror direction for
+ * everything flat.
+ *
+ * `sun` must stay the FIRST directional light added: the water shader reads
+ * `directionalLights[0]` for its glitter lobe, so adding another before it would
+ * hand the river a second sun.
+ */
 const fill = new THREE.DirectionalLight(DAY_MODE ? 0xbcd2ea : 0x6a7a9a, DAY_MODE ? 0.16 : 0.32);
-fill.position.set(-500, 400, -500);
+fill.position.set(-1140, 180, -700);
 scene.add(fill);
 
 const materials = createCityMaterials({ dayMode: DAY_MODE });
@@ -1185,6 +1201,13 @@ async function buildCity(data, landcover) {
     if (!materials.families[name]) continue;
     addChunks(geoms, materials.families[name].mat);
   }
+
+  // The roofscapes were being generated and dropped: a quarter of a million
+  // triangles of overruns, plant, cooling towers and parapets built on every
+  // load and never merged into the scene. From a flyover, which is the angle
+  // this city is mostly seen from, that left every roof a bare slab, and a bare
+  // slab is most of what makes a building read as a box.
+  if (roofGeoms.length) addChunks(roofGeoms, createRoofscapeMaterial({ dayMode: DAY_MODE }));
 
   scene.add(buildLandmarkMeshes(data.buildings, yFn, waterIndex, data.pointPark, waterCull));
   scene.add(buildRooftopDetails(roofSubjects, yFn));
