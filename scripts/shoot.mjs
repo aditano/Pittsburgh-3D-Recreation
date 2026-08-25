@@ -14,14 +14,18 @@
  */
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { blackFraction, decode } from './png.mjs';
 
 const base = process.argv[2] || 'http://localhost:5177/';
 const outDir = process.argv[3] || '/tmp/shots';
 const views = process.argv.slice(4);
 const wanted = views.length ? views : ['aerial', 'downtown', 'point', 'stadiums', 'bridges'];
 
-const WIDTH = Number(process.env.SHOT_WIDTH || 1600);
-const HEIGHT = Number(process.env.SHOT_HEIGHT || 900);
+// 960x540 is the largest frame this scene reliably completes under SwiftShader;
+// 1280x720 loses roughly half the viewport to dropped tiles. See the pixel check
+// below before raising it.
+const WIDTH = Number(process.env.SHOT_WIDTH || 960);
+const HEIGHT = Number(process.env.SHOT_HEIGHT || 540);
 const READY_TIMEOUT_MS = Number(process.env.SHOT_READY_MS || 180000);
 const ATTEMPTS = Number(process.env.SHOT_ATTEMPTS || 2);
 
@@ -162,11 +166,78 @@ async function shoot(view) {
     }
     if (!ready) throw new Error(`never finished loading (${lastMsg})`);
 
-    // Let the water animation and a couple of shadow frames settle.
-    await sleep(3500);
+    // Confirm the page actually honoured the requested preset. An unknown name
+    // silently falls back to `downtown`, which is how four "different" views
+    // came back byte-identical and got read as a rendering bug for hours.
+    const active = await call(
+      'Runtime.evaluate',
+      {
+        expression: `JSON.stringify({
+          active: (document.querySelector('#nav button.active') || {}).dataset?.view || null,
+          known: [...document.querySelectorAll('#nav button[data-view]')].map((b) => b.dataset.view),
+        })`,
+        returnByValue: true,
+      },
+      20000,
+    );
+    const nav = JSON.parse(active?.result?.value || '{}');
+    if (nav.active && nav.active !== view) {
+      throw new Error(`page fell back to "${nav.active}"; known views: ${(nav.known || []).join(', ')}`);
+    }
+
+    /**
+     * Wait on presented frames, not on the clock.
+     *
+     * Software rendering runs this scene at well under one frame per second, so
+     * the old fixed 3.5 s sleep bought about two frames and `captureScreenshot`
+     * came back mid-composite: whole bands of the viewport were still blank,
+     * which looked exactly like a black slab of geometry sitting over downtown.
+     * Counting `requestAnimationFrame` callbacks from inside the page measures
+     * the thing we actually need - that a full frame has been presented since
+     * the camera stopped moving.
+     */
+    await call('Runtime.evaluate', {
+      expression: `window.__shotFrames = 0;
+        (function count() { window.__shotFrames++; requestAnimationFrame(count); })();`,
+    });
+    const FRAMES = 6;
+    const frameDeadline = Date.now() + 180000;
+    let frames = 0;
+    while (frames < FRAMES && Date.now() < frameDeadline) {
+      await sleep(1000);
+      const r = await call(
+        'Runtime.evaluate',
+        { expression: 'window.__shotFrames | 0', returnByValue: true },
+        20000,
+      ).catch(() => null);
+      frames = r?.result?.value ?? frames;
+    }
+    if (frames < FRAMES) throw new Error(`only ${frames} frames in 180 s; renderer is stalled`);
+
     const shot = await call('Page.captureScreenshot', { format: 'png' }, 120000);
+    const buf = Buffer.from(shot.data, 'base64');
+
+    /**
+     * Reject captures the rasteriser gave up on.
+     *
+     * SwiftShader drops whole tiles when a frame is heavy enough, leaving them
+     * at pure black, and nothing in WebGL reports it: no context loss, no GL
+     * error, no console output, and the frame is stable across a minute so it
+     * does not look like a compositing race either. It reads as an enormous
+     * black slab of geometry parked over the middle of the city. This scene
+     * crosses that threshold somewhere between 960x540 and 1280x720, hence the
+     * default below. Checking the pixels is the only way to catch it.
+     */
+    const black = blackFraction(decode(buf));
+    if (black > 0.02) {
+      throw new Error(
+        `${(black * 100).toFixed(0)}% of the frame is #000000; the rasteriser dropped tiles. ` +
+          `Try a smaller SHOT_WIDTH/SHOT_HEIGHT than ${WIDTH}x${HEIGHT}.`,
+      );
+    }
+
     const path = `${outDir}/${view}.png`;
-    writeFileSync(path, Buffer.from(shot.data, 'base64'));
+    writeFileSync(path, buf);
     return path;
   } finally {
     ws?.close();
