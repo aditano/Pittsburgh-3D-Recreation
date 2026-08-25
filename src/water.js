@@ -154,12 +154,16 @@ const SURFACE_GLSL = `
       ? vnoiseD(vec2(along * 0.0046 - adv * 0.095, side * 0.0357) + warp * 0.8).x
       : 0.5;
 
-    // A dedicated current sheet, more elongated than the ripple stack, so the
-    // eye can track features moving downstream. Contrast stays in roughness
-    // and a little foam rather than a painted stripe.
-    float wc = bandLimit(14.0, px);
+    // A dedicated current sheet, long enough to survive an aerial pixel
+    // footprint. The old 14 m band vanished from The Point and downtown
+    // cameras, which is why the rivers looked painted on.
+    float wc = bandLimit(52.0, px);
     float current = wc > 0.0
-      ? vnoiseD(vec2(along * 0.016 - adv * 0.26, side * 0.095) + warp * 1.1).x
+      ? vnoiseD(vec2(along * 0.0072 - adv * 0.19, side * 0.0195) + warp * 0.7).x
+      : 0.5;
+    float wb = bandLimit(110.0, px);
+    float broad = wb > 0.0
+      ? vnoiseD(vec2(along * 0.0032 - adv * 0.085, side * 0.0074) + warp * 0.35).x
       : 0.5;
 
     River r;
@@ -167,7 +171,9 @@ const SURFACE_GLSL = `
       + (n0.x - 0.5) * 0.34 * w0
       + (n1.x - 0.5) * 0.26 * w1
       + (n2.x - 0.5) * 0.20 * w2
-      + (n3.x - 0.5) * 0.14 * w3;
+      + (n3.x - 0.5) * 0.14 * w3
+      + (current - 0.5) * 0.28 * wc
+      + (broad - 0.5) * 0.22 * wb;
 
     // Slopes stay small on purpose: a navigable pool-stage river is close to
     // glassy, and one degree of tilt already swings the reflected ray two
@@ -188,7 +194,7 @@ const SURFACE_GLSL = `
       + (lines - 0.5) * 0.26 * wl
       + (current - 0.5) * 0.34 * wc,
       0.0, 1.0);
-    r.foam = clamp((current - 0.58) * 2.4 * wc + (lines - 0.62) * 1.4 * wl, 0.0, 1.0);
+    r.foam = clamp((current - 0.52) * 1.8 * wc + (broad - 0.55) * 1.1 * wb + (lines - 0.62) * 1.4 * wl, 0.0, 1.0);
     return r;
   }`;
 

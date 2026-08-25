@@ -6,15 +6,15 @@ const VOLUME = { x: 420, y: 280, z: 420 };
 
 function streakTexture() {
   const canvas = document.createElement('canvas');
-  canvas.width = 8;
+  canvas.width = 16;
   canvas.height = 64;
   const ctx = canvas.getContext('2d');
   const g = ctx.createLinearGradient(0, 0, 0, 64);
-  g.addColorStop(0, 'rgba(210, 224, 240, 0)');
-  g.addColorStop(0.35, 'rgba(210, 224, 240, 0.55)');
-  g.addColorStop(1, 'rgba(210, 224, 240, 0)');
+  g.addColorStop(0, 'rgba(236, 244, 255, 0)');
+  g.addColorStop(0.2, 'rgba(236, 244, 255, 0.85)');
+  g.addColorStop(1, 'rgba(236, 244, 255, 0)');
   ctx.fillStyle = g;
-  ctx.fillRect(3, 0, 2, 64);
+  ctx.fillRect(5, 0, 6, 64);
   const tex = new THREE.CanvasTexture(canvas);
   tex.needsUpdate = true;
   return tex;
@@ -57,7 +57,7 @@ export function createWeatherFX() {
 
   const rainPos = new Float32Array(RAIN_MAX * 3);
   const rainVel = new Float32Array(RAIN_MAX);
-  fillCloud(RAIN_MAX, VOLUME, { min: 95, max: 160 }, rainPos, rainVel);
+  fillCloud(RAIN_MAX, VOLUME, { min: 38, max: 72 }, rainPos, rainVel);
   const rainGeom = new THREE.BufferGeometry();
   rainGeom.setAttribute('position', new THREE.BufferAttribute(rainPos, 3).setUsage(THREE.DynamicDrawUsage));
   rainGeom.setDrawRange(0, 0);
@@ -65,15 +65,15 @@ export function createWeatherFX() {
     rainGeom,
     new THREE.PointsMaterial({
       map: streakTexture(),
-      color: 0xc5d4e6,
-      size: 18,
+      color: 0xeef4fb,
+      size: 42,
       sizeAttenuation: false,
       transparent: true,
-      opacity: 0.42,
+      opacity: 0.78,
       depthWrite: false,
       fog: false,
       toneMapped: false,
-      blending: THREE.NormalBlending,
+      blending: THREE.AdditiveBlending,
     }),
   );
   rain.frustumCulled = false;
