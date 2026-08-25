@@ -338,7 +338,7 @@ export function createWaterMaterial({ dayMode = true } = {}) {
          // the far bank stops sparkling once the ripples go subpixel.
          roughnessFactor = clamp(roughnessFactor + rField.chop * 0.30 - 0.07
            + step(0.5, uPrecip) * step(uPrecip, 1.5) * 0.10
-           - step(1.5, uPrecip) * 0.08, 0.09, 0.70);
+           - step(1.5, uPrecip) * 0.08, 0.09, 0.70);`,
       )
       .replace(
         '#include <normal_fragment_maps>',
