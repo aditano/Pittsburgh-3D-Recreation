@@ -104,7 +104,11 @@ function withTimeout(promise, ms, label) {
 
 async function shoot(view) {
   const profile = `/tmp/shoot-profile-${process.pid}-${view}`;
-  rmSync(profile, { recursive: true, force: true });
+  try {
+    rmSync(profile, { recursive: true, force: true });
+  } catch {
+    /* leftover profile */
+  }
   const chrome = launch(profile);
   let ws;
   try {
@@ -167,7 +171,15 @@ async function shoot(view) {
   } finally {
     ws?.close();
     chrome.kill('SIGKILL');
-    rmSync(profile, { recursive: true, force: true });
+    // Chrome's I/O threads outlive the signal by a moment and recreate files
+    // under the profile as it unwinds, so a recursive delete here races them and
+    // throws ENOTEMPTY. Letting that escape reported a successful screenshot as
+    // a failure, so the profile is left for /tmp to reap instead.
+    try {
+      rmSync(profile, { recursive: true, force: true });
+    } catch {
+      /* leftover profile, harmless */
+    }
   }
 }
 
