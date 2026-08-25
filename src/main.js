@@ -504,7 +504,18 @@ function addLabel(text, position, rank = 2) {
     letter-spacing: 0.16em;
     text-transform: uppercase;
     white-space: nowrap;
-    text-shadow: 0 0 12px rgba(0,0,0,0.85);
+    /*
+     * A tight opaque ring, then a soft one. A single wide glow is what map
+     * labels usually get and it works over sky, but 12 px of 15%-transparent
+     * black spread around 10 px type is nearly invisible against a sunlit
+     * limestone facade, which is most of what these sit on. The 1 px ring is
+     * what actually separates the glyphs from the building; the wide glow just
+     * darkens the surround.
+     */
+    text-shadow:
+      0 1px 0 rgba(4,7,12,0.95), 1px 0 0 rgba(4,7,12,0.95),
+      0 -1px 0 rgba(4,7,12,0.95), -1px 0 0 rgba(4,7,12,0.95),
+      0 0 10px rgba(4,7,12,0.9);
     user-select: none;
     pointer-events: none;
     transition: opacity 160ms linear;
@@ -554,8 +565,28 @@ const LABEL_PAD_Y = 7;
 const labelProj = new THREE.Vector3();
 const keptBoxes = [];
 
+/**
+ * The fixed chrome - title block, layer readout, view bar - competes for the
+ * same pixels, and a landmark name printed across the middle of the standfirst
+ * makes both unreadable. The panels are the same white type on the same scene,
+ * so neither one wins by z-order. Seeding the collision list with their real
+ * boxes means the existing nearest-wins pass handles it: the chrome is simply a
+ * region already claimed by something more important than any label.
+ */
+const chromeSelectors = ['.hud-tl', '.hud-tr', '#nav'];
+function reserveChrome() {
+  for (const sel of chromeSelectors) {
+    const el = document.querySelector(sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    keptBoxes.push([r.left - 4, r.right + 4, r.top - 4, r.bottom + 4]);
+  }
+}
+
 function updateLabels(w, h) {
   keptBoxes.length = 0;
+  reserveChrome();
   const candidates = [];
 
   for (const lab of LABELS) {
@@ -1277,9 +1308,12 @@ const views = {
     position: new THREE.Vector3(300, 260, -140),
     target: new THREE.Vector3(20, 30, -540),
   },
+  // Both venues, from the north, with the skyline behind them. The old framing
+  // sat between the two looking away from PNC Park, so the "stadiums" view held
+  // one stadium and half a mile of parking.
   stadiums: {
-    position: new THREE.Vector3(-560, 300, -1180),
-    target: new THREE.Vector3(-900, 30, -650),
+    position: new THREE.Vector3(-700, 430, -1620),
+    target: new THREE.Vector3(-740, 30, -640),
   },
   oakland: {
     position: new THREE.Vector3(4780, 430, 260),
