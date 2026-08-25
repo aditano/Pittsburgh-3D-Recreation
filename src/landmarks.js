@@ -96,9 +96,17 @@ function addMerged(group, geoms, material, { cast = true, receive = true } = {})
  *   Duquesne Incline    793 ft of track, 400 ft of rise, opened 1877
  *   Monongahela Incline 635 ft of track, 369 ft of rise, opened 1870
  */
+/**
+ * Endpoints are the centroids of the four OSM station footprints, not hand-read
+ * points on the track. Read by eye both alignments came out about 9% short of
+ * the cited plan runs (Duquesne 208 m, Monongahela 158 m) because the track was
+ * being stopped short of the platforms at each end; seating it on the stations
+ * lands within 3% and 0% respectively, and it also guarantees the deck meets the
+ * station buildings the normal building pass draws.
+ */
 export const INCLINES = [
-  { n: 'Duquesne Incline', lower: [-1326.2, 128.5], upper: [-1419.3, 294.7], gauge: 5.2, cars: 2 },
-  { n: 'Monongahela Incline', lower: [-246.5, 952.3], upper: [-330.2, 1069.4], gauge: 4.4, cars: 2 },
+  { n: 'Duquesne Incline', lower: [-1320.8, 126.2], upper: [-1424.6, 299.9], gauge: 5.2, cars: 2 },
+  { n: 'Monongahela Incline', lower: [-243.7, 946.5], upper: [-334.8, 1074.6], gauge: 4.4, cars: 2 },
 ];
 
 function buildIncline(spec, yFn) {
