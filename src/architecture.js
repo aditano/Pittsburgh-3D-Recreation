@@ -1695,7 +1695,10 @@ const LANDMARKS = [
   // Lord & Burnham, 1893. Almost nothing of it is wall: a low stone plinth
   // carries barrel-vaulted display houses, and the Palm Court dome over the
   // centre is the tallest thing on the ridge.
-  { n: 'Phipps Conservatory', at: [4541.5, 139.7], r: 65, h: 22, shell: 0.34, crown: 'glasshouse' },
+  // Re-seated after the footprint repair: the old anchor was 102 m north of the
+  // glasshouse, left over from a footprint that was both misplaced and half the
+  // real area, and an anchor that falls outside its ring binds to nothing.
+  { n: 'Phipps Conservatory', at: [4558.6, 240.1], r: 65, h: 22, shell: 0.34, crown: 'glasshouse' },
   // Eight floors of a 1911 terminal warehouse, not the 14 m default.
   { n: 'The Andy Warhol Museum', at: [-42.6, -821.0], r: 35, h: 30, shell: 0.9, crown: 'classicalAttic' },
   // Carnegie Science Center, renamed Kamin in 2023; the Buhl Planetarium dome

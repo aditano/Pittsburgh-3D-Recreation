@@ -394,20 +394,47 @@ out geom;`;
   return found;
 }
 
+/**
+ * Long-axis bearing of a ring, by minimum-area enclosing rectangle.
+ *
+ * This replaced a second-moment fit over the vertices, which is the wrong tool
+ * for OSM geometry: PCA weights every vertex equally, so the answer moves with
+ * how densely a mapper happened to trace each side. Acrisure's playing surface
+ * is traced 44 times around a shape with four straight sides and it came out
+ * 74.3 degrees, skewing the stadium 9.5 degrees off its own field. The enclosing
+ * rectangle only cares where the extremes are, so tracing density cannot reach
+ * it: the same ring solves at 64.5 degrees, filling 94.2% of its box at
+ * 123.3 x 86.2 m against a real field of 120 x 49 m inside a 123 m surface.
+ *
+ * Swept rather than solved by rotating calipers. A quarter turn at 0.01 degrees
+ * is 9,000 iterations over rings of a few dozen points, which is nothing here,
+ * and it cannot get the wrong answer on a non-convex ring the way calipers can
+ * without a hull step first.
+ */
 function principalYaw(ring) {
-  const [cx, cz] = ringCentroid(ring);
-  let xx = 0;
-  let zz = 0;
-  let xz = 0;
-  const n = ring.length - 1;
-  for (let i = 0; i < n; i++) {
-    const dx = ring[i][0] - cx;
-    const dz = ring[i][1] - cz;
-    xx += dx * dx;
-    zz += dz * dz;
-    xz += dx * dz;
+  let best = null;
+  for (let i = 0; i < 9000; i++) {
+    const t = (i / 9000) * (Math.PI / 2);
+    const ca = Math.cos(-t);
+    const sa = Math.sin(-t);
+    let uLo = Infinity;
+    let uHi = -Infinity;
+    let vLo = Infinity;
+    let vHi = -Infinity;
+    for (const [x, z] of ring) {
+      const u = x * ca - z * sa;
+      const v = x * sa + z * ca;
+      if (u < uLo) uLo = u;
+      if (u > uHi) uHi = u;
+      if (v < vLo) vLo = v;
+      if (v > vHi) vHi = v;
+    }
+    const area = (uHi - uLo) * (vHi - vLo);
+    if (!best || area < best.area) best = { area, t, long: uHi - uLo, short: vHi - vLo };
   }
-  return 0.5 * Math.atan2(2 * xz, xx - zz);
+  // The sweep covers a quarter turn, so the box it found may be lying on its
+  // side; the caller wants the long axis, not whichever one came out first.
+  return best.long >= best.short ? best.t : best.t + Math.PI / 2;
 }
 
 /**
