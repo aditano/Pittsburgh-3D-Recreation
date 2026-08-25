@@ -1062,7 +1062,7 @@ function buildLandcover(polys, yFn, waterIndex) {
   return group;
 }
 
-async function buildCity(data, landcover) {
+async function buildCity(data, landcover, fabric) {
   const terrainFn = makeTerrain(data.terrain);
   // The rivers need two masks with opposite biases. Everything that shapes or
   // dresses the landform reads the true OSM water outline, so no ground is left
@@ -1214,6 +1214,68 @@ async function buildCity(data, landcover) {
     }
   }
 
+  /**
+   * The other 90% of the city.
+   *
+   * `pittsburgh.json` models 7,482 buildings, which is 8.6% of the OSM stock in
+   * frame and nearly all of it downtown. Everywhere else - Lawrenceville, the
+   * South Side flats, Squirrel Hill, the whole North Side - was a thin scatter
+   * of buildings on empty hillside, which is the single biggest reason the city
+   * did not read as Pittsburgh: the neighbourhoods that give it its shape were
+   * missing. `fabric.json` carries the remaining 77,621 as footprint and height
+   * only.
+   *
+   * Deliberately forced to tier 0, a plain extrusion with no articulation, no
+   * cornice and no roofscape. At the tier-1 average of 133 triangles this layer
+   * alone would be 10.3M triangles and swamp the modelled downtown it exists to
+   * surround; as plain prisms over footprints averaging 5.6 corners it is closer
+   * to 1.2M, about the same as the detailed core. These are background: at the
+   * distance you ever see them, the silhouette and the wall tone are all that
+   * survives anyway.
+   *
+   * The skirt matters more here than downtown. This is a city of ridges and
+   * hollows, most of this stock sits on ground that falls away across the plot,
+   * and without a skirt every house on a slope shows daylight under its uphill
+   * wall.
+   */
+  let fabricCount = 0;
+  if (fabric?.buildings?.length) {
+    for (const b of fabric.buildings) {
+      if (!b.f || b.f.length < 4) continue;
+      if (footprintWaterOverlap(b.f, waterCull) > 0.35) continue;
+      try {
+        const family = buildingFamily(b);
+        const spec = materials.families[family];
+        if (!spec) continue;
+
+        const height = Math.max(3, b.h || 8);
+        const baseY = footprintLandBaseY(b.f, yFn, waterIndex);
+        let low = baseY;
+        for (const [vx, vz] of b.f) low = Math.min(low, yFn(vx, vz));
+        const skirt = Math.min(28, Math.max(0, baseY - low) + 1.2);
+
+        const { wall } = buildArticulatedBuilding({
+          footprint: b.f,
+          height,
+          baseY,
+          style: family,
+          seed: footprintSeed(b.f),
+          tier: 0,
+          floorH: spec.floorH,
+          windowW: spec.windowW,
+          skirt,
+        });
+        if (!wall) continue;
+
+        tintGeometry(wall, buildingTint(b, ...footprintCentroid(b.f)));
+        buckets[family].push(wall);
+        fabricCount += 1;
+      } catch {
+        /* skip degenerate */
+      }
+    }
+  }
+
   const CHUNK = 800;
   function addChunks(geoms, mat) {
     for (let i = 0; i < geoms.length; i += CHUNK) {
@@ -1281,8 +1343,9 @@ async function buildCity(data, landcover) {
 
   placeLandmarkLabels(data, yFn);
 
-  layersEl.textContent = `buildings ${buildingCount.toLocaleString()} · live`;
-  return buildingCount;
+  const total = buildingCount + fabricCount;
+  layersEl.textContent = `buildings ${total.toLocaleString()} · live`;
+  return total;
 }
 
 /**
@@ -1439,16 +1502,21 @@ requestAnimationFrame(tick);
 
 (async () => {
   try {
-    const [res, coverRes] = await Promise.all([
+    const [res, coverRes, fabricRes] = await Promise.all([
       fetch('./data/pittsburgh.json'),
       fetch('./data/landcover.json'),
+      fetch('./data/fabric.json'),
     ]);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
     // Land cover only decides ground tone, so a missing or stale file should
     // degrade to the slope-and-density fallback rather than lose the city.
     const landcover = coverRes.ok ? await coverRes.json() : null;
-    await buildCity(data, landcover);
+    // Background fabric is additive: without it the city is a modelled downtown
+    // surrounded by empty hills, but a failure to fetch it should still leave a
+    // working downtown rather than no city at all.
+    const fabric = fabricRes.ok ? await fabricRes.json() : null;
+    await buildCity(data, landcover, fabric);
     initComposer();
     const start = viewFromHash() || 'downtown';
     setView(start);
