@@ -24,6 +24,8 @@ const controls={enabled:true,target:new THREE.Vector3()},canvas={addEventListene
 const walker=createWalker({camera,controls,canvas,scene,life,yFn:()=>0,waterIndex:water,buildings,onExit(){}});
 walker.enter(20,40);assert.equal(walker.active,true);assert.equal(controls.enabled,false);assert.equal(camera.near,.15);
 handlers.keydown({code:'KeyW',target:{tagName:'BODY'},preventDefault(){}});walker.update(.05);assert.ok(camera.position.toArray().every(Number.isFinite));
+handlers.keyup({code:'KeyW',target:{tagName:'BODY'},preventDefault(){}});
+const beforeRight=controls.target.x;handlers.keydown({code:'KeyD',target:{tagName:'BODY'},preventDefault(){}});walker.update(.05);assert.ok(controls.target.x<beforeRight,'D moves camera-right when facing south');
 walker.exit();assert.equal(controls.enabled,true);assert.equal(camera.near,2);assert.deepEqual(camera.position.toArray(),[100,100,100]);
 const transit=JSON.parse(readFileSync(new URL('../public/data/transit.json',import.meta.url)));
 for(const id of ['RED','BLUE','SLVR'])assert.ok(transit.routes.some(r=>r.id===id&&r.type==='rail'));

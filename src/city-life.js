@@ -68,7 +68,7 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
     signals.update(time);
     const queues=new Map();for(const a of agents){if(!queues.has(a.s))queues.set(a.s,[]);queues.get(a.s).push(a);}
     for(const q of queues.values()){q.sort((a,b)=>b.d-a.d);q.forEach((a,i)=>a.gap=i?(q[i-1].d-a.d)*a.s.length:Infinity);}
-    agents.forEach((a,i)=>{const p=advance(a,dt,time,a.gap),x=p.x+Math.cos(p.heading)*1.7,z=p.z-Math.sin(p.heading)*1.7,y=yFn(x,z)+1.15;
+    agents.forEach((a,i)=>{const p=advance(a,dt,time,a.gap),x=p.x-Math.cos(p.heading)*1.7,z=p.z+Math.sin(p.heading)*1.7,y=yFn(x,z)+1.15;
       matrix(cars,i,x,y+.65,z,p.heading,1.85,1.05,4.3);matrix(roofs,i,x-Math.sin(p.heading)*.25,y+1.3,z-Math.cos(p.heading)*.25,p.heading,1.65,.65,2.25);
       for(let k=0;k<2;k++)matrix(lamps,i*2+k,x+Math.sin(p.heading)*2.16+Math.cos(p.heading)*(k?-.6:.6),y+.8,z+Math.cos(p.heading)*2.16-Math.sin(p.heading)*(k?-.6:.6),p.heading,.35,.2,.12);
     });
@@ -100,7 +100,7 @@ export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,b
     let f=Number(keys.has('KeyW')||keys.has('ArrowUp'))-Number(keys.has('KeyS')||keys.has('ArrowDown'));
     let r=Number(keys.has('KeyD')||keys.has('ArrowRight'))-Number(keys.has('KeyA')||keys.has('ArrowLeft'));
     const norm=Math.hypot(f,r)||1,speed=(keys.has('ShiftLeft')||keys.has('ShiftRight')?5.5:2.4)*dt;
-    const dx=(Math.sin(yaw)*f+Math.cos(yaw)*r)/norm*speed,dz=(Math.cos(yaw)*f-Math.sin(yaw)*r)/norm*speed;
+    const dx=(Math.sin(yaw)*f-Math.cos(yaw)*r)/norm*speed,dz=(Math.cos(yaw)*f+Math.sin(yaw)*r)/norm*speed;
     const valid=(x,z)=>!blocked(x,z)&&Math.abs(yFn(x,z)+1.25-position.y)<1.5&&x>-4500&&x<8500&&z>-3900&&z<4500;
     if(valid(position.x+dx,position.z))position.x+=dx;if(valid(position.x,position.z+dz))position.z+=dz;
     position.y=yFn(position.x,position.z)+1.25;avatar.position.copy(position);if(f||r)avatar.rotation.y=Math.atan2(dx,dz);gait+=dt*(speed/dt||0)*2.7;avatar.userData.gait(gait,!!(f||r));
