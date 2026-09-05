@@ -93,7 +93,9 @@ scene.fog = new THREE.FogExp2(DAY_MODE ? 0x9dbcd8 : 0x05070c, DAY_MODE ? 0.00009
 const camera = new THREE.PerspectiveCamera(45, 1, 2, 25000);
 camera.position.set(900, 650, 1100);
 
-const renderer = new THREE.WebGLRenderer({
+let renderer;
+try {
+renderer = new THREE.WebGLRenderer({
   canvas,
   antialias: !CONSTRAINED_GPU,
   alpha: false,
@@ -101,6 +103,12 @@ const renderer = new THREE.WebGLRenderer({
   powerPreference: 'high-performance',
   logarithmicDepthBuffer: false,
 });
+} catch (error) {
+  loaderEl.querySelector('.loader-text').textContent = '3D rendering is unavailable in this browser. Enable graphics acceleration, then reload, or try another browser.';
+  loaderEl.classList.add('unsupported');
+  document.body.classList.add('unsupported-3d');
+  throw error;
+}
 renderer.setClearColor(CLEAR_COLOR, 1);
 renderer.setPixelRatio(targetPixelRatio());
 renderer.outputColorSpace = THREE.SRGBColorSpace;
