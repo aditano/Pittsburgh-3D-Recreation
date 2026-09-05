@@ -214,9 +214,9 @@ const SURFACE_GLSL = `
  * gradient in `createSkyDome` so the river agrees with the sky it sits under.
  */
 function skyGlsl(dayMode) {
-  const zenith = dayMode ? 'vec3(0.068, 0.278, 0.697)' : 'vec3(0.0010, 0.0020, 0.0050)';
-  const horizon = dayMode ? 'vec3(0.482, 0.661, 0.871)' : 'vec3(0.0100, 0.0215, 0.0410)';
-  const valley = dayMode ? 'vec3(0.072, 0.082, 0.079)' : 'vec3(0.0150, 0.0110, 0.0075)';
+  const zenith = 'uWaterZenith';
+  const horizon = 'uWaterHorizon';
+  const valley = 'mix(vec3(0.008, 0.009, 0.014), vec3(0.072, 0.082, 0.079), uWaterDay)';
   return `
     vec3 riverSurround(vec3 dir) {
       vec3 sky = mix(${horizon}, ${zenith}, pow(clamp(dir.y, 0.0, 1.0), 0.55));
@@ -232,6 +232,12 @@ export function createWaterMaterial({ dayMode = true } = {}) {
     uTime: { value: 0 },
     uFlow: { value: 1 },
     uPrecip: { value: 0 },
+    uWaterDay: { value: 1 },
+    uWaterZenith: { value: new THREE.Color(0x4a90d9) },
+    uWaterHorizon: { value: new THREE.Color(0xb8d4f0) },
+    uReflection: { value: null },
+    uReflectionMix: { value: 0 },
+    uReflectionMatrix: { value: new THREE.Matrix4() },
   };
 
   // Albedo is deliberately near-black: a silty river reflects only a few per
@@ -260,8 +266,9 @@ export function createWaterMaterial({ dayMode = true } = {}) {
     polygonOffsetUnits: 1,
   });
 
-  mat.customProgramCacheKey = () => 'river-surface-flow-v2';
+  mat.customProgramCacheKey = () => 'river-surface-reflection-v3';
   mat.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, uniforms);
     shader.uniforms.uTime = uniforms.uTime;
     shader.uniforms.uFlow = uniforms.uFlow;
     shader.uniforms.uPrecip = uniforms.uPrecip;
@@ -278,6 +285,12 @@ export function createWaterMaterial({ dayMode = true } = {}) {
       );
 
     const flowCommon = `
+      uniform float uWaterDay;
+      uniform vec3 uWaterZenith;
+      uniform vec3 uWaterHorizon;
+      uniform sampler2D uReflection;
+      uniform float uReflectionMix;
+      uniform mat4 uReflectionMatrix;
       uniform float uTime;
       uniform float uFlow;
       uniform float uPrecip;
@@ -299,6 +312,17 @@ export function createWaterMaterial({ dayMode = true } = {}) {
          // where the fine octaves have to go away.
          float rPx = max(length(fwidth(vWorldPos.xz)), 0.02);
          River rField = riverField(vWorldPos.xz, rFlow, uTime * uFlow, rPx);
+         // Fine wind ripples remain visible at walking distance, band-limited in aerial views.
+         float fineWeight=bandLimit(1.8,rPx);
+         vec2 fine=vec2(sin(dot(vWorldPos.xz,vec2(2.3,1.1))+uTime*2.2),cos(dot(vWorldPos.xz,vec2(-1.7,3.1))-uTime*2.8));
+         rField.slope+=fine*.012*fineWeight;
+         // Expanding raindrop rings, independently seeded per surface cell.
+         if(uPrecip>.5 && uPrecip<1.5){
+           vec2 cell=floor(vWorldPos.xz/1.8),f=fract(vWorldPos.xz/1.8)-.5;
+           float age=fract(uTime*1.3+vhash(cell));
+           float radius=length(f),ring=sin((radius-age*.65)*48.0)*exp(-abs(radius-age*.65)*24.0)*(1.0-age);
+           rField.slope+=normalize(f+vec2(.001))*ring*.025*fineWeight;
+         }
          vec3 rNormalW = normalize(vec3(
            -(rField.slope.x * rFlow.x + rField.slope.y * rAcross.x),
            1.0,
@@ -330,7 +354,7 @@ export function createWaterMaterial({ dayMode = true } = {}) {
            // only a slow morph.
            float foam = rField.foam;
            foam += step(0.5, uPrecip) * step(uPrecip, 1.5) * rField.chop * 0.35;
-           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.46, 0.52, 0.50), clamp(foam, 0.0, 1.0) * 0.55);
+           diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.46, 0.52, 0.50), clamp(foam, 0.0, 1.0) * 0.12);
            // Snow: paler, quieter surface.
            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.22, 0.26, 0.28), step(1.5, uPrecip) * 0.28);
          }`,
@@ -366,7 +390,16 @@ export function createWaterMaterial({ dayMode = true } = {}) {
            // is most of the visible mottling, because up is bright sky and the
            // mirror direction is usually the dark far bank.
            vec3 refl = normalize(mix(reflect(-rViewW, rNormalW), rNormalW, 0.03 + rField.chop * 0.20));
-           reflectedLight.indirectSpecular = riverSurround(refl) * fres;
+           vec3 reflected=riverSurround(refl);
+           if(uReflectionMix>.5){
+             vec4 projected=uReflectionMatrix*vec4(vWorldPos,1.0);
+             vec2 uv=projected.xy/projected.w;
+             uv+=rField.slope*.035;
+             float edge=smoothstep(0.0,.04,uv.x)*smoothstep(0.0,.04,uv.y)*smoothstep(0.0,.04,1.0-uv.x)*smoothstep(0.0,.04,1.0-uv.y);
+             vec3 captured=texture2D(uReflection,clamp(uv,vec2(.001),vec2(.999))).rgb;
+             reflected=mix(reflected,captured,edge*.88);
+           }
+           reflectedLight.indirectSpecular = reflected * fres;
          }
          // The scene lights the city with a sun plus a low fill from the
          // opposite quarter. On matte surfaces the fill only softens shadows,

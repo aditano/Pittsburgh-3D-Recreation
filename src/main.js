@@ -1,3 +1,9 @@
+import {createStreetDetail} from './street-detail.js';
+import {createRiverReflections} from './reflections.js';
+import { createCityLife, createWalker } from './city-life.js';
+import { createTransit } from './transit.js';
+import { createStorefronts } from './storefronts.js';
+import { createDayCycle } from './day-cycle.js';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
@@ -51,6 +57,7 @@ const weatherEl = document.getElementById('weather');
 const settingsToggle = document.getElementById('settings-toggle');
 const settingsPanel = document.getElementById('settings');
 
+let cityLife, walker, transit, storefronts, dayCycle, streetDetail, reflections;
 const DAY_MODE = true;
 const CLEAR_COLOR = DAY_MODE ? 0x8ec8f0 : 0x05070c;
 
@@ -164,6 +171,8 @@ scene.add(sun.target);
  * stays fixed, so shadows do not swing as the camera moves.
  */
 function aimSun(at) {
+  const half=walker?.active?100:SHADOW_HALF;
+  if(sun.shadow.camera.right!==half){sun.shadow.camera.left=-half;sun.shadow.camera.right=half;sun.shadow.camera.top=half;sun.shadow.camera.bottom=-half;sun.shadow.camera.updateProjectionMatrix();sun.shadow.normalBias=walker?.active ? .08 : .6;}
   sun.target.position.copy(at);
   sun.position.copy(at).addScaledVector(SUN_DIR, 2600);
 }
@@ -189,7 +198,7 @@ const fill = new THREE.DirectionalLight(DAY_MODE ? 0xbcd2ea : 0x6a7a9a, DAY_MODE
 fill.position.set(-1140, 180, -700);
 scene.add(fill);
 
-const materials = createCityMaterials({ dayMode: DAY_MODE });
+const materials = createCityMaterials({ dayMode: DAY_MODE, textureSize: CONSTRAINED_GPU ? 512 : 1024 });
 materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
 scene.environmentIntensity = DAY_MODE ? 0.42 : 0.55;
@@ -603,9 +612,14 @@ function groundColor(x, y, z, slope, waterIndex, density, wooded, dayMode = true
 const GROUND = { w: 15000, d: 11200, cx: 1200, cz: -400, segX: 500, segZ: 374 };
 
 function makeGround(terrainFn, waterIndex, density, wooded) {
-  const geom = new THREE.PlaneGeometry(GROUND.w, GROUND.d, GROUND.segX, GROUND.segZ);
-  geom.rotateX(-Math.PI / 2);
-  geom.translate(GROUND.cx, 0, GROUND.cz);
+  const pieces=[];
+  for(let z=-6000;z<5200;z+=400)for(let x=-6300;x<8700;x+=400){
+    const core=x>-2300&&x<3300&&z>-2800&&z<2000;
+    const segments=core&&!CONSTRAINED_GPU?40:16;
+    const w=Math.min(400,8700-x),d=Math.min(400,5200-z);
+    const tile=new THREE.PlaneGeometry(w,d,segments,segments);tile.rotateX(-Math.PI/2);tile.translate(x+w/2,0,z+d/2);pieces.push(tile);
+  }
+  const geom=mergeGeometries(pieces,false);pieces.forEach(g=>g.dispose());
   const pos = geom.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
@@ -1209,7 +1223,7 @@ function buildLandcover(polys, yFn, waterIndex) {
   return group;
 }
 
-async function buildCity(data, landcover, fabric) {
+async function buildCity(data, landcover, fabric, transitData, businessData, streetData) {
   const terrainFn = makeTerrain(data.terrain);
   // The rivers need two masks with opposite biases. Everything that shapes or
   // dresses the landform reads the true OSM water outline, so no ground is left
@@ -1491,6 +1505,19 @@ async function buildCity(data, landcover, fabric) {
 
   placeLandmarkLabels(data, yFn);
 
+  cityLife = createCityLife(data, yFn, waterIndex, scene, CONSTRAINED_GPU,streetData);
+  streetDetail=createStreetDetail(data,data.buildings,yFn,waterIndex,scene,CONSTRAINED_GPU);
+  const stopWalking = () => { walker?.exit(); document.getElementById('walk-toggle').textContent = 'Walk the city'; };
+  walker = createWalker({camera, controls, canvas, scene, life: cityLife, yFn, waterIndex, buildings: [...data.buildings, ...(fabric?.buildings || [])], onExit: stopWalking});
+  function walkAt(p) { anim=null;rotateMode=false;walker.enter(...p);document.getElementById('walk-toggle').textContent='Exit walking'; }
+  document.getElementById('walk-toggle').addEventListener('click',()=>walker.active?stopWalking():walkAt([controls.target.x,controls.target.z]));
+  function focusAt(p){stopWalking();rotateMode=false;animateCamera({position:new THREE.Vector3(p[0]+180,yFn(...p)+210,p[1]+230),target:new THREE.Vector3(p[0],yFn(...p)+15,p[1])},1200);}
+  if(transitData)transit=createTransit(transitData,scene,yFn,focusAt);
+  else document.getElementById('transit-info').textContent='Transit data unavailable. Reload to try again.';
+  if(businessData)storefronts=createStorefronts(businessData,data.buildings,yFn,scene,walkAt);
+  dayCycle=createDayCycle({sky,scene,sun,hemi,fill,renderer,waterUniforms:materials.waterUniforms,sunDir:SUN_DIR,materials},()=>settings.weather,setWeather);
+  reflections=createRiverReflections(renderer,scene,camera,materials.waterUniforms,materials.waterMat,[weatherFx.root,transit?.root]);
+  document.getElementById('street-life').addEventListener('change',e=>{cityLife.root.visible=e.target.checked;});
   const total = buildingCount + fabricCount;
   layersEl.textContent = `buildings ${total.toLocaleString()} · live`;
   return total;
@@ -1503,6 +1530,7 @@ async function buildCity(data, landcover, fabric) {
  * elevation grid puts at roughly (-1000, 550) and 126 m above pool.
  */
 const views = {
+  strip: {position:new THREE.Vector3(1750,260,-780),target:new THREE.Vector3(1480,30,-1140)},
   aerial: {
     position: new THREE.Vector3(-300, 2500, 900),
     target: new THREE.Vector3(-300, 0, -180),
@@ -1558,6 +1586,8 @@ function animateCamera(toView, duration = 2200) {
 }
 
 function setView(name) {
+  walker?.exit();
+  document.getElementById('walk-toggle').textContent='Walk the city';
   if (name === 'rotate') {
     rotateMode = !rotateMode;
     for (const btn of navEl.querySelectorAll('button')) {
@@ -1676,6 +1706,12 @@ function tick(now) {
     controls.target.set(20, 50, -20);
   }
 
+  const night=dayCycle?.update(dt) ?? 0;
+  cityLife?.update(dt,now*.001,night);
+  transit?.update(dt);
+  storefronts?.update(night);
+  walker?.update(dt);
+  streetDetail?.update(camera);
   materials.waterUniforms.uTime.value = now * 0.001;
   weatherFx.update(dt, camera, now);
   aimSun(controls.target);
@@ -1684,7 +1720,9 @@ function tick(now) {
   focusGlow.position.x = controls.target.x;
   focusGlow.position.z = controls.target.z;
 
-  controls.update();
+  if (!walker?.active) controls.update();
+  reflections?.update(dt,!CONSTRAINED_GPU&&(settings.quality==='high'||settings.quality==='ultra'));
+  renderer.setViewport(0,0,viewW,viewH);
   if (composer) {
     composer.render();
     renderer.setViewport(0, 0, viewW, viewH);
@@ -1699,10 +1737,13 @@ requestAnimationFrame(tick);
 
 (async () => {
   try {
-    const [res, coverRes, fabricRes] = await Promise.all([
+    const [res, coverRes, fabricRes, transitRes, businessRes, streetRes] = await Promise.all([
       fetch('./data/pittsburgh.json'),
       fetch('./data/landcover.json'),
       fetch('./data/fabric.json'),
+      fetch('./data/transit.json').catch(()=>null),
+      fetch('./data/strip-businesses.json').catch(()=>null),
+      fetch('./data/street-detail.json').catch(()=>null),
     ]);
     if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
     const data = await res.json();
@@ -1713,7 +1754,7 @@ requestAnimationFrame(tick);
     // surrounded by empty hills, but a failure to fetch it should still leave a
     // working downtown rather than no city at all.
     const fabric = fabricRes.ok ? await fabricRes.json() : null;
-    await buildCity(data, landcover, fabric);
+    await buildCity(data, landcover, fabric, transitRes?.ok ? await transitRes.json() : null, businessRes?.ok ? await businessRes.json() : null, streetRes?.ok ? await streetRes.json() : null);
     applyQuality();
     setWeather(settings.weather);
     const start = viewFromHash() || 'downtown';

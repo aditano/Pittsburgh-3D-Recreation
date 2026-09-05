@@ -18,11 +18,11 @@ const ZOOM = 14;
 const TILE_DIR = join(ROOT, 'scripts/osm-cache/terrain');
 
 /**
- * Grid at 40 m spacing, sized to contain the whole ground plane in main.js with
+ * Grid at 10 m spacing, sized to contain the whole ground plane in main.js with
  * margin. Anything the grid misses gets edge-clamped at runtime, which drags
  * valley-wall elevations sideways across the rivers, so the cover must be total.
  */
-const GRID = { minX: -6600, minZ: -6300, step: 40, cols: 388, rows: 295 };
+const GRID = { minX: -6600, minZ: -6300, step: 10, cols: 1549, rows: 1177 };
 
 /**
  * Normal pool elevation of the three rivers (Emsworth Pool is tagged ele=219,

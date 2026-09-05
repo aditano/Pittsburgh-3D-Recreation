@@ -1,0 +1,86 @@
+{
+  "source": "OpenStreetMap contributors, Overpass Strip District extract",
+  "places": [
+    {
+      "name": "Primanti Bros.",
+      "p": [
+        1394.0796888207617,
+        -1086.4052759998794
+      ],
+      "osm": "https://www.openstreetmap.org/node/2412692684",
+      "address": ""
+    },
+    {
+      "name": "Pamela's Diner",
+      "p": [
+        1556.6881476572908,
+        -1220.701723999984
+      ],
+      "osm": "https://www.openstreetmap.org/node/6074063993",
+      "address": "60 21st Street"
+    },
+    {
+      "name": "Pennsylvania Macaroni Co",
+      "p": [
+        1557.391346848025,
+        -1134.9296639998101
+      ],
+      "osm": "https://www.openstreetmap.org/node/6076721412",
+      "address": "2010;2012 Penn Avenue"
+    },
+    {
+      "name": "Stamoolis Brothers Company",
+      "p": [
+        1574.6409077399683,
+        -1150.1805040000634
+      ],
+      "osm": "https://www.openstreetmap.org/node/6076721414",
+      "address": "2020 Penn Avenue"
+    },
+    {
+      "name": "Luke Wholey's Wild Alaskan Grille",
+      "p": [
+        1629.6429457099155,
+        -1202.38958399955
+      ],
+      "osm": "https://www.openstreetmap.org/node/6076721445",
+      "address": ""
+    },
+    {
+      "name": "Deluca's Diner",
+      "p": [
+        1545.792796327123,
+        -1174.9937319997448
+      ],
+      "osm": "https://www.openstreetmap.org/way/646470037",
+      "address": ""
+    },
+    {
+      "name": "Prestogeorge Coffee & Tea",
+      "p": [
+        1378.321249106643,
+        -1025.3462559997981
+      ],
+      "osm": "https://www.openstreetmap.org/way/646504146",
+      "address": "1719 Penn Avenue"
+    },
+    {
+      "name": "Robert Wholey & Co. Inc",
+      "p": [
+        1355.1919263009609,
+        -1006.5999679998276
+      ],
+      "osm": "https://www.openstreetmap.org/way/646504148",
+      "address": "1711 Penn Avenue"
+    },
+    {
+      "name": "Enrico Biscotti Company",
+      "p": [
+        1590.0519839981764,
+        -1148.4216480000746
+      ],
+      "osm": "https://www.openstreetmap.org/way/646920799",
+      "address": ""
+    }
+  ]
+}

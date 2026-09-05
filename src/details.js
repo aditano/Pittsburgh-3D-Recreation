@@ -77,9 +77,10 @@ export function buildStreetLights(streets, yFn, waterIndex, { dayMode = true } =
     roughness: 0.3,
     metalness: 0,
   });
+  bulbMat.userData.cityLamp = true;
   const bulbs = new THREE.InstancedMesh(bulbGeo, bulbMat, count);
   for (let i = 0; i < count; i++) {
-    dummy.position.set(lights[i * 4] + 2.2, lights[i * 4 + 1] + 3.6, lights[i * 4 + 2]);
+    dummy.position.set(lights[i * 4] + Math.cos(lights[i * 4 + 3]) * 2.2, lights[i * 4 + 1] + 7.2, lights[i * 4 + 2] - Math.sin(lights[i * 4 + 3]) * 2.2);
     dummy.rotation.set(0, lights[i * 4 + 3], 0);
     dummy.updateMatrix();
     bulbs.setMatrixAt(i, dummy.matrix);

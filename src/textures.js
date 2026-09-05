@@ -318,8 +318,8 @@ function paintPane(c, x, y, w, h, p) {
 function paintFacade(opts) {
   const {
     seed = 1,
-    width = 512,
-    height = 512,
+    width = 1024,
+    height = 1024,
     cols = 6,
     rows = 8,
     litChance = 0.32,
@@ -393,7 +393,7 @@ function paintFacade(opts) {
   // which at district range was most of what "evenly spaced dots" meant: the
   // dots were lit windows, not glazing. A few per cent survive, because a deep
   // floorplate really does keep its lights on at noon.
-  const litRate = day ? litChance * 0.07 : litChance;
+  const litRate = litChance;
 
   if (wall === 'brick') paintBrick(c, width, height, base, mortar, rand);
   else if (wall === 'panel') paintPanels(c, width, height, base, mortar, rand, 3, rows);
@@ -472,7 +472,7 @@ function paintFacade(opts) {
         c.fillStyle = `rgba(0,0,0,${day ? 0.24 : 0.5})`;
         c.fillRect(x - 1, y - 1, gw + 2, gh + 2);
         paintPane(c, x, y, gw, gh, {
-          glazing, sky, rand, day, lit, windowLit, band, skyGain, dim: 0.82,
+          glazing, sky, rand, day, lit: lit && !day, windowLit, band, skyGain, dim: 0.82,
         });
         c.fillStyle = `rgba(0,0,0,${day ? 0.44 : 0.5})`;
         c.fillRect(x, y, gw, reveal);
@@ -518,7 +518,7 @@ function paintFacade(opts) {
         const lit = rand() < litRate;
         const x = col * cellW;
         paintPane(c, x, y, cellW, gh, {
-          glazing, sky, rand, day, lit, windowLit, band, skyGain, jitter: paneJitter,
+          glazing, sky, rand, day, lit: lit && !day, windowLit, band, skyGain, jitter: paneJitter,
         });
         e.fillStyle = lit ? windowLit : '#000';
         e.fillRect(x, y, cellW, gh);
@@ -574,7 +574,7 @@ function paintFacade(opts) {
           : 1;
         const x = col * cellW;
         paintPane(c, x, y, cellW, gh, {
-          glazing, sky, rand, day, lit, windowLit, band, skyGain,
+          glazing, sky, rand, day, lit: lit && !day, windowLit, band, skyGain,
           facet: pleat * bayGain[col],
           jitter: paneJitter,
         });
@@ -847,14 +847,12 @@ function makeFoamMaterial(dayMode) {
  */
 const DAY_LIT_SCALE = 0.06;
 
-export function createCityMaterials({ dayMode = true } = {}) {
+export function createCityMaterials({ dayMode = true, textureSize = 1024 } = {}) {
   facadeDayMode = dayMode;
   /** Facade material for one family, with the night palette adapted to daylight. */
   const facade = (paint, extras = {}) =>
     stdMat(
-      paintFacade(
-        dayMode ? { ...paint, litChance: (paint.litChance ?? 0.3) * DAY_LIT_SCALE } : paint,
-      ),
+      paintFacade({ ...paint, width: textureSize, height: textureSize }),
       dayMode
         ? { ...extras, emissiveIntensity: (extras.emissiveIntensity ?? 0) * DAY_LIT_SCALE }
         : extras,

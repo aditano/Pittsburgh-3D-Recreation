@@ -390,3 +390,30 @@ body {
     display: none;
   }
 }
+
+/* Explorer controls leave the city itself as the primary surface. */
+:root { --panel: rgba(10,20,28,.9); --accent:#f0c763; }
+.hud-tl {text-shadow:0 2px 20px #06131e;} .hud-tl .eyebrow {color:var(--accent);}
+.hud-tl .meta {color:#fff;max-width:31ch;} .crosshair {display:none;}
+.city-tools {position:absolute;z-index:105;left:28px;top:166px;width:290px;max-height:calc(100dvh - 270px);overflow:auto;padding:18px;background:var(--panel);border:1px solid #ffffff26;border-radius:14px;backdrop-filter:blur(20px);box-shadow:0 15px 60px #03101f40;font-size:12px;}
+.city-tools .eyebrow {font-size:9px;max-width:120px;line-height:1.5;margin:0;}
+.time-heading,.time-label,.tool-row {display:flex;align-items:center;justify-content:space-between;gap:8px;}
+#city-clock {font-size:29px;font-variant-numeric:tabular-nums;font-weight:400;color:#f0c763;}
+.time-label {margin-top:16px;color:#e5e9ec;font-size:11px;}.time-label span {color:#8494a5;}
+#time-slider {width:100%;margin:12px 0;accent-color:#f0c763;}
+.city-tools button,.walk-pad button {cursor:pointer;border:1px solid #ffffff26;border-radius:6px;background:#ffffff0a;color:#e8edf2;padding:8px 10px;font:inherit;}
+.city-tools button:hover {background:#ffffff20;}.city-tools button:focus-visible,select:focus-visible,summary:focus-visible {outline:2px solid #f0c763;outline-offset:3px;}
+.tool-row {margin-bottom:10px;}.tool-row label {font-size:10px;color:#bdc8d1;display:flex;align-items:center;gap:5px;}.tool-row input {accent-color:#f0c763;}
+#walk-toggle {background:#f0c763;color:#14232b;font-weight:600;border:0;}
+.city-tools details {border-top:1px solid #ffffff18;margin-top:14px;padding-top:12px;}.city-tools summary {cursor:pointer;color:#f1f3f4;font-size:12px;}.city-tools summary span {float:right;color:#f0c763;font-size:10px;}
+#transit-route {width:100%;margin:12px 0;background:#142531;color:#e5edf2;border:1px solid #ffffff24;border-radius:6px;padding:10px;font:inherit;}
+#transit-info {color:#b9c8d2;line-height:1.5;margin-bottom:10px;font-size:11px;}
+.source-note {font-size:10px;line-height:1.55;color:#8195a5;margin-top:12px;}.source-note a {color:#b7cddc;}
+.scroll-list {max-height:170px;overflow:auto;display:grid;gap:5px;margin-top:10px;}.scroll-list button {text-align:left;font-size:11px;}
+.sr-only {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);}
+.walk-help {display:none;position:absolute;bottom:91px;left:50%;transform:translateX(-50%);z-index:105;background:#101e2dea;padding:10px 16px;border-radius:8px;font-size:11px;white-space:nowrap;}
+.walking .walk-help {display:block;}.walk-pad {display:none;position:absolute;z-index:106;bottom:135px;right:22px;text-align:center;}.walk-pad button {font-size:22px;min-width:45px;margin:3px;background:#14232bd9;touch-action:none;}
+.hud-nav {max-width:calc(100vw - 32px);overflow-x:auto;border-radius:10px;}.hud-nav button {padding:10px;letter-spacing:.07em;}.hud-weather {border-radius:10px;}
+@media(max-width:1100px){.hud-weather{top:104px;left:auto;right:28px;transform:none;}.city-tools{width:255px;}.hud-tl{max-width:320px;}}
+@media(pointer:coarse){.walking .walk-pad{display:block;}}
+@media(max-width:720px){.city-tools{top:122px;left:12px;width:220px;padding:12px;max-height:calc(100dvh - 230px);}.hud-weather{top:72px;left:12px;right:auto;}.hud-tr .layers{display:none;}.hud-tr .eyebrow{display:none;}.hud-tl h1{font-size:28px;}.hud-tl .eyebrow{font-size:8px;}.walking .city-tools{max-height:140px;}.walk-help{bottom:68px;max-width:95vw;white-space:normal;text-align:center;font-size:10px;}.walking .walk-pad{bottom:110px;right:10px;}.hud-nav{max-width:none;}}
