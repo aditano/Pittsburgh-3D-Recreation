@@ -85,8 +85,10 @@ export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,b
   const blocked=(x,z)=>waterIndex.inside(x,z)||collision(x,z);
   function key(e,down){if(!active||/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight','Escape'].includes(e.code)){e.preventDefault();down?keys.add(e.code):keys.delete(e.code);if(down&&e.code==='Escape')onExit();}}
   window.addEventListener('keydown',e=>key(e,true));window.addEventListener('keyup',e=>key(e,false));window.addEventListener('blur',()=>keys.clear());
-  canvas.addEventListener('pointerdown',e=>{if(active)canvas.setPointerCapture(e.pointerId);});
-  canvas.addEventListener('pointermove',e=>{if(active&&e.buttons){yaw-=e.movementX*.005;pitch=THREE.MathUtils.clamp(pitch+e.movementY*.003,.08,.75);}});
+  let lookPointer=null;
+  canvas.addEventListener('pointerdown',e=>{if(active&&lookPointer===null){lookPointer={id:e.pointerId,x:e.clientX,y:e.clientY};canvas.setPointerCapture(e.pointerId);}});
+  canvas.addEventListener('pointermove',e=>{if(active&&lookPointer?.id===e.pointerId){yaw-=(e.clientX-lookPointer.x)*.005;pitch=THREE.MathUtils.clamp(pitch+(e.clientY-lookPointer.y)*.003,.08,.75);lookPointer.x=e.clientX;lookPointer.y=e.clientY;}});
+  for(const event of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(event,e=>{if(lookPointer?.id===e.pointerId)lookPointer=null;});
   document.querySelectorAll('[data-walk-key]').forEach(b=>{b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);keys.add(b.dataset.walkKey);});for(const event of ['pointerup','pointercancel','lostpointercapture'])b.addEventListener(event,()=>keys.delete(b.dataset.walkKey));});
   const api={get active(){return active;},enter(x,z){const s=life.nearest(x,z);if(!s)return;
     if(!active){saved.position=camera.position.clone();saved.target=controls.target.clone();}

@@ -93,7 +93,22 @@
       <details><summary>Strip District favorites <span>Explore</span></summary><div id="business-list" class="scroll-list"></div><p class="source-note">OSM locations · stylized storefronts. Select a business to walk there.</p></details>
     </section>
     <div class="walk-help">WASD / arrows to move · Shift to run · drag to look · Esc to leave</div>
-    <div class="walk-pad" aria-label="Walking controls"><button data-walk-key="KeyW" aria-label="Walk forward">↑</button><div><button data-walk-key="KeyA" aria-label="Walk left">←</button><button data-walk-key="KeyS" aria-label="Walk backward">↓</button><button data-walk-key="KeyD" aria-label="Walk right">→</button></div></div>
+    <div class="walk-pad" aria-label="Walking controls"><button class="walk-run" data-walk-key="ShiftLeft" aria-label="Hold to run">Run</button><button data-walk-key="KeyW" aria-label="Walk forward">↑</button><div><button data-walk-key="KeyA" aria-label="Walk left">←</button><button data-walk-key="KeyS" aria-label="Walk backward">↓</button><button data-walk-key="KeyD" aria-label="Walk right">→</button></div></div>
+    <header class="mobile-header" aria-label="Mobile city overview">
+      <div><span class="mobile-eyebrow">THE THREE RIVERS</span><strong>Pittsburgh</strong></div>
+      <button class="mobile-clock-button" data-mobile-panel="world" aria-controls="mobile-sheet" aria-expanded="false" aria-label="Change time and weather"><span id="mobile-clock">17:00</span><span>City time</span></button>
+    </header>
+    <p class="mobile-status" id="mobile-status">Preparing your city</p>
+    <nav class="mobile-dock" aria-label="Mobile city controls">
+      <button data-mobile-panel="explore" aria-controls="mobile-sheet" aria-expanded="false"><span aria-hidden="true">⌖</span>Explore</button>
+      <button data-mobile-panel="transit" aria-controls="mobile-sheet" aria-expanded="false"><span aria-hidden="true">⇄</span>Transit</button>
+      <button data-mobile-panel="world" aria-controls="mobile-sheet" aria-expanded="false"><span aria-hidden="true">◐</span>World</button>
+      <button id="mobile-walk" aria-pressed="false" disabled><b aria-hidden="true">↟</b><span>Walk</span></button>
+    </nav>
+    <dialog id="mobile-sheet" class="mobile-sheet city-tools" aria-labelledby="mobile-sheet-title">
+      <div class="mobile-sheet-heading"><h2 id="mobile-sheet-title">Explore Pittsburgh</h2><button id="mobile-sheet-close" aria-label="Close panel">×</button></div>
+      <div id="mobile-sheet-content"></div>
+    </dialog>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

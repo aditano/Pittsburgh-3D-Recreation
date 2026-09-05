@@ -1,3 +1,4 @@
+import './mobile-ui.js';
 import {createStreetDetail} from './street-detail.js';
 import {createRiverReflections} from './reflections.js';
 import { createCityLife, createWalker } from './city-life.js';
@@ -302,6 +303,7 @@ settingsToggle.addEventListener('click', (ev) => {
   settingsToggle.setAttribute('aria-expanded', String(open));
 });
 document.addEventListener('click', (ev) => {
+  if (document.body.classList.contains('mobile-ui')) return;
   if (settingsPanel.hasAttribute('hidden')) return;
   if (settingsPanel.contains(ev.target) || settingsToggle.contains(ev.target)) return;
   settingsPanel.setAttribute('hidden', '');
