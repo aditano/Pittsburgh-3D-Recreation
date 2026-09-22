@@ -402,7 +402,10 @@ body {
 .time-label {margin-top:16px;color:#e5e9ec;font-size:11px;}.time-label span {color:#8494a5;}
 #time-slider {width:100%;margin:12px 0;accent-color:#f0c763;}
 .city-tools button,.walk-pad button {cursor:pointer;border:1px solid #ffffff26;border-radius:6px;background:#ffffff0a;color:#e8edf2;padding:8px 10px;font:inherit;}
-.city-tools button:hover {background:#ffffff20;}.city-tools button:focus-visible,select:focus-visible,summary:focus-visible {outline:2px solid #f0c763;outline-offset:3px;}
+.city-tools button:hover {background:#ffffff20;}
+.city-tools button:disabled {opacity:.4;cursor:default;}
+.city-tools button:disabled:hover {background:#ffffff0a;}
+.city-tools button:focus-visible,select:focus-visible,summary:focus-visible {outline:2px solid #f0c763;outline-offset:3px;}
 .tool-row {margin-bottom:10px;}.tool-row label {font-size:10px;color:#bdc8d1;display:flex;align-items:center;gap:5px;}.tool-row input {accent-color:#f0c763;}
 #walk-toggle {background:#f0c763;color:#14232b;font-weight:600;border:0;}
 .city-tools details {border-top:1px solid #ffffff18;margin-top:14px;padding-top:12px;}.city-tools summary {cursor:pointer;color:#f1f3f4;font-size:12px;}.city-tools summary span {float:right;color:#f0c763;font-size:10px;}

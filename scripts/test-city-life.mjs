@@ -8,6 +8,7 @@ import {buildingIndex,chooseNext,createCityLife,createWalker,pedestrianShouldWai
 import {createDayCycle} from '../src/day-cycle.js';
 import {loadSettings,saveSettings} from '../src/quality.js';
 import {roadwayLampHeading} from '../src/details.js';
+import {createTransit} from '../src/transit.js';
 const p=makePath([[0,0],[0,0],[0,10],[30,10]]);
 assert.equal(p.length,40);assert.deepEqual(samplePath(p,25),{x:15,z:10,heading:Math.PI/2});
 assert.equal(samplePath(p,999).x,30);assert.equal(samplePath(p,-10).z,0);
@@ -164,3 +165,32 @@ assert.equal(loadSettings(true).resolution,50);
 assert.doesNotThrow(()=>saveSettings({quality:'low',resolution:75,weather:'rain'}));
 globalThis.localStorage=previousStorage;
 console.log('Passed: signal crossings, named-street routing, lamp heading, weather lighting, and storage fallback.');
+
+const stopsDetails={hidden:false};
+const stopList={children:[],replaceChildren(){this.children=[];},append(node){this.children.push(node);},closest(){return stopsDetails;}};
+let onRouteChange;
+const routeSelect={value:'1',options:[],append(option){this.options.push(option);},addEventListener(name,fn){if(name==='change')onRouteChange=fn;}};
+const transitInfo={textContent:''};
+const focusRoute={disabled:false,addEventListener(){}};
+globalThis.document={
+  createElement(){return {textContent:'',addEventListener(){}};},
+  getElementById(id){return { 'transit-route':routeSelect,'transit-info':transitInfo,'route-stops':stopList,'focus-route':focusRoute}[id];},
+};
+const transitScene=new THREE.Scene();
+createTransit({
+  routes:[{id:'1',name:'FREEPORT ROAD',type:'bus',color:'#3300cc',paths:[[[0,0],[120,0]]]}],
+  stops:[{name:'Market',p:[0,0],routes:['1']}],
+},transitScene,()=>0,()=>{});
+assert.equal(routeSelect.value,'none');
+assert.match(transitInfo.textContent,/off the map/);
+assert.equal(focusRoute.disabled,true);
+assert.equal(stopsDetails.hidden,true);
+const routeGroups=transitScene.children[0].children;
+assert.ok(routeGroups.length>0&&routeGroups.every(group=>group.visible===false));
+routeSelect.value='1';
+onRouteChange();
+assert.equal(routeGroups[0].visible,true);
+assert.equal(focusRoute.disabled,false);
+assert.equal(stopsDetails.hidden,false);
+assert.match(transitInfo.textContent,/FREEPORT ROAD/);
+console.log('Passed: transit stays hidden until a route is chosen.');
