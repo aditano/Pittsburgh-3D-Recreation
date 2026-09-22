@@ -3,6 +3,21 @@ import * as THREE from 'three';
 import {makePath,samplePath,nearestSegment} from './motion.js';
 import {pointInPoly} from './geo.js';
 
+/** Stay on the named street when it continues; otherwise spread across the exits. */
+export function chooseNext(agent) {
+  const choices = agent.s.next || [];
+  if (!choices.length) return agent.s.reverse || null;
+  const named = agent.s.name ? choices.filter((next) => next.name === agent.s.name) : [];
+  const pool = named.length ? named : choices;
+  agent.hops = (agent.hops + 1) >>> 0;
+  return pool[(agent.seed + agent.hops) % pool.length];
+}
+
+/** Sidewalk traffic waits with the light, a few metres short of the stop line. */
+export function pedestrianShouldWait(segment, distanceToEnd, signalOpen) {
+  return distanceToEnd >= 0 && distanceToEnd < 9 && !!segment?.signal && !signalOpen;
+}
+
 const box=new THREE.BoxGeometry(1,1,1);
 export function person(color=0xe4b63f){
   const root=new THREE.Group();
@@ -24,8 +39,8 @@ export function vehicle(color=0xe4b63f,rail=false){
   part(color,0,2.9,0,2.65,.3,length);part(0x22252b,0,.5,0,2.7,.8,length-2);
   part(0xffefbd,0,1.5,length/2+.03,2,.25,.1);return root;
 }
-export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=null){
-  const collision=buildingIndex(data.buildings);
+export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=null,collision=null){
+  const hits=collision||buildingIndex(data.buildings);
   const segments=[];
   for(const s of streetData?.roads?.length ? streetData.roads.filter(r=>!r.bridge&&!r.tunnel).map(r=>({...r,r:({primary:5,secondary:4,tertiary:3}[r.highway]||3)})) : data.streets||[]){if(s.r<3)continue;for(let i=1;i<s.c.length;i++){
     const a=s.c[i-1],b=s.c[i],length=Math.hypot(b[0]-a[0],b[1]-a[1]);
@@ -45,10 +60,10 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
   const lamps=new THREE.InstancedMesh(box,new THREE.MeshBasicMaterial({color:0xffe2a3}),count*2);
   [cars,roofs,lamps].forEach(m=>{m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);m.frustumCulled=false;root.add(m);});
   const palette=[0xe6e9ec,0x2f4d6b,0x991f2c,0xc9ac6a,0x252a30,0x597771];
-  const agents=Array.from({length:count},(_,i)=>{cars.setColorAt(i,new THREE.Color(palette[i%palette.length]));return {s:segments[(i*47)%segments.length],d:(i*.618%1),speed:6+i%7,velocity:0};});
+  const agents=Array.from({length:count},(_,i)=>{cars.setColorAt(i,new THREE.Color(palette[i%palette.length]));return {s:segments[(i*47)%segments.length],d:(i*.618%1),speed:6+i%7,velocity:0,seed:i*17+3,hops:0};});
   const people=[];for(let i=0;i<(constrained?35:100);i++){
     const s=segments[(i*31)%segments.length];if(!s)break;
-    const mesh=person(palette[i%palette.length]);root.add(mesh);people.push({mesh,s,d:(i*.713%1),speed:.9+i%4*.15});
+    const mesh=person(palette[i%palette.length]);root.add(mesh);people.push({mesh,s,d:(i*.713%1),speed:.9+i%4*.15,seed:i*13+1,hops:0,phase:i,moving:false});
   }
   const matrix=(mesh,i,x,y,z,heading,w,h,d)=>{dummy.position.set(x,y,z);dummy.rotation.set(0,heading,0);dummy.scale.set(w,h,d);dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix);};
   function advance(a,dt,time=null,gap=Infinity){
@@ -59,11 +74,15 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
       const desired=Math.min(a.speed,Math.sqrt(2*3.5*available));
       a.velocity=THREE.MathUtils.damp(a.velocity,desired,3,dt);distance=Math.min(available,a.velocity*dt);
     }
-    a.d+=distance/a.s.length;if(a.d>1){
-    const choices=a.s.next;
-    const next=choices.length?choices[Math.floor(a.d*7919)%choices.length]:a.s.reverse;
-    if(next){a.s=next;a.d=0;}else{a.d=1;a.velocity=0;}
-  }return samplePath(a.s.path,a.d*a.s.length);}
+    a.d+=distance/a.s.length;
+    let guard=0;
+    while(a.d>1&&guard++<4){
+      const extra=(a.d-1)*a.s.length,next=chooseNext(a);
+      if(!next){a.d=1;a.velocity=0;break;}
+      a.s=next;a.d=extra/a.s.length;
+    }
+    if(a.d>1)a.d=1;
+    return samplePath(a.s.path,a.d*a.s.length);}
   return {segments,root,signals,nearest:(x,z)=>nearestSegment(x,z,segments),update(dt,time,night){
     signals.update(time);
     const queues=new Map();for(const a of agents){if(!queues.has(a.s))queues.set(a.s,[]);queues.get(a.s).push(a);}
@@ -73,16 +92,32 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
       for(let k=0;k<2;k++)matrix(lamps,i*2+k,x+Math.sin(p.heading)*2.16+Math.cos(p.heading)*(k?-.6:.6),y+.8,z+Math.cos(p.heading)*2.16-Math.sin(p.heading)*(k?-.6:.6),p.heading,.35,.2,.12);
     });
     for(const m of [cars,roofs,lamps])m.instanceMatrix.needsUpdate=true;lamps.visible=night>.2;
-    for(const a of people){const wait=(1-a.d)*a.s.length<9&&a.s.signal&&signals.canPass(a.s,time,20);const p=advance(a,wait?0:dt),side=({3:4.7,4:6.2,5:8}[a.s.rank]||5.2),x=p.x+Math.cos(p.heading)*side,z=p.z-Math.sin(p.heading)*side;
-      a.mesh.visible=!waterIndex.inside(x,z)&&!collision(x,z);a.mesh.position.set(x,yFn(x,z)+1.25,z);a.mesh.rotation.y=p.heading;a.mesh.userData.gait(time*5,true);
+    for(const a of people){
+      const distanceToEnd=(1-a.d)*a.s.length;
+      const wait=pedestrianShouldWait(a.s,distanceToEnd,signals.canPass(a.s,time,distanceToEnd));
+      const p=advance(a,wait?0:dt),side=({3:4.7,4:6.2,5:8}[a.s.rank]||5.2),x=p.x+Math.cos(p.heading)*side,z=p.z-Math.sin(p.heading)*side;
+      a.moving=!wait;if(a.moving)a.phase+=dt*a.speed*2.7;
+      a.mesh.visible=!waterIndex.inside(x,z)&&!hits(x,z);a.mesh.position.set(x,yFn(x,z)+1.25,z);a.mesh.rotation.y=p.heading;a.mesh.userData.gait(a.phase,a.moving);
     }
-  }};
+  },pedestrians:people,vehicles:agents};
 }
-export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,buildings,onExit}){
+export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,buildings,onExit,collision=null}){
   const avatar=person();scene.add(avatar);avatar.visible=false;
   const keys=new Set(),position=new THREE.Vector3(),saved={};let active=false,yaw=0,pitch=.28,gait=0;
-  const collision=buildingIndex(buildings);
-  const blocked=(x,z)=>waterIndex.inside(x,z)||collision(x,z);
+  const hits=collision||buildingIndex(buildings);
+  const blocked=(x,z)=>waterIndex.inside(x,z)||hits(x,z);
+  const inBounds=(x,z)=>x>-4500&&x<8500&&z>-3900&&z<4500;
+  function sidewalkSpot(s){
+    const length=s.length||1,fx=(s.b[0]-s.a[0])/length,fz=(s.b[1]-s.a[1])/length,rx=-fz,rz=fx;
+    for(const along of [0,6,-6,12,-12,18,-18]){
+      const bx=s.x+fx*along,bz=s.z+fz*along;
+      for(const side of [6,9,-6,-9,3,-3,0]){
+        const px=bx+rx*side,pz=bz+rz*side;
+        if(inBounds(px,pz)&&!blocked(px,pz))return [px,pz];
+      }
+    }
+    return null;
+  }
   function key(e,down){if(!active||/INPUT|SELECT|TEXTAREA/.test(e.target.tagName))return;if(['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight','Escape'].includes(e.code)){e.preventDefault();down?keys.add(e.code):keys.delete(e.code);if(down&&e.code==='Escape')onExit();}}
   window.addEventListener('keydown',e=>key(e,true));window.addEventListener('keyup',e=>key(e,false));window.addEventListener('blur',()=>keys.clear());
   let lookPointer=null;
@@ -91,10 +126,9 @@ export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,b
   for(const event of ['pointerup','pointercancel','lostpointercapture'])canvas.addEventListener(event,e=>{if(lookPointer?.id===e.pointerId)lookPointer=null;});
   document.querySelectorAll('[data-walk-key]').forEach(b=>{b.addEventListener('pointerdown',e=>{e.preventDefault();b.setPointerCapture(e.pointerId);keys.add(b.dataset.walkKey);});for(const event of ['pointerup','pointercancel','lostpointercapture'])b.addEventListener(event,()=>keys.delete(b.dataset.walkKey));});
   const api={get active(){return active;},enter(x,z){const s=life.nearest(x,z);if(!s)return;
+    const spot=sidewalkSpot(s);if(!spot)return;
     if(!active){saved.position=camera.position.clone();saved.target=controls.target.clone();}
-    let sx=s.x,sz=s.z;
-    const length=s.length||1,nx=(s.b[1]-s.a[1])/length,nz=-(s.b[0]-s.a[0])/length;
-    for(const offset of [5,-5,2,-2,0]){const px=s.x+nx*offset,pz=s.z+nz*offset;if(!blocked(px,pz)){sx=px;sz=pz;break;}}
+    const [sx,sz]=spot;
     position.set(sx,yFn(sx,sz)+1.25,sz);yaw=Math.atan2(s.b[0]-s.a[0],s.b[1]-s.a[1]);
     camera.position.set(sx-Math.sin(yaw)*7,position.y+4,sz-Math.cos(yaw)*7);active=true;avatar.visible=true;controls.enabled=false;camera.near=.15;camera.updateProjectionMatrix();keys.clear();
     document.body.classList.add('walking');
@@ -103,7 +137,7 @@ export function createWalker({camera,controls,canvas,scene,life,yFn,waterIndex,b
     let r=Number(keys.has('KeyD')||keys.has('ArrowRight'))-Number(keys.has('KeyA')||keys.has('ArrowLeft'));
     const norm=Math.hypot(f,r)||1,speed=(keys.has('ShiftLeft')||keys.has('ShiftRight')?5.5:2.4)*dt;
     const dx=(Math.sin(yaw)*f-Math.cos(yaw)*r)/norm*speed,dz=(Math.cos(yaw)*f+Math.sin(yaw)*r)/norm*speed;
-    const valid=(x,z)=>!blocked(x,z)&&Math.abs(yFn(x,z)+1.25-position.y)<1.5&&x>-4500&&x<8500&&z>-3900&&z<4500;
+    const valid=(x,z)=>!blocked(x,z)&&Math.abs(yFn(x,z)+1.25-position.y)<1.5&&inBounds(x,z);
     if(valid(position.x+dx,position.z))position.x+=dx;if(valid(position.x,position.z+dz))position.z+=dz;
     position.y=yFn(position.x,position.z)+1.25;avatar.position.copy(position);if(f||r)avatar.rotation.y=Math.atan2(dx,dz);gait+=dt*(speed/dt||0)*2.7;avatar.userData.gait(gait,!!(f||r));
     const target=position.clone().add(new THREE.Vector3(0,1.35,0));let distance=7;

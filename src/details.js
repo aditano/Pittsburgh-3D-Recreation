@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { hash01 } from './geo.js';
+/** Lamp arm points back at the carriageway. +X east, +Z south; side +1 is the mesh's positive offset. */
+export function roadwayLampHeading(ux, uz, side) {
+  return Math.atan2(ux * side, uz * side);
+}
 
 function streetLightGeometry() {
   const pole = new THREE.CylinderGeometry(0.12, 0.16, 7.5, 6);
@@ -50,7 +53,7 @@ export function buildStreetLights(streets, yFn, waterIndex, { dayMode = true } =
         const lz = z + rz * side * (r >= 5 ? 9 : 7);
         const y = yFn(lx, lz) + 1.2;
         if (y < 0) continue;
-        lights.push(lx, y, lz, hash01(lx, lz) * Math.PI * 2);
+        lights.push(lx, y, lz, roadwayLampHeading(ux, uz, side));
       }
     }
   }
