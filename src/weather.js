@@ -173,7 +173,7 @@ export function createWeatherFX() {
   };
 }
 
-const WEATHER_LOOK = {
+export const WEATHER_LOOK = {
   sunny: {
     horizon: 0xb8d4f0,
     zenith: 0x4a90d9,

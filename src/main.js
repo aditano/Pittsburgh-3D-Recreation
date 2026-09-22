@@ -1,7 +1,7 @@
 import './mobile-ui.js';
 import {createStreetDetail} from './street-detail.js';
 import {createRiverReflections} from './reflections.js';
-import { createCityLife, createWalker } from './city-life.js';
+import { buildingIndex, createCityLife, createWalker } from './city-life.js';
 import { createTransit } from './transit.js';
 import { createStorefronts } from './storefronts.js';
 import { createDayCycle } from './day-cycle.js';
@@ -218,6 +218,7 @@ const weatherFx = createWeatherFX();
 scene.add(weatherFx.root);
 
 let composer;
+let bloomPass = null;
 function bloomAllowed() {
   return !CONSTRAINED_GPU && QUALITY[settings.quality].bloom;
 }
@@ -225,6 +226,7 @@ function disposeComposer() {
   if (!composer) return;
   composer.dispose();
   composer = null;
+  bloomPass = null;
 }
 function initComposer() {
   // UnrealBloomPass renders into a chain of smaller half-float targets and
@@ -242,6 +244,7 @@ function initComposer() {
     DAY_MODE ? 0.35 : 0.55,
     DAY_MODE ? 0.92 : 0.72,
   );
+  bloomPass = bloom;
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
   composer.setPixelRatio(renderer.getPixelRatio());
@@ -1515,11 +1518,18 @@ async function buildCity(data, landcover, fabric, transitData, businessData, str
 
   placeLandmarkLabels(data, yFn);
 
-  cityLife = createCityLife(data, yFn, waterIndex, scene, CONSTRAINED_GPU,streetData);
+  const solids = buildingIndex([...(data.buildings || []), ...(fabric?.buildings || [])]);
+  cityLife = createCityLife(data, yFn, waterIndex, scene, CONSTRAINED_GPU, streetData, solids);
   streetDetail=createStreetDetail(data,data.buildings,yFn,waterIndex,scene,CONSTRAINED_GPU);
   const stopWalking = () => { walker?.exit(); document.getElementById('walk-toggle').textContent = 'Walk the city'; };
-  walker = createWalker({camera, controls, canvas, scene, life: cityLife, yFn, waterIndex, buildings: [...data.buildings, ...(fabric?.buildings || [])], onExit: stopWalking});
-  function walkAt(p) { anim=null;rotateMode=false;walker.enter(...p);document.getElementById('walk-toggle').textContent='Exit walking'; }
+  walker = createWalker({camera, controls, canvas, scene, life: cityLife, yFn, waterIndex, buildings: data.buildings || [], onExit: stopWalking, collision: solids});
+  function walkAt(p) {
+    anim = null;
+    rotateMode = false;
+    walker.enter(...p);
+    if (walker.active) document.getElementById('walk-toggle').textContent = 'Exit walking';
+    else controls.enabled = true;
+  }
   document.getElementById('walk-toggle').addEventListener('click',()=>walker.active?stopWalking():walkAt([controls.target.x,controls.target.z]));
   function focusAt(p){stopWalking();rotateMode=false;animateCamera({position:new THREE.Vector3(p[0]+180,yFn(...p)+210,p[1]+230),target:new THREE.Vector3(p[0],yFn(...p)+15,p[1])},1200);}
   if(transitData)transit=createTransit(transitData,scene,yFn,focusAt);
@@ -1717,6 +1727,7 @@ function tick(now) {
   }
 
   const night=dayCycle?.update(dt) ?? 0;
+  if (bloomPass) bloomPass.strength = 0.12 + night * 0.22;
   cityLife?.update(dt,now*.001,night);
   transit?.update(dt);
   storefronts?.update(night);

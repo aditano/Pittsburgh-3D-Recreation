@@ -84,7 +84,7 @@
       <div class="tool-row"><button id="walk-toggle">Walk the city</button><label><input id="street-life" type="checkbox" checked /> Street life</label></div>
       <details open><summary>Transit network <span>PRT</span></summary>
         <label for="transit-route" class="sr-only">Select transit route</label>
-        <select id="transit-route"><option value="rail">The T · all lines</option><option value="all">All routes</option><option value="bus">All bus routes</option><option value="none">Hide transit</option></select>
+        <select id="transit-route"><option value="none" selected>Hide transit</option><option value="rail">The T · all lines</option><option value="all">All routes</option><option value="bus">All bus routes</option></select>
         <p id="transit-info" aria-live="polite">Loading official route geometry…</p>
         <button id="focus-route">Fly to selected route</button>
         <details><summary>Stops on selected route</summary><div id="route-stops" class="scroll-list"></div></details>

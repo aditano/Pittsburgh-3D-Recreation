@@ -21,14 +21,21 @@ export function createTransit(data,scene,yFn,onFocus){
   const dummy=new THREE.Object3D();stops.forEach((s,i)=>{dummy.position.set(s.p[0],Math.max(2,yFn(...s.p))+3,s.p[1]);dummy.updateMatrix();markers.setMatrixAt(i,dummy.matrix);});markers.renderOrder=6;group.add(markers);
   records.push({route,group,mat,models,markers,stops,paths});
  }
+ const focus=document.getElementById('focus-route');
+ const stopList=document.getElementById('route-stops');
  function filter(){const value=select.value;let count=0;
   for(const r of records){const chosen=value===r.route.id;r.group.visible=value==='all'||chosen||(value==='rail'&&r.route.type==='rail')||(value==='bus'&&r.route.type==='bus');r.markers.visible=chosen;r.mat.opacity=chosen?1:.55;if(r.group.visible)count++;}
   const r=records.find(r=>r.route.id===value);
-  info.textContent=r?`${r.route.name} · ${r.stops.length} stops in model`:`${count} routes in model · animated simulation`;
-  document.getElementById('route-stops').replaceChildren();
-  if(r){for(const stop of r.stops){const b=document.createElement('button');b.textContent=stop.name;b.addEventListener('click',()=>onFocus(stop.p));document.getElementById('route-stops').append(b);}}
+  info.textContent=r?`${r.route.name} · ${r.stops.length} stops in model`:value==='none'?'Routes stay off the map until you pick one.':`${count} routes in model · animated simulation`;
+  stopList.replaceChildren();
+  stopList.closest('details').hidden=!r;
+  focus.disabled=!r;
+  if(r){for(const stop of r.stops){const b=document.createElement('button');b.textContent=stop.name;b.addEventListener('click',()=>onFocus(stop.p));stopList.append(b);}}
  }
- select.addEventListener('change',filter);filter();
+ select.addEventListener('change',filter);
+ // A restored form value can land on one bus. The city should come up clear.
+ select.value='none';
+ filter();
  document.getElementById('focus-route').addEventListener('click',()=>{const r=records.find(r=>r.route.id===select.value);if(r?.paths[0]){const p=samplePath(r.paths[0],r.paths[0].length*.5);onFocus([p.x,p.z]);}});
  return {root,update(dt){for(const r of records){if(!r.group.visible)continue;for(const a of r.models){a.d=(a.d+dt*(r.route.type==='rail'?13:7))%a.path.length;const p=samplePath(a.path,a.d);a.mesh.position.set(p.x,Math.max(2,yFn(p.x,p.z))+1.2,p.z);a.mesh.rotation.y=p.heading;}}}};
 }

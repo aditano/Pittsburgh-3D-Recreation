@@ -53,20 +53,37 @@ export function defaultResolution(constrained) {
   return constrained ? 50 : 100;
 }
 
+function readSetting(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writeSetting(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Private browsing and locked-down webviews reject storage. Settings still
+    // apply for this visit; they just cannot be remembered.
+  }
+}
+
 export function loadSettings(constrained) {
-  const qualityRaw = (localStorage.getItem(QUALITY_KEY) || '').toLowerCase();
+  const qualityRaw = (readSetting(QUALITY_KEY) || '').toLowerCase();
   const quality = QUALITY[qualityRaw] ? qualityRaw : defaultQuality(constrained);
-  const resRaw = Number(localStorage.getItem(RESOLUTION_KEY));
+  const resRaw = Number(readSetting(RESOLUTION_KEY));
   const resolution = RESOLUTION_PCTS.includes(resRaw) ? resRaw : defaultResolution(constrained);
-  const weatherRaw = (localStorage.getItem(WEATHER_KEY) || '').toLowerCase();
+  const weatherRaw = (readSetting(WEATHER_KEY) || '').toLowerCase();
   const weather = weatherRaw === 'rain' || weatherRaw === 'snow' ? weatherRaw : 'sunny';
   return { quality, resolution, weather };
 }
 
 export function saveSettings({ quality, resolution, weather }) {
-  if (quality) localStorage.setItem(QUALITY_KEY, quality);
-  if (resolution) localStorage.setItem(RESOLUTION_KEY, String(resolution));
-  if (weather) localStorage.setItem(WEATHER_KEY, weather);
+  if (quality) writeSetting(QUALITY_KEY, quality);
+  if (resolution) writeSetting(RESOLUTION_KEY, String(resolution));
+  if (weather) writeSetting(WEATHER_KEY, weather);
 }
 
 export function pixelRatioFor(resolutionPct) {
