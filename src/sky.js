@@ -1,23 +1,25 @@
 import * as THREE from 'three';
 
 export function createSkyDome({ day = true, sunDir = null } = {}) {
-  // The shell is placed in view space, on whichever camera is currently
-  // rendering. Parking a world-space dome on `camera.position` inside
-  // onBeforeRender does not — modelViewMatrix is built from matrixWorld, which
-  // was updated before that callback — so the dome lagged a frame. The river
-  // reflection makes that fatal: it renders the whole scene with a camera
-  // mirrored under the water *before* the real view. That pass left the dome
-  // centred below the river, and the next draw used it. From the overlook the
-  // horizon tore and shifted; from the aerial camera (2.5 km up, outside the
-  // old 4 km shell) the sky dropped out and the clear colour showed through.
+  // Fullscreen triangle, not a world-space sphere. The old dome copied
+  // `camera.position` in onBeforeRender without rebuilding matrixWorld, so it
+  // lagged a frame. The river reflection renders the scene with a camera
+  // mirrored under the water *before* the real view and left the dome centred
+  // there: the overlook horizon tore, and from the aerial camera (2.5 km up,
+  // outside the 4 km shell) the sky dropped out to the clear colour.
   //
-  // Radius sits between the walking near plane (0.15) and `camera.far`, so the
-  // shell itself is neither near-clipped nor far-clipped. The vertex shader then
-  // parks depth just inside the far plane: terrain always wins the depth test,
-  // and the dome cannot z-fight a hillside at the same distance.
-  const geo = new THREE.SphereGeometry(80, 48, 32);
+  // Rays are rebuilt from the camera that is actually drawing, including that
+  // reflection camera. Depth sits just inside the far plane and is not written,
+  // so terrain always wins and cannot z-fight the sky. A sphere with its z
+  // rewritten the same way pulls the back-facing cap into the frustum and
+  // paints black across the view at some headings.
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3),
+  );
+  const invProj = new THREE.Matrix4();
   const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
     depthTest: true,
     depthWrite: false,
     fog: false,
@@ -31,18 +33,14 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       // Off until a scene with fog opts in. The landmark preview has no fog.
       uFogBlend: { value: 0 },
       uDay: { value: day ? 1.0 : 0.0 },
+      uInvProj: { value: new THREE.Matrix4() },
+      uCamWorld: { value: new THREE.Matrix4() },
     },
     vertexShader: `
-      varying vec3 vDir;
+      varying vec2 vNdc;
       void main() {
-        // Mesh stays unrotated at the origin, so local position is the world
-        // direction. mat3 drops translation: the shell is centred on this
-        // camera even when the reflection pass renders with another one.
-        vDir = position;
-        vec3 viewPos = mat3(modelViewMatrix) * position;
-        gl_Position = projectionMatrix * vec4(viewPos, 1.0);
-        // Inside the far plane, not on it: some GPUs clip z == w.
-        gl_Position.z = gl_Position.w * 0.9999;
+        vNdc = position.xy;
+        gl_Position = vec4(position.xy, 0.9999, 1.0);
       }
     `,
     fragmentShader: `
@@ -54,9 +52,12 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       uniform vec3 uFogColor;
       uniform float uFogBlend;
       uniform float uDay;
-      varying vec3 vDir;
+      uniform mat4 uInvProj;
+      uniform mat4 uCamWorld;
+      varying vec2 vNdc;
       void main() {
-        vec3 dir = normalize(vDir);
+        vec4 far = uInvProj * vec4(vNdc, 1.0, 1.0);
+        vec3 dir = normalize(mat3(uCamWorld) * (far.xyz / far.w));
         float h = dir.y * 0.5 + 0.5;
         vec3 col = mix(uHorizon, uZenith, pow(h, mix(0.65, 0.85, uDay)));
         float sun = pow(max(dot(dir, uSunDir), 0.0), mix(64.0, 128.0, uDay));
@@ -76,11 +77,15 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
   });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'sky';
-  // Bounds stay a small sphere at the origin; the shader moves the vertices
-  // onto the camera. Frustum culling would discard the sky once the view
-  // leaves downtown.
+  // The triangle lives at the origin in NDC, not in the world. Culling it once
+  // the camera leaves downtown would remove the sky.
   mesh.frustumCulled = false;
   mesh.renderOrder = -1000;
+  mesh.onBeforeRender = (_renderer, _scene, camera) => {
+    invProj.copy(camera.projectionMatrix).invert();
+    mat.uniforms.uInvProj.value.copy(invProj);
+    mat.uniforms.uCamWorld.value.copy(camera.matrixWorld);
+  };
   return mesh;
 }
 
