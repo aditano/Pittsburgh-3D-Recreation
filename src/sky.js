@@ -1,13 +1,25 @@
 import * as THREE from 'three';
 
 export function createSkyDome({ day = true, sunDir = null } = {}) {
-  // Sit on the camera, well inside the far plane. A 12 km sphere at the world
-  // origin is clipped by `camera.far` from the outer neighbourhoods, and the
-  // composer/clear colour behind those holes is black — the "big black box"
-  // at some headings on phones.
-  const geo = new THREE.SphereGeometry(4000, 32, 24);
+  // Fullscreen triangle, not a world-space sphere. The old dome copied
+  // `camera.position` in onBeforeRender without rebuilding matrixWorld, so it
+  // lagged a frame. The river reflection renders the scene with a camera
+  // mirrored under the water *before* the real view and left the dome centred
+  // there: the overlook horizon tore, and from the aerial camera (2.5 km up,
+  // outside the 4 km shell) the sky dropped out to the clear colour.
+  //
+  // Rays are rebuilt from the camera that is actually drawing, including that
+  // reflection camera. Depth sits just inside the far plane and is not written,
+  // so terrain always wins and cannot z-fight the sky. A sphere with its z
+  // rewritten the same way pulls the back-facing cap into the frustum and
+  // paints black across the view at some headings.
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3),
+  );
+  const invProj = new THREE.Matrix4();
   const mat = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
     depthTest: true,
     depthWrite: false,
     fog: false,
@@ -17,13 +29,18 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       uZenith: { value: new THREE.Color(day ? 0x4a90d9 : 0x050810) },
       uGlow: { value: new THREE.Color(day ? 0xfff4d8 : 0x2a3a4a) },
       uCityGlow: { value: new THREE.Color(day ? 0xe8f0f8 : 0x3a2a18) },
+      uFogColor: { value: new THREE.Color(day ? 0x9dbcd8 : 0x05070c) },
+      // Off until a scene with fog opts in. The landmark preview has no fog.
+      uFogBlend: { value: 0 },
       uDay: { value: day ? 1.0 : 0.0 },
+      uInvProj: { value: new THREE.Matrix4() },
+      uCamWorld: { value: new THREE.Matrix4() },
     },
     vertexShader: `
-      varying vec3 vDir;
+      varying vec2 vNdc;
       void main() {
-        vDir = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vNdc = position.xy;
+        gl_Position = vec4(position.xy, 0.9999, 1.0);
       }
     `,
     fragmentShader: `
@@ -32,10 +49,15 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       uniform vec3 uZenith;
       uniform vec3 uGlow;
       uniform vec3 uCityGlow;
+      uniform vec3 uFogColor;
+      uniform float uFogBlend;
       uniform float uDay;
-      varying vec3 vDir;
+      uniform mat4 uInvProj;
+      uniform mat4 uCamWorld;
+      varying vec2 vNdc;
       void main() {
-        vec3 dir = normalize(vDir);
+        vec4 far = uInvProj * vec4(vNdc, 1.0, 1.0);
+        vec3 dir = normalize(mat3(uCamWorld) * (far.xyz / far.w));
         float h = dir.y * 0.5 + 0.5;
         vec3 col = mix(uHorizon, uZenith, pow(h, mix(0.65, 0.85, uDay)));
         float sun = pow(max(dot(dir, uSunDir), 0.0), mix(64.0, 128.0, uDay));
@@ -44,16 +66,25 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
         col += uCityGlow * city * mix(0.18, 0.06, uDay);
         float stars = step(0.997, fract(sin(dot(floor(dir.xz * 800.0), vec2(12.9898, 78.233))) * 43758.5453));
         col += vec3(0.85, 0.9, 1.0) * stars * smoothstep(0.35, 0.85, h) * (1.0 - uDay);
+        // A few degrees along the geometric horizon take the scene fog colour.
+        // Distant hills are already that colour; a second blue there reads as a
+        // seam that shimmers when the camera moves.
+        float lip = smoothstep(0.07, 0.0, dir.y);
+        col = mix(col, uFogColor, lip * uFogBlend);
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'sky';
+  // The triangle lives at the origin in NDC, not in the world. Culling it once
+  // the camera leaves downtown would remove the sky.
   mesh.frustumCulled = false;
-  mesh.fog = false;
   mesh.renderOrder = -1000;
   mesh.onBeforeRender = (_renderer, _scene, camera) => {
-    mesh.position.copy(camera.position);
+    invProj.copy(camera.projectionMatrix).invert();
+    mat.uniforms.uInvProj.value.copy(invProj);
+    mat.uniforms.uCamWorld.value.copy(camera.matrixWorld);
   };
   return mesh;
 }

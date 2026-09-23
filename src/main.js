@@ -91,8 +91,19 @@ scene.background = new THREE.Color(CLEAR_COLOR);
 // value read as once the ambient came down.
 scene.fog = new THREE.FogExp2(DAY_MODE ? 0x9dbcd8 : 0x05070c, DAY_MODE ? 0.00009 : 0.00026);
 
+/**
+ * First view when the page opens: the Mount Washington overlook, looking north
+ * across the Monongahela at downtown. The elevation grid puts the bluff edge
+ * near (-1000, 126 m, 550); the camera sits just above that lip.
+ * `views.mountwashington` is this same preset.
+ */
+const MOUNT_WASHINGTON_VIEW = {
+  position: new THREE.Vector3(-1010, 195, 560),
+  target: new THREE.Vector3(240, 60, -40),
+};
+
 const camera = new THREE.PerspectiveCamera(45, 1, 2, 25000);
-camera.position.set(900, 650, 1100);
+camera.position.copy(MOUNT_WASHINGTON_VIEW.position);
 
 let renderer;
 try {
@@ -134,7 +145,7 @@ controls.dampingFactor = 0.06;
 controls.minDistance = 80;
 controls.maxDistance = 6000;
 controls.maxPolarAngle = Math.PI * 0.49;
-controls.target.set(0, 40, 0);
+controls.target.copy(MOUNT_WASHINGTON_VIEW.target);
 
 /**
  * Direct sun against sky ambient.
@@ -212,6 +223,7 @@ materials.envMap = createEnvironmentMap(renderer, { day: DAY_MODE });
 scene.environment = materials.envMap;
 scene.environmentIntensity = DAY_MODE ? 0.42 : 0.55;
 const sky = createSkyDome({ day: DAY_MODE, sunDir: SUN_DIR });
+sky.material.uniforms.uFogBlend.value = 1;
 scene.add(sky);
 
 const weatherFx = createWeatherFX();
@@ -1582,10 +1594,7 @@ const views = {
     position: new THREE.Vector3(4460, 300, -60),
     target: new THREE.Vector3(4133, 150, -369),
   },
-  mountwashington: {
-    position: new THREE.Vector3(-1010, 195, 560),
-    target: new THREE.Vector3(240, 60, -40),
-  },
+  mountwashington: MOUNT_WASHINGTON_VIEW,
 };
 
 let rotateMode = false;
@@ -1605,7 +1614,7 @@ function animateCamera(toView, duration = 2200) {
   anim = { start, duration, fromPos, fromTarget, toPos, toTarget };
 }
 
-function setView(name) {
+function setView(name, duration = 2200) {
   walker?.exit();
   document.getElementById('walk-toggle').textContent='Walk the city';
   if (name === 'rotate') {
@@ -1622,7 +1631,7 @@ function setView(name) {
   for (const btn of navEl.querySelectorAll('button')) {
     btn.classList.toggle('active', btn.dataset.view === name);
   }
-  if (views[name]) animateCamera(views[name]);
+  if (views[name]) animateCamera(views[name], duration);
 }
 
 for (const btn of navEl.querySelectorAll('button[data-view]')) {
@@ -1709,7 +1718,7 @@ function tick(now) {
   if (cw !== viewW || ch !== viewH) onResize();
 
   if (anim) {
-    const t = Math.min(1, (now - anim.start) / anim.duration);
+    const t = anim.duration <= 0 ? 1 : Math.min(1, (now - anim.start) / anim.duration);
     const e = easeInOut(t);
     camera.position.lerpVectors(anim.fromPos, anim.toPos, e);
     controls.target.lerpVectors(anim.fromTarget, anim.toTarget, e);
@@ -1778,11 +1787,11 @@ requestAnimationFrame(tick);
     await buildCity(data, landcover, fabric, transitRes?.ok ? await transitRes.json() : null, businessRes?.ok ? await businessRes.json() : null, streetRes?.ok ? await streetRes.json() : null);
     applyQuality();
     setWeather(settings.weather);
-    const start = viewFromHash() || 'downtown';
-    setView(start);
-    // Land on a hash-selected view immediately rather than flying in, so a
-    // screenshot taken right after load shows the requested framing.
-    if (anim && viewFromHash()) {
+    const start = viewFromHash() || 'mountwashington';
+    setView(start, 0);
+    // Land on the overlook (or a #hash preset) before the next frame, so the
+    // first painted view is that camera rather than a flight in from elsewhere.
+    if (anim) {
       camera.position.copy(anim.toPos);
       controls.target.copy(anim.toTarget);
       anim = null;
