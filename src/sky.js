@@ -1,11 +1,21 @@
 import * as THREE from 'three';
 
 export function createSkyDome({ day = true, sunDir = null } = {}) {
-  // Sit on the camera, well inside the far plane. A 12 km sphere at the world
-  // origin is clipped by `camera.far` from the outer neighbourhoods, and the
-  // composer/clear colour behind those holes is black — the "big black box"
-  // at some headings on phones.
-  const geo = new THREE.SphereGeometry(4000, 32, 24);
+  // The shell is placed in view space, on whichever camera is currently
+  // rendering. Parking a world-space dome on `camera.position` inside
+  // onBeforeRender does not — modelViewMatrix is built from matrixWorld, which
+  // was updated before that callback — so the dome lagged a frame. The river
+  // reflection makes that fatal: it renders the whole scene with a camera
+  // mirrored under the water *before* the real view. That pass left the dome
+  // centred below the river, and the next draw used it. From the overlook the
+  // horizon tore and shifted; from the aerial camera (2.5 km up, outside the
+  // old 4 km shell) the sky dropped out and the clear colour showed through.
+  //
+  // Radius sits between the walking near plane (0.15) and `camera.far`, so the
+  // shell itself is neither near-clipped nor far-clipped. The vertex shader then
+  // parks depth just inside the far plane: terrain always wins the depth test,
+  // and the dome cannot z-fight a hillside at the same distance.
+  const geo = new THREE.SphereGeometry(80, 48, 32);
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide,
     depthTest: true,
@@ -17,13 +27,22 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       uZenith: { value: new THREE.Color(day ? 0x4a90d9 : 0x050810) },
       uGlow: { value: new THREE.Color(day ? 0xfff4d8 : 0x2a3a4a) },
       uCityGlow: { value: new THREE.Color(day ? 0xe8f0f8 : 0x3a2a18) },
+      uFogColor: { value: new THREE.Color(day ? 0x9dbcd8 : 0x05070c) },
+      // Off until a scene with fog opts in. The landmark preview has no fog.
+      uFogBlend: { value: 0 },
       uDay: { value: day ? 1.0 : 0.0 },
     },
     vertexShader: `
       varying vec3 vDir;
       void main() {
+        // Mesh stays unrotated at the origin, so local position is the world
+        // direction. mat3 drops translation: the shell is centred on this
+        // camera even when the reflection pass renders with another one.
         vDir = position;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec3 viewPos = mat3(modelViewMatrix) * position;
+        gl_Position = projectionMatrix * vec4(viewPos, 1.0);
+        // Inside the far plane, not on it: some GPUs clip z == w.
+        gl_Position.z = gl_Position.w * 0.9999;
       }
     `,
     fragmentShader: `
@@ -32,6 +51,8 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
       uniform vec3 uZenith;
       uniform vec3 uGlow;
       uniform vec3 uCityGlow;
+      uniform vec3 uFogColor;
+      uniform float uFogBlend;
       uniform float uDay;
       varying vec3 vDir;
       void main() {
@@ -44,17 +65,22 @@ export function createSkyDome({ day = true, sunDir = null } = {}) {
         col += uCityGlow * city * mix(0.18, 0.06, uDay);
         float stars = step(0.997, fract(sin(dot(floor(dir.xz * 800.0), vec2(12.9898, 78.233))) * 43758.5453));
         col += vec3(0.85, 0.9, 1.0) * stars * smoothstep(0.35, 0.85, h) * (1.0 - uDay);
+        // A few degrees along the geometric horizon take the scene fog colour.
+        // Distant hills are already that colour; a second blue there reads as a
+        // seam that shimmers when the camera moves.
+        float lip = smoothstep(0.07, 0.0, dir.y);
+        col = mix(col, uFogColor, lip * uFogBlend);
         gl_FragColor = vec4(col, 1.0);
       }
     `,
   });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.name = 'sky';
+  // Bounds stay a small sphere at the origin; the shader moves the vertices
+  // onto the camera. Frustum culling would discard the sky once the view
+  // leaves downtown.
   mesh.frustumCulled = false;
-  mesh.fog = false;
   mesh.renderOrder = -1000;
-  mesh.onBeforeRender = (_renderer, _scene, camera) => {
-    mesh.position.copy(camera.position);
-  };
   return mesh;
 }
 

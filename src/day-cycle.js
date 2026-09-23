@@ -87,6 +87,8 @@ export function createDayCycle(ctx, getWeather, setWeather) {
     ctx.scene.fog.color.lerp(nightHorizon, night);
     ctx.scene.background.copy(ctx.scene.fog.color);
     ctx.renderer.setClearColor(ctx.scene.background, 1);
+    // The dome blends its horizon lip to this, so the haze and the sky stay one colour.
+    if (u.uFogColor) u.uFogColor.value.copy(ctx.scene.fog.color);
     const h = Math.floor(hour);
     const m = Math.floor((hour - h) * 60);
     clock.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
