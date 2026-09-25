@@ -45,6 +45,8 @@ import {
   saveSettings,
   pixelRatioFor,
 } from './quality.js';
+import { loadCityDatasets } from './load-city-data.js';
+import { disposeComposerResources } from './postprocessing.js';
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -236,7 +238,7 @@ function bloomAllowed() {
 }
 function disposeComposer() {
   if (!composer) return;
-  composer.dispose();
+  disposeComposerResources(composer);
   composer = null;
   bloomPass = null;
 }
@@ -1767,24 +1769,18 @@ requestAnimationFrame(tick);
 
 (async () => {
   try {
-    const [res, coverRes, fabricRes, transitRes, businessRes, streetRes] = await Promise.all([
-      fetch('./data/pittsburgh.json'),
-      fetch('./data/landcover.json'),
-      fetch('./data/fabric.json'),
-      fetch('./data/transit.json').catch(()=>null),
-      fetch('./data/strip-businesses.json').catch(()=>null),
-      fetch('./data/street-detail.json').catch(()=>null),
-    ]);
-    if (!res.ok) throw new Error(`Failed to load city data (${res.status})`);
-    const data = await res.json();
-    // Land cover only decides ground tone, so a missing or stale file should
-    // degrade to the slope-and-density fallback rather than lose the city.
-    const landcover = coverRes.ok ? await coverRes.json() : null;
-    // Background fabric is additive: without it the city is a modelled downtown
-    // surrounded by empty hills, but a failure to fetch it should still leave a
-    // working downtown rather than no city at all.
-    const fabric = fabricRes.ok ? await fabricRes.json() : null;
-    await buildCity(data, landcover, fabric, transitRes?.ok ? await transitRes.json() : null, businessRes?.ok ? await businessRes.json() : null, streetRes?.ok ? await streetRes.json() : null);
+    // Land cover, fabric, transit, storefronts, and street detail each fail soft.
+    // A network error or broken JSON file drops that layer to its empty fallback
+    // instead of leaving the loader stuck on the whole city.
+    const loaded = await loadCityDatasets({
+      city: './data/pittsburgh.json',
+      landcover: './data/landcover.json',
+      fabric: './data/fabric.json',
+      transit: './data/transit.json',
+      businesses: './data/strip-businesses.json',
+      streets: './data/street-detail.json',
+    });
+    await buildCity(loaded.city, loaded.landcover, loaded.fabric, loaded.transit, loaded.businesses, loaded.streets);
     applyQuality();
     setWeather(settings.weather);
     const start = viewFromHash() || 'mountwashington';

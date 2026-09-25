@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "audit:geo": "node scripts/verify-geography.mjs",
     "repair:geo": "node scripts/repair-footprints.mjs && node scripts/repair-heights.mjs",
-    "test": "node scripts/test-city-life.mjs"
+    "test": "node scripts/test-city-life.mjs && node scripts/test-reliability.mjs"
   },
   "dependencies": {
     "pngjs": "^7.0.0",

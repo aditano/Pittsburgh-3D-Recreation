@@ -3,14 +3,29 @@ import * as THREE from 'three';
 import {makePath,samplePath,nearestSegment} from './motion.js';
 import {pointInPoly} from './geo.js';
 
+/** Metres of clear road a vehicle keeps behind the one ahead, including across a segment join. */
+const FOLLOW_METRES = 6;
+
+function forwardPool(agent) {
+  const choices = agent.s.next || [];
+  if (!choices.length) return null;
+  const named = agent.s.name ? choices.filter((next) => next.name === agent.s.name) : [];
+  return named.length ? named : choices;
+}
+
 /** Stay on the named street when it continues; otherwise spread across the exits. */
 export function chooseNext(agent) {
-  const choices = agent.s.next || [];
-  if (!choices.length) return agent.s.reverse || null;
-  const named = agent.s.name ? choices.filter((next) => next.name === agent.s.name) : [];
-  const pool = named.length ? named : choices;
+  const pool = forwardPool(agent);
+  if (!pool) return agent.s.reverse || null;
   agent.hops = (agent.hops + 1) >>> 0;
   return pool[(agent.seed + agent.hops) % pool.length];
+}
+
+/** The segment chooseNext would enter, without consuming a hop. */
+function peekNext(agent) {
+  const pool = forwardPool(agent);
+  if (!pool) return agent.s.reverse || null;
+  return pool[(agent.seed + ((agent.hops + 1) >>> 0)) % pool.length];
 }
 
 /** Sidewalk traffic waits with the light, a few metres short of the stop line. */
@@ -66,27 +81,51 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
     const mesh=person(palette[i%palette.length]);root.add(mesh);people.push({mesh,s,d:(i*.713%1),speed:.9+i%4*.15,seed:i*13+1,hops:0,phase:i,moving:false});
   }
   const matrix=(mesh,i,x,y,z,heading,w,h,d)=>{dummy.position.set(x,y,z);dummy.rotation.set(0,heading,0);dummy.scale.set(w,h,d);dummy.updateMatrix();mesh.setMatrixAt(i,dummy.matrix);};
+  let queues=new Map();
+  function tailMetres(segment){
+    const queued=queues.get(segment);
+    if(!queued?.length)return Infinity;
+    let tail=Infinity;
+    for(const other of queued)tail=Math.min(tail,other.d*segment.length);
+    return tail;
+  }
+  function leaderGap(agent){
+    const next=peekNext(agent);
+    if(!next)return Infinity;
+    const tail=tailMetres(next);
+    if(!Number.isFinite(tail))return Infinity;
+    return (1-agent.d)*agent.s.length+tail;
+  }
   function advance(a,dt,time=null,gap=Infinity){
     let distance=a.speed*dt;
     if(time!==null){const toLine=(1-a.d)*a.s.length-8;
       const stop=toLine>=0&&!signals.canPass(a.s,time,toLine);
-      const available=Math.max(0,Math.min(gap-6,stop?toLine:Infinity));
+      const available=Math.max(0,Math.min(gap-FOLLOW_METRES,stop?toLine:Infinity));
       const desired=Math.min(a.speed,Math.sqrt(2*3.5*available));
       a.velocity=THREE.MathUtils.damp(a.velocity,desired,3,dt);distance=Math.min(available,a.velocity*dt);
     }
     a.d+=distance/a.s.length;
     let guard=0;
     while(a.d>1&&guard++<4){
-      const extra=(a.d-1)*a.s.length,next=chooseNext(a);
+      const extra=(a.d-1)*a.s.length;
+      const next=peekNext(a);
       if(!next){a.d=1;a.velocity=0;break;}
-      a.s=next;a.d=extra/a.s.length;
+      if(time!==null){
+        const tail=tailMetres(next);
+        const room=Number.isFinite(tail)?tail-FOLLOW_METRES:Infinity;
+        if(extra>room){
+          if(!(room>0)){a.d=1;a.velocity=0;break;}
+          a.s=chooseNext(a);a.d=room/a.s.length;break;
+        }
+      }
+      a.s=chooseNext(a);a.d=extra/a.s.length;
     }
     if(a.d>1)a.d=1;
     return samplePath(a.s.path,a.d*a.s.length);}
   return {segments,root,signals,nearest:(x,z)=>nearestSegment(x,z,segments),update(dt,time,night){
     signals.update(time);
-    const queues=new Map();for(const a of agents){if(!queues.has(a.s))queues.set(a.s,[]);queues.get(a.s).push(a);}
-    for(const q of queues.values()){q.sort((a,b)=>b.d-a.d);q.forEach((a,i)=>a.gap=i?(q[i-1].d-a.d)*a.s.length:Infinity);}
+    queues=new Map();for(const a of agents){if(!queues.has(a.s))queues.set(a.s,[]);queues.get(a.s).push(a);}
+    for(const q of queues.values()){q.sort((a,b)=>b.d-a.d);q.forEach((a,i)=>a.gap=i?(q[i-1].d-a.d)*a.s.length:leaderGap(a));}
     agents.forEach((a,i)=>{const p=advance(a,dt,time,a.gap),x=p.x-Math.cos(p.heading)*1.7,z=p.z+Math.sin(p.heading)*1.7,y=yFn(x,z)+1.15;
       matrix(cars,i,x,y+.65,z,p.heading,1.85,1.05,4.3);matrix(roofs,i,x-Math.sin(p.heading)*.25,y+1.3,z-Math.cos(p.heading)*.25,p.heading,1.65,.65,2.25);
       for(let k=0;k<2;k++)matrix(lamps,i*2+k,x+Math.sin(p.heading)*2.16+Math.cos(p.heading)*(k?-.6:.6),y+.8,z+Math.cos(p.heading)*2.16-Math.sin(p.heading)*(k?-.6:.6),p.heading,.35,.2,.12);
