@@ -91,10 +91,13 @@ terrain and detailed building geometry remain the geographic foundation.
   detail adds projecting sills/lintels, doors, sidewalks, curbs and lane markings.
   These treatments follow the mapped footprints and remain procedural.
 - A shared planar reflection captures the actual skyline and bridges in the
-  water at 12 Hz in High/Ultra quality. Rain rings, fine wind ripples, Fresnel
-  reflectance and sky colors respond to conditions. Low/Medium and mobile use
-  the lighter dynamic sky reflection. The rivers are pool-stage water, not ocean
-  waves; this is visual simulation rather than a hydrological model.
+  water. Ultra refreshes a full-resolution target every frame (multisampled
+  when the color buffer is 8-bit, otherwise a 3×3 blur — half-float MSAA comes
+  back black on ANGLE). High is about half resolution at 30 Hz, Medium about a
+  third at 12 Hz, and Low plus phones keep the analytic sky reflection. Rain
+  rings, fine wind ripples, Fresnel reflectance and sky colors respond to
+  conditions. The rivers are pool-stage water, not ocean waves; this is visual
+  simulation rather than a hydrological model.
 - Day and night now share a separate window-emission mask. Street lamps,
   illuminated business signs and vehicle headlights respond to darkness.
   Street-level shadows concentrate around the walking camera for finer detail.

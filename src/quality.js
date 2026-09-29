@@ -15,6 +15,11 @@ export const QUALITY = {
     shadowSoft: false,
     bloom: false,
     particles: 0.28,
+    reflection: false,
+    reflectionScale: 0,
+    reflectionHz: 0,
+    reflectionSamples: 0,
+    reflectionCap: 512,
   },
   medium: {
     shadows: true,
@@ -22,6 +27,11 @@ export const QUALITY = {
     shadowSoft: false,
     bloom: false,
     particles: 0.55,
+    reflection: true,
+    reflectionScale: 0.33,
+    reflectionHz: 12,
+    reflectionSamples: 0,
+    reflectionCap: 768,
   },
   high: {
     shadows: true,
@@ -29,6 +39,11 @@ export const QUALITY = {
     shadowSoft: true,
     bloom: true,
     particles: 1,
+    reflection: true,
+    reflectionScale: 0.55,
+    reflectionHz: 30,
+    reflectionSamples: 2,
+    reflectionCap: 1400,
   },
   ultra: {
     shadows: true,
@@ -36,6 +51,13 @@ export const QUALITY = {
     shadowSoft: true,
     bloom: true,
     particles: 1.35,
+    // Drawing-buffer resolution, every frame. Samples apply only when the
+    // reflection target is unsigned-byte; half-float uses a blur instead.
+    reflection: true,
+    reflectionScale: 1,
+    reflectionHz: 0,
+    reflectionSamples: 4,
+    reflectionCap: 2560,
   },
 };
 

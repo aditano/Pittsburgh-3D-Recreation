@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { useClipDepthBias } from './depth-bias.js';
 
 /**
  * River surface.
@@ -238,6 +239,8 @@ export function createWaterMaterial({ dayMode = true } = {}) {
     uReflection: { value: null },
     uReflectionMix: { value: 0 },
     uReflectionMatrix: { value: new THREE.Matrix4() },
+    uReflectionTexel: { value: new THREE.Vector2(1 / 768, 1 / 768) },
+    uReflectionBlur: { value: 0 },
   };
 
   // Albedo is deliberately near-black: a silty river reflects only a few per
@@ -261,12 +264,9 @@ export function createWaterMaterial({ dayMode = true } = {}) {
     metalness: 0.0,
     transparent: true,
     opacity: dayMode ? 0.975 : 0.985,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
   });
 
-  mat.customProgramCacheKey = () => 'river-surface-reflection-v3';
+  mat.customProgramCacheKey = () => 'river-surface-reflection-v4';
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, uniforms);
     shader.uniforms.uTime = uniforms.uTime;
@@ -291,6 +291,23 @@ export function createWaterMaterial({ dayMode = true } = {}) {
       uniform sampler2D uReflection;
       uniform float uReflectionMix;
       uniform mat4 uReflectionMatrix;
+      uniform vec2 uReflectionTexel;
+      uniform float uReflectionBlur;
+      vec3 sampleRiverReflection(vec2 uv) {
+        vec2 clamped = clamp(uv, vec2(0.001), vec2(0.999));
+        if (uReflectionBlur < 0.05) return texture2D(uReflection, clamped).rgb;
+        vec2 texel = uReflectionTexel * uReflectionBlur;
+        vec3 color = texture2D(uReflection, clamped).rgb * 4.0;
+        color += texture2D(uReflection, clamp(clamped + vec2(texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 2.0;
+        color += texture2D(uReflection, clamp(clamped - vec2(texel.x, 0.0), vec2(0.001), vec2(0.999))).rgb * 2.0;
+        color += texture2D(uReflection, clamp(clamped + vec2(0.0, texel.y), vec2(0.001), vec2(0.999))).rgb * 2.0;
+        color += texture2D(uReflection, clamp(clamped - vec2(0.0, texel.y), vec2(0.001), vec2(0.999))).rgb * 2.0;
+        color += texture2D(uReflection, clamp(clamped + texel, vec2(0.001), vec2(0.999))).rgb;
+        color += texture2D(uReflection, clamp(clamped - texel, vec2(0.001), vec2(0.999))).rgb;
+        color += texture2D(uReflection, clamp(clamped + vec2(texel.x, -texel.y), vec2(0.001), vec2(0.999))).rgb;
+        color += texture2D(uReflection, clamp(clamped + vec2(-texel.x, texel.y), vec2(0.001), vec2(0.999))).rgb;
+        return color * (1.0 / 16.0);
+      }
       uniform float uTime;
       uniform float uFlow;
       uniform float uPrecip;
@@ -396,7 +413,7 @@ export function createWaterMaterial({ dayMode = true } = {}) {
              vec2 uv=projected.xy/projected.w;
              uv+=rField.slope*.035;
              float edge=smoothstep(0.0,.04,uv.x)*smoothstep(0.0,.04,uv.y)*smoothstep(0.0,.04,1.0-uv.x)*smoothstep(0.0,.04,1.0-uv.y);
-             vec3 captured=texture2D(uReflection,clamp(uv,vec2(.001),vec2(.999))).rgb;
+             vec3 captured=sampleRiverReflection(uv);
              reflected=mix(reflected,captured,edge*.88);
            }
            reflectedLight.indirectSpecular = reflected * fres;
@@ -433,6 +450,9 @@ export function createWaterMaterial({ dayMode = true } = {}) {
          #endif`,
       );
   };
+  // Push the surface just behind coplanar shore geometry. Clip-space, not
+  // polygonOffset: D3D11 slope bias on a river polygon covers the far bank.
+  useClipDepthBias(mat, 1.2e-6);
 
   return { mat, uniforms };
 }
