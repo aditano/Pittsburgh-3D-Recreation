@@ -1,3 +1,4 @@
+import './gl-robust.js';
 import './mobile-ui.js';
 import {createStreetDetail} from './street-detail.js';
 import {createRiverReflections} from './reflections.js';
@@ -176,8 +177,11 @@ sun.shadow.mapSize.set(
   QUALITY[settings.quality].shadowSize,
   QUALITY[settings.quality].shadowSize,
 );
-sun.shadow.camera.near = 20;
-sun.shadow.camera.far = 6500;
+// The light sits 2600 m off the target. near=20 / far=6500 spends most of the
+// shadow map on empty space, so a mediump depth pack (ANGLE) quantises the
+// canopy into buckets large enough to swallow the bowl. Bracket the lit slice.
+sun.shadow.camera.near = 400;
+sun.shadow.camera.far = 5200;
 sun.shadow.camera.left = -SHADOW_HALF;
 sun.shadow.camera.right = SHADOW_HALF;
 sun.shadow.camera.top = SHADOW_HALF;
@@ -1753,7 +1757,11 @@ function tick(now) {
   focusGlow.position.z = controls.target.z;
 
   if (!walker?.active) controls.update();
-  reflections?.update(dt,!CONSTRAINED_GPU&&(settings.quality==='high'||settings.quality==='ultra'));
+  reflections?.update(
+    dt,
+    !CONSTRAINED_GPU && QUALITY[settings.quality].reflection,
+    QUALITY[settings.quality],
+  );
   renderer.setViewport(0,0,viewW,viewH);
   if (composer) {
     composer.render();

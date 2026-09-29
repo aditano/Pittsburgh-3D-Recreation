@@ -15,6 +15,7 @@ function mat(color, opts = {}) {
     opacity: opts.opacity ?? 1,
     side: opts.side ?? THREE.FrontSide,
     envMapIntensity: opts.envMapIntensity ?? 0.6,
+    depthWrite: opts.depthWrite ?? true,
   });
 }
 
@@ -108,6 +109,30 @@ function box(w, h, d, x, y, z, ry = 0) {
 }
 
 /**
+ * Four thin walls, open top and bottom. A solid glass box writes a horizontal
+ * lid across the interior; on ANGLE that lid is a dark rectangle because the
+ * env map is a half-float probe and metalness has nothing to reflect.
+ */
+function glassShell(w, h, d, x, y, z, ry = 0, t = 0.4) {
+  const c = Math.cos(ry);
+  const s = Math.sin(ry);
+  const place = (pw, ph, pd, lx, lz) => {
+    const wx = x + lx * c + lz * s;
+    const wz = z - lx * s + lz * c;
+    return box(pw, ph, pd, wx, y, wz, ry);
+  };
+  const hz = d * 0.5 - t * 0.5;
+  const hx = w * 0.5 - t * 0.5;
+  const sideD = Math.max(0.2, d - t * 2);
+  return [
+    place(w, h, t, 0, hz),
+    place(w, h, t, 0, -hz),
+    place(t, h, sideD, hx, 0),
+    place(t, h, sideD, -hx, 0),
+  ];
+}
+
+/**
  * Box tilted in the plane of a facade: local +X is the length, tilted by
  * `tilt` in the wall plane before the wall's own yaw is applied. This is what
  * draws diagonal bracing and raking struts rather than only orthogonal members.
@@ -175,9 +200,32 @@ function meshFrom(geoms, material, cast = true, receive = true) {
   if (usable.length > 1) for (const g of usable) g.dispose();
   if (!merged) return null;
   const mesh = new THREE.Mesh(merged, material);
-  mesh.castShadow = cast;
+  // Glass is transparent and must not throw a solid shadow. A merged glass
+  // volume that writes depth also occludes the bowl on backends that sort a
+  // single transparent object as one box.
+  mesh.castShadow = cast && material.depthWrite !== false;
   mesh.receiveShadow = receive;
+  replaceZeroNormals(merged);
   return mesh;
+}
+
+/** ANGLE/D3D11 turns a zero normal into a NaN shadow coordinate. */
+function replaceZeroNormals(geom) {
+  const attr = geom.getAttribute('normal');
+  if (!attr) return;
+  const arr = attr.array;
+  let changed = false;
+  for (let i = 0; i < arr.length; i += 3) {
+    const x = arr[i];
+    const y = arr[i + 1];
+    const z = arr[i + 2];
+    if (x * x + y * y + z * z >= 1e-12) continue;
+    arr[i] = 0;
+    arr[i + 1] = 1;
+    arr[i + 2] = 0;
+    changed = true;
+  }
+  if (changed) attr.needsUpdate = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +463,14 @@ function sweepStrip(path, profile, closed = false) {
   return geom;
 }
 
-/** Flat end wall closing an open seating ribbon; emitted double-wound so it reads from either side. */
+/**
+ * Flat end wall closing an open seating ribbon.
+ *
+ * The two sides are separate vertex copies. Winding both directions through
+ * the same vertices makes computeVertexNormals average them to zero, and
+ * ANGLE/D3D11 turns normalize(0) into NaN. Those NaNs poison the shadow map
+ * over the whole bowl.
+ */
 function sectionCap(section, node) {
   const contour = section.map(([u, v]) => new THREE.Vector2(u, v));
   let faces = null;
@@ -426,14 +481,22 @@ function sectionCap(section, node) {
   }
   if (!faces || !faces.length) return null;
   const n = contour.length;
-  const pos = new Float32Array(n * 3);
-  const uvs = new Float32Array(n * 2);
+  const pos = new Float32Array(n * 2 * 3);
+  const uvs = new Float32Array(n * 2 * 2);
   for (let i = 0; i < n; i++) {
-    pos[i * 3] = node.x + node.nx * contour[i].x;
-    pos[i * 3 + 1] = contour[i].y;
-    pos[i * 3 + 2] = node.z + node.nz * contour[i].x;
+    const x = node.x + node.nx * contour[i].x;
+    const y = contour[i].y;
+    const z = node.z + node.nz * contour[i].x;
+    pos[i * 3] = x;
+    pos[i * 3 + 1] = y;
+    pos[i * 3 + 2] = z;
+    pos[(i + n) * 3] = x;
+    pos[(i + n) * 3 + 1] = y;
+    pos[(i + n) * 3 + 2] = z;
     uvs[i * 2] = contour[i].x / 16;
     uvs[i * 2 + 1] = contour[i].y / 16;
+    uvs[(i + n) * 2] = contour[i].x / 16;
+    uvs[(i + n) * 2 + 1] = contour[i].y / 16;
   }
   const idx = new Uint32Array(faces.length * 6);
   for (let i = 0; i < faces.length; i++) {
@@ -441,9 +504,9 @@ function sectionCap(section, node) {
     idx[i * 6] = f[0];
     idx[i * 6 + 1] = f[1];
     idx[i * 6 + 2] = f[2];
-    idx[i * 6 + 3] = f[2];
-    idx[i * 6 + 4] = f[1];
-    idx[i * 6 + 5] = f[0];
+    idx[i * 6 + 3] = f[2] + n;
+    idx[i * 6 + 4] = f[1] + n;
+    idx[i * 6 + 5] = f[0] + n;
   }
   const geom = new THREE.BufferGeometry();
   geom.setAttribute('position', new THREE.BufferAttribute(pos, 3));
@@ -666,7 +729,18 @@ function fieldTexture(canvas) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.anisotropy = 8;
+  const pot = (n) => n > 0 && (n & (n - 1)) === 0;
+  // The football canvas is 1024x728. NPOT dimensions plus mipmaps and
+  // anisotropy are an incomplete texture on some ANGLE/D3D11 paths, and an
+  // incomplete texture samples black — the pitch turns into a black rectangle.
+  if (!pot(canvas.width) || !pot(canvas.height)) {
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 1;
+  } else {
+    tex.anisotropy = 8;
+  }
   tex.needsUpdate = true;
   return tex;
 }
@@ -1146,6 +1220,7 @@ export function buildPncPark(spec = {}) {
     emissive: 0x24405c,
     emissiveIntensity: 0.35,
     envMapIntensity: 1.3,
+    depthWrite: false,
   });
   const board = mat(0x0b0d10, { roughness: 0.35, metalness: 0.3, emissive: 0x2a3550, emissiveIntensity: 0.55 });
   const lamp = mat(0xdfe4d8, { roughness: 0.3, metalness: 0.5, emissive: 0xfff0c0, emissiveIntensity: 0.9 });
@@ -1639,6 +1714,7 @@ export function buildAcrisureStadium(spec = {}) {
     emissive: 0x1b2c3c,
     emissiveIntensity: 0.16,
     envMapIntensity: 0.85,
+    depthWrite: false,
   });
   const board = mat(0x0a0c0f, { roughness: 0.3, metalness: 0.35, emissive: 0x3a4460, emissiveIntensity: 0.6 });
   const lamp = mat(0xe4e8dc, { roughness: 0.28, metalness: 0.5, emissive: 0xfff2c8, emissiveIntensity: 1.0 });
@@ -1973,7 +2049,7 @@ export function buildAcrisureStadium(spec = {}) {
     const top = upper.v0 + 3;
     const ox = p.x + p.nx * 8.0;
     const oz = p.z + p.nz * 8.0;
-    glassG.push(box(14, top, 13, ox, top * 0.5, oz, a));
+    glassG.push(...glassShell(14, top, 13, ox, top * 0.5, oz, a));
     for (const k of [-1, 1]) {
       steelG.push(box(1.1, top, 1.1, ox + Math.cos(a) * k * 6.8, top * 0.5, oz - Math.sin(a) * k * 6.8, a));
     }
@@ -2014,7 +2090,7 @@ export function buildAcrisureStadium(spec = {}) {
     const gz = p[1] + uz * (upper.uOut + 8);
     const a = Math.atan2(ux, uz);
     cast.push(box(64, 17, 15, gx, 8.5, gz, a));
-    glassG.push(box(56, 13, 15.6, gx, 8.0, gz, a));
+    glassG.push(...glassShell(56, 13, 15.6, gx, 8.0, gz, a));
     steelG2.push(box(68, 1.4, 19, gx + ux * 1.5, 17.6, gz + uz * 1.5, a));
     for (let k = -3; k <= 3; k++) {
       steelG.push(box(1.1, 18, 1.1, gx + Math.cos(a) * k * 9.2, 9, gz - Math.sin(a) * k * 9.2, a));
@@ -2086,6 +2162,7 @@ export function buildPpgArena(spec = {}) {
     emissiveIntensity: 0.45,
     envMapIntensity: 1.5,
     side: THREE.DoubleSide,
+    depthWrite: false,
   });
   const lamp = mat(0xe8ecdf, { roughness: 0.3, metalness: 0.4, emissive: 0xffe9b4, emissiveIntensity: 0.85 });
 

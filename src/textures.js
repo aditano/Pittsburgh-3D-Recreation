@@ -1,6 +1,8 @@
+import './gl-robust.js';
 import * as THREE from 'three';
 import { footprintCentroid } from './geo.js';
 import { createWaterMaterial } from './water.js';
+import { useClipDepthBias } from './depth-bias.js';
 
 function rng(seed) {
   let s = seed >>> 0;
@@ -810,9 +812,6 @@ function makeFoamMaterial(dayMode) {
     // The ribbon lies flat on the water it belongs to, so it must not occlude
     // the river surface or the far bank behind it.
     depthWrite: false,
-    polygonOffset: true,
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -4,
   });
   mat.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
@@ -833,6 +832,8 @@ function makeFoamMaterial(dayMode) {
   // change, so without a key of its own the foam would share a compiled program
   // with any other standard material that happens to match it.
   mat.customProgramCacheKey = () => 'foam-distance-fade';
+  // In front of the water, by a clip-space bias rather than polygonOffset.
+  useClipDepthBias(mat, -4e-6);
   return mat;
 }
 
@@ -1518,10 +1519,8 @@ export function createCityMaterials({ dayMode = true, textureSize = 1024 } = {})
     metalness: 0,
     emissive: 0x041208,
     emissiveIntensity: dayMode ? 0 : 0.2,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
   });
+  useClipDepthBias(parkMat, -1.5e-6);
 
   const { mat: waterMat, uniforms: waterUniforms } = createWaterMaterial({ dayMode });
 
@@ -1532,10 +1531,8 @@ export function createCityMaterials({ dayMode = true, textureSize = 1024 } = {})
     roughness: 0.94,
     metalness: 0.04,
     vertexColors: true,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
   });
+  useClipDepthBias(groundMat, 1.2e-6);
 
   const roadMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
@@ -1543,10 +1540,8 @@ export function createCityMaterials({ dayMode = true, textureSize = 1024 } = {})
     roughness: 0.88,
     metalness: 0.08,
     vertexColors: true,
-    polygonOffset: true,
-    polygonOffsetFactor: -2,
-    polygonOffsetUnits: -2,
   });
+  useClipDepthBias(roadMat, -2.5e-6);
 
   const foamMat = makeFoamMaterial(dayMode);
 
@@ -1565,19 +1560,15 @@ export function createCityMaterials({ dayMode = true, textureSize = 1024 } = {})
     map: makeParkingMaps(dayMode).map,
     roughness: 0.9,
     metalness: 0.06,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
   });
+  useClipDepthBias(pavingMat, -1.5e-6);
 
   const sandMat = new THREE.MeshStandardMaterial({
     color: dayMode ? 0xa89878 : 0x2e2820,
     roughness: 0.96,
     metalness: 0.01,
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
   });
+  useClipDepthBias(sandMat, -1.5e-6);
 
   const treeMat = new THREE.MeshStandardMaterial({
     // White in day mode because the planting supplies a per-instance tint, which
