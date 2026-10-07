@@ -118,3 +118,15 @@ not substituted or claimed as new photogrammetry.
 
 Refresh road metadata/signals with `node scripts/import-street-detail.mjs --refresh`.
 Rebuild terrain from the cached elevation source with `node scripts/build-terrain.mjs`.
+
+## License
+
+Copyright 2026 Anthony DiTano.
+
+Source code in this repository is licensed under the GNU General Public License, version 3 or any later version (`GPL-3.0-or-later`). The full text is in [LICENSE](LICENSE).
+
+Third-party map data and models keep their own licenses. This GPL grant does not relicense them:
+
+- OpenStreetMap extracts, and the city model derived from them (buildings, streets, parks, water, bridges, and related geometry), are © OpenStreetMap contributors and available under the [Open Database License (ODbL)](https://opendatacommons.org/licenses/odbl/).
+- The elevation grid is resampled from AWS Terrain Tiles (Terrarium encoding of USGS 3DEP bare-earth elevation). USGS 3DEP data is United States government work in the public domain.
+- The bundled transit snapshot is Pittsburgh Regional Transit GTFS and remains under [PRT's terms](https://www.rideprt.org/business-center/developer-resources/).
