@@ -90,6 +90,19 @@ assert.ok(sideBefore>=1);
 for(let i=0;i<400;i++)traffic.update(.05,i,0);
 assert.equal(traffic.vehicles.filter(v=>v.s.name==='Side').length,sideBefore,'cars stay on the named street');
 
+// One-way Liberty-style ways have sub-8 m edges between longer ones; dropping them freezes traffic.
+const liberty=createCityLife({streets:[],buildings:[]},()=>0,{inside:()=>false},new THREE.Scene(),true,{roads:[
+  {highway:'primary',oneway:'yes',name:'Liberty',c:[[0,0],[0,30],[0,35],[0,70]]},
+],signals:[]});
+assert.ok(liberty.segments.some((s)=>s.length<8&&s.name==='Liberty'),'sub-8 m one-way edges stay in the graph');
+const libertyApproach=liberty.segments.find((s)=>s.a[1]===0&&s.b[1]===30);
+assert.ok(libertyApproach?.next?.some((n)=>n.a[1]===30&&n.b[1]===35),'the long approach still reaches the next Liberty edge');
+const libertyCar=liberty.vehicles[0];
+libertyCar.s=libertyApproach;libertyCar.d=0.9;libertyCar.speed=20;libertyCar.velocity=20;libertyCar.hops=0;
+for(let i=0;i<80;i++)liberty.update(.05,i,0);
+const libertyEnd=samplePath(libertyCar.s.path,libertyCar.d*libertyCar.s.length);
+assert.ok(libertyEnd.z>34,'cars keep moving through a short one-way gap');
+
 const crossing=createCityLife({streets:[],buildings:[]},()=>0,{inside:()=>false},new THREE.Scene(),true,{roads:[
   {highway:'primary',oneway:'yes',name:'North',c:[[0,-12],[0,0]]},
   {highway:'primary',oneway:'yes',name:'East',c:[[-20,0],[0,0]]},
