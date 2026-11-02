@@ -8,7 +8,7 @@ import {buildingIndex,chooseNext,createCityLife,createWalker,pedestrianShouldWai
 import {createDayCycle} from '../src/day-cycle.js';
 import {loadSettings,saveSettings} from '../src/quality.js';
 import {roadwayLampHeading} from '../src/details.js';
-import {createTransit} from '../src/transit.js';
+import {createTransit,feedStatus,gtfsDay} from '../src/transit.js';
 const p=makePath([[0,0],[0,0],[0,10],[30,10]]);
 assert.equal(p.length,40);assert.deepEqual(samplePath(p,25),{x:15,z:10,heading:Math.PI/2});
 assert.equal(samplePath(p,999).x,30);assert.equal(samplePath(p,-10).z,0);
@@ -35,6 +35,10 @@ const transit=JSON.parse(readFileSync(new URL('../public/data/transit.json',impo
 for(const id of ['RED','BLUE','SLVR'])assert.ok(transit.routes.some(r=>r.id===id&&r.type==='rail'));
 for(const r of transit.routes)for(const p of r.paths){assert.ok(p.length>=2);for(const [x,z]of p){assert.ok(Number.isFinite(x)&&Number.isFinite(z));assert.ok(x>-4600&&x<8600&&z>-4000&&z<4600);}}
 const ids=new Set(transit.routes.map(r=>r.id));for(const s of transit.stops)assert.ok(s.routes.every(r=>ids.has(r)));
+assert.ok(gtfsDay(transit.feed?.[0]?.feed_end_date)>gtfsDay('20261014'),'bundled PRT feed must be newer than the Oct 14 2026 expiry');
+assert.equal(feedStatus(transit,Date.UTC(2026,10,2)).ok,true,'refreshed feed is valid on audit day');
+assert.equal(feedStatus({feed:[{feed_end_date:'20261014'}]},Date.UTC(2026,10,2)).ok,false);
+assert.match(feedStatus({feed:[{feed_end_date:'20261014'}]},Date.UTC(2026,10,2)).note,/ended 20261014/);
 console.log(`Passed: path interpolation, collision grid, 30 seconds of traffic, walking lifecycle, ${transit.routes.length} routes and ${transit.stops.length} stops.`);
 
 for(let t=0;t<140;t+=.1){assert.ok(!(signalPhase(t,0)==='green'&&signalPhase(t,1)==='green'));}
@@ -210,9 +214,11 @@ const transitScene=new THREE.Scene();
 createTransit({
   routes:[{id:'1',name:'FREEPORT ROAD',type:'bus',color:'#3300cc',paths:[[[0,0],[120,0]]]}],
   stops:[{name:'Market',p:[0,0],routes:['1']}],
+  feed:[{feed_end_date:'20261014'}],
 },transitScene,()=>0,()=>{});
 assert.equal(routeSelect.value,'none');
 assert.match(transitInfo.textContent,/off the map/);
+assert.match(transitInfo.textContent,/ended 20261014/);
 assert.equal(focusRoute.disabled,true);
 assert.equal(stopsDetails.hidden,true);
 const routeGroups=transitScene.children[0].children;
