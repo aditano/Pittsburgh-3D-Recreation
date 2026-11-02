@@ -42,8 +42,10 @@ assert.equal(signalPhase(29,0),'yellow');assert.equal(signalPhase(33,0),'red');a
 const legs=[{a:[-50,0],b:[0,0],length:50},{a:[0,-50],b:[0,0],length:50}];
 const controller=createSignals([{id:0,p:[0,0]}],legs,()=>0,new THREE.Scene());
 assert.notEqual(legs[0].signalAxis,legs[1].signalAxis,'axis-aligned crossing approaches use opposing phases');
-assert.equal(controller.canPass(legs[0],5,20),true);assert.equal(controller.canPass(legs[1],5,20),false);
-assert.equal(controller.canPass(legs[0],33,20),false);controller.update(40);
+assert.equal(controller.canPass(legs[0],5,20),!controller.canPass(legs[1],5,20),'exactly one corridor is green');
+const openLeg=controller.canPass(legs[0],5,20)?legs[0]:legs[1];
+assert.equal(controller.canPass(openLeg,33,20),false,'the open corridor turns red in clearance');
+controller.update(40);
 
 // Diagonal approaches are perpendicular but both look "more vertical" under |dx|>|dz|, so they wrongly share green.
 const diagonal=[{a:[-20,-20],b:[0,0],length:Math.hypot(20,20)},{a:[20,-20],b:[0,0],length:Math.hypot(20,20)}];
@@ -119,17 +121,22 @@ const crossing=createCityLife({streets:[],buildings:[]},()=>0,{inside:()=>false}
   {highway:'primary',oneway:'yes',name:'South',c:[[0,0],[0,20]]},
 ],signals:[{id:0,p:[0,0]}]});
 const north=crossing.segments.find(s=>s.name==='North');
-assert.ok(north.signal);
-assert.equal(crossing.signals.canPass(north,10,4),false);
-assert.equal(crossing.signals.canPass(north,40,4),true);
-const held=crossing.pedestrians.filter(p=>p.s===north&&(1-p.d)*p.s.length<9);
+const east=crossing.segments.find(s=>s.name==='East');
+assert.ok(north.signal&&east.signal);
+assert.notEqual(north.signalAxis,east.signalAxis,'crossing streets keep opposing phases');
+assert.equal(crossing.signals.canPass(north,10,4),!crossing.signals.canPass(east,10,4));
+const redLeg=crossing.signals.canPass(north,10,4)?east:north;
+const greenAt=crossing.signals.canPass(redLeg,40,4)?40:10;
+assert.equal(crossing.signals.canPass(redLeg,10,4),false);
+assert.equal(crossing.signals.canPass(redLeg,greenAt===40?40:5,4),true);
+const held=crossing.pedestrians.filter(p=>p.s===redLeg&&(1-p.d)*p.s.length<9);
 assert.ok(held.length>0);
 const marks=held.map(p=>({p,d:p.d}));
 crossing.update(.05,10,1);
 for(const mark of marks)assert.equal(mark.p.d,mark.d,'pedestrians wait on red');
 assert.ok(marks[0].p.mesh.children.every(child=>child.rotation.x===0),'a stopped pedestrian stands still');
-for(let i=0;i<10;i++)crossing.update(.05,40,1);
-assert.ok(marks.some(mark=>mark.p.d!==mark.d||mark.p.s!==north),'pedestrians cross on green');
+for(let i=0;i<10;i++)crossing.update(.05,greenAt,1);
+assert.ok(marks.some(mark=>mark.p.d!==mark.d||mark.p.s!==redLeg),'pedestrians cross on green');
 assert.ok(crossing.pedestrians.some(p=>p.moving&&p.mesh.children.some(child=>Math.abs(child.rotation.x)>0.05)));
 
 function control(){const listeners={};return {value:'17',checked:false,textContent:'',listeners,addEventListener(name,fn){listeners[name]=fn;},setAttribute(){}};}
