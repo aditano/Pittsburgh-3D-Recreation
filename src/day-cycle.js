@@ -19,7 +19,8 @@ export function createDayCycle(ctx, getWeather, setWeather) {
   play.addEventListener('click', () => {
     running = !running;
     play.textContent = running ? 'Pause day' : 'Resume day';
-    play.setAttribute('aria-pressed', String(running));
+    // Pressed means the day cycle is paused (matches the Resume label state).
+    play.setAttribute('aria-pressed', String(!running));
   });
   slider.addEventListener('input', () => {
     hour = Number(slider.value);

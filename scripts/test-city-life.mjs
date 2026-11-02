@@ -143,7 +143,7 @@ for(let i=0;i<10;i++)crossing.update(.05,greenAt,1);
 assert.ok(marks.some(mark=>mark.p.d!==mark.d||mark.p.s!==redLeg),'pedestrians cross on green');
 assert.ok(crossing.pedestrians.some(p=>p.moving&&p.mesh.children.some(child=>Math.abs(child.rotation.x)>0.05)));
 
-function control(){const listeners={};return {value:'17',checked:false,textContent:'',listeners,addEventListener(name,fn){listeners[name]=fn;},setAttribute(){}};}
+function control(){const listeners={};const attrs={};return {value:'17',checked:false,textContent:'',listeners,attrs,addEventListener(name,fn){listeners[name]=fn;},setAttribute(name,value){attrs[name]=String(value);},getAttribute(name){return attrs[name];}};}
 const clock=control(),slider=control(),play=control(),weatherCycle=control();
 globalThis.document={getElementById(id){return { 'city-clock':clock,'time-slider':slider,'cycle-play':play,'weather-cycle':weatherCycle}[id];},activeElement:null,querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}};
 const dayScene=new THREE.Scene();
@@ -160,6 +160,12 @@ const renderer={toneMappingExposure:1,setClearColor(){}};
 let weather='sunny';
 const cycle=createDayCycle({scene:dayScene,sky,sun,hemi,fill,renderer,waterUniforms,sunDir,materials:{families:{},roadMat}},()=>weather,(next)=>{weather=next;});
 cycle.update(.016);
+assert.equal(play.getAttribute('aria-pressed'),undefined);
+play.listeners.click();
+assert.equal(play.textContent,'Resume day');
+assert.equal(play.getAttribute('aria-pressed'),'true','paused day marks the toggle pressed');
+play.listeners.click();
+assert.equal(play.getAttribute('aria-pressed'),'false');
 assert.ok(sunDir.x<0,'late-afternoon sun is in the west');
 assert.ok(fill.position.x>0,'fill light stays opposite the sun');
 const sunnyEnv=dayScene.environmentIntensity;
