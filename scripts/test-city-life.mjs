@@ -41,8 +41,18 @@ for(let t=0;t<140;t+=.1){assert.ok(!(signalPhase(t,0)==='green'&&signalPhase(t,1
 assert.equal(signalPhase(29,0),'yellow');assert.equal(signalPhase(33,0),'red');assert.equal(signalPhase(36,1),'green');
 const legs=[{a:[-50,0],b:[0,0],length:50},{a:[0,-50],b:[0,0],length:50}];
 const controller=createSignals([{id:0,p:[0,0]}],legs,()=>0,new THREE.Scene());
+assert.notEqual(legs[0].signalAxis,legs[1].signalAxis,'axis-aligned crossing approaches use opposing phases');
 assert.equal(controller.canPass(legs[0],5,20),true);assert.equal(controller.canPass(legs[1],5,20),false);
 assert.equal(controller.canPass(legs[0],33,20),false);controller.update(40);
+
+// Diagonal approaches are perpendicular but both look "more vertical" under |dx|>|dz|, so they wrongly share green.
+const diagonal=[{a:[-20,-20],b:[0,0],length:Math.hypot(20,20)},{a:[20,-20],b:[0,0],length:Math.hypot(20,20)}];
+createSignals([{id:1,p:[0,0]}],diagonal,()=>0,new THREE.Scene());
+assert.notEqual(diagonal[0].signalAxis,diagonal[1].signalAxis,'perpendicular diagonal approaches must not share a phase');
+for(let t=0;t<70;t+=.25){
+  assert.ok(!(signalPhase(t,diagonal[0].signalAxis)==='green'&&signalPhase(t,diagonal[1].signalAxis)==='green'),
+    `crossing diagonals share green at t=${t}`);
+}
 const core=JSON.parse(readFileSync(new URL('../public/data/pittsburgh.json',import.meta.url)));
 assert.equal(core.terrain.step,10);const terrain=makeTerrain(core.terrain);
 assert.ok(terrain(-576,1024)>100&&terrain(-576,1024)<140);
