@@ -5,6 +5,8 @@ import {pointInPoly} from './geo.js';
 
 /** Metres of clear road a vehicle keeps behind the one ahead, including across a segment join. */
 const FOLLOW_METRES = 6;
+/** Drop only degenerate edges; short OSM gaps (under 8 m) must stay so one-ways stay connected. */
+const MIN_EDGE_METRES = 0.5;
 
 function forwardPool(agent) {
   const choices = agent.s.next || [];
@@ -59,7 +61,7 @@ export function createCityLife(data,yFn,waterIndex,scene,constrained,streetData=
   const segments=[];
   for(const s of streetData?.roads?.length ? streetData.roads.filter(r=>!r.bridge&&!r.tunnel).map(r=>({...r,r:({primary:5,secondary:4,tertiary:3}[r.highway]||3)})) : data.streets||[]){if(s.r<3)continue;for(let i=1;i<s.c.length;i++){
     const a=s.c[i-1],b=s.c[i],length=Math.hypot(b[0]-a[0],b[1]-a[1]);
-    if(length<8||waterIndex.inside(...a)||waterIndex.inside(...b)||waterIndex.inside((a[0]+b[0])/2,(a[1]+b[1])/2))continue;
+    if(length<MIN_EDGE_METRES||waterIndex.inside(...a)||waterIndex.inside(...b)||waterIndex.inside((a[0]+b[0])/2,(a[1]+b[1])/2))continue;
     if(s.oneway!=='-1')segments.push({a,b,rank:s.r,length,path:makePath([a,b]),name:s.name||''});
     if(s.oneway!=='yes'&&s.oneway!=='1')segments.push({a:b,b:a,rank:s.r,length,path:makePath([b,a]),name:s.name||''});
   }}

@@ -8,7 +8,7 @@ import {buildingIndex,chooseNext,createCityLife,createWalker,pedestrianShouldWai
 import {createDayCycle} from '../src/day-cycle.js';
 import {loadSettings,saveSettings} from '../src/quality.js';
 import {roadwayLampHeading} from '../src/details.js';
-import {createTransit} from '../src/transit.js';
+import {createTransit,feedStatus,gtfsDay} from '../src/transit.js';
 const p=makePath([[0,0],[0,0],[0,10],[30,10]]);
 assert.equal(p.length,40);assert.deepEqual(samplePath(p,25),{x:15,z:10,heading:Math.PI/2});
 assert.equal(samplePath(p,999).x,30);assert.equal(samplePath(p,-10).z,0);
@@ -35,14 +35,30 @@ const transit=JSON.parse(readFileSync(new URL('../public/data/transit.json',impo
 for(const id of ['RED','BLUE','SLVR'])assert.ok(transit.routes.some(r=>r.id===id&&r.type==='rail'));
 for(const r of transit.routes)for(const p of r.paths){assert.ok(p.length>=2);for(const [x,z]of p){assert.ok(Number.isFinite(x)&&Number.isFinite(z));assert.ok(x>-4600&&x<8600&&z>-4000&&z<4600);}}
 const ids=new Set(transit.routes.map(r=>r.id));for(const s of transit.stops)assert.ok(s.routes.every(r=>ids.has(r)));
+assert.ok(gtfsDay(transit.feed?.[0]?.feed_end_date)>gtfsDay('20261014'),'bundled PRT feed must be newer than the Oct 14 2026 expiry');
+assert.equal(feedStatus(transit,Date.UTC(2026,10,2)).ok,true,'refreshed feed is valid on audit day');
+assert.equal(feedStatus({feed:[{feed_end_date:'20261014'}]},Date.UTC(2026,10,2)).ok,false);
+assert.match(feedStatus({feed:[{feed_end_date:'20261014'}]},Date.UTC(2026,10,2)).note,/ended 20261014/);
 console.log(`Passed: path interpolation, collision grid, 30 seconds of traffic, walking lifecycle, ${transit.routes.length} routes and ${transit.stops.length} stops.`);
 
 for(let t=0;t<140;t+=.1){assert.ok(!(signalPhase(t,0)==='green'&&signalPhase(t,1)==='green'));}
 assert.equal(signalPhase(29,0),'yellow');assert.equal(signalPhase(33,0),'red');assert.equal(signalPhase(36,1),'green');
 const legs=[{a:[-50,0],b:[0,0],length:50},{a:[0,-50],b:[0,0],length:50}];
 const controller=createSignals([{id:0,p:[0,0]}],legs,()=>0,new THREE.Scene());
-assert.equal(controller.canPass(legs[0],5,20),true);assert.equal(controller.canPass(legs[1],5,20),false);
-assert.equal(controller.canPass(legs[0],33,20),false);controller.update(40);
+assert.notEqual(legs[0].signalAxis,legs[1].signalAxis,'axis-aligned crossing approaches use opposing phases');
+assert.equal(controller.canPass(legs[0],5,20),!controller.canPass(legs[1],5,20),'exactly one corridor is green');
+const openLeg=controller.canPass(legs[0],5,20)?legs[0]:legs[1];
+assert.equal(controller.canPass(openLeg,33,20),false,'the open corridor turns red in clearance');
+controller.update(40);
+
+// Diagonal approaches are perpendicular but both look "more vertical" under |dx|>|dz|, so they wrongly share green.
+const diagonal=[{a:[-20,-20],b:[0,0],length:Math.hypot(20,20)},{a:[20,-20],b:[0,0],length:Math.hypot(20,20)}];
+createSignals([{id:1,p:[0,0]}],diagonal,()=>0,new THREE.Scene());
+assert.notEqual(diagonal[0].signalAxis,diagonal[1].signalAxis,'perpendicular diagonal approaches must not share a phase');
+for(let t=0;t<70;t+=.25){
+  assert.ok(!(signalPhase(t,diagonal[0].signalAxis)==='green'&&signalPhase(t,diagonal[1].signalAxis)==='green'),
+    `crossing diagonals share green at t=${t}`);
+}
 const core=JSON.parse(readFileSync(new URL('../public/data/pittsburgh.json',import.meta.url)));
 assert.equal(core.terrain.step,10);const terrain=makeTerrain(core.terrain);
 assert.ok(terrain(-576,1024)>100&&terrain(-576,1024)<140);
@@ -90,26 +106,44 @@ assert.ok(sideBefore>=1);
 for(let i=0;i<400;i++)traffic.update(.05,i,0);
 assert.equal(traffic.vehicles.filter(v=>v.s.name==='Side').length,sideBefore,'cars stay on the named street');
 
+// One-way Liberty-style ways have sub-8 m edges between longer ones; dropping them freezes traffic.
+const liberty=createCityLife({streets:[],buildings:[]},()=>0,{inside:()=>false},new THREE.Scene(),true,{roads:[
+  {highway:'primary',oneway:'yes',name:'Liberty',c:[[0,0],[0,30],[0,35],[0,70]]},
+],signals:[]});
+assert.ok(liberty.segments.some((s)=>s.length<8&&s.name==='Liberty'),'sub-8 m one-way edges stay in the graph');
+const libertyApproach=liberty.segments.find((s)=>s.a[1]===0&&s.b[1]===30);
+assert.ok(libertyApproach?.next?.some((n)=>n.a[1]===30&&n.b[1]===35),'the long approach still reaches the next Liberty edge');
+const libertyCar=liberty.vehicles[0];
+libertyCar.s=libertyApproach;libertyCar.d=0.9;libertyCar.speed=20;libertyCar.velocity=20;libertyCar.hops=0;
+for(let i=0;i<80;i++)liberty.update(.05,i,0);
+const libertyEnd=samplePath(libertyCar.s.path,libertyCar.d*libertyCar.s.length);
+assert.ok(libertyEnd.z>34,'cars keep moving through a short one-way gap');
+
 const crossing=createCityLife({streets:[],buildings:[]},()=>0,{inside:()=>false},new THREE.Scene(),true,{roads:[
   {highway:'primary',oneway:'yes',name:'North',c:[[0,-12],[0,0]]},
   {highway:'primary',oneway:'yes',name:'East',c:[[-20,0],[0,0]]},
   {highway:'primary',oneway:'yes',name:'South',c:[[0,0],[0,20]]},
 ],signals:[{id:0,p:[0,0]}]});
 const north=crossing.segments.find(s=>s.name==='North');
-assert.ok(north.signal);
-assert.equal(crossing.signals.canPass(north,10,4),false);
-assert.equal(crossing.signals.canPass(north,40,4),true);
-const held=crossing.pedestrians.filter(p=>p.s===north&&(1-p.d)*p.s.length<9);
+const east=crossing.segments.find(s=>s.name==='East');
+assert.ok(north.signal&&east.signal);
+assert.notEqual(north.signalAxis,east.signalAxis,'crossing streets keep opposing phases');
+assert.equal(crossing.signals.canPass(north,10,4),!crossing.signals.canPass(east,10,4));
+const redLeg=crossing.signals.canPass(north,10,4)?east:north;
+const greenAt=crossing.signals.canPass(redLeg,40,4)?40:10;
+assert.equal(crossing.signals.canPass(redLeg,10,4),false);
+assert.equal(crossing.signals.canPass(redLeg,greenAt===40?40:5,4),true);
+const held=crossing.pedestrians.filter(p=>p.s===redLeg&&(1-p.d)*p.s.length<9);
 assert.ok(held.length>0);
 const marks=held.map(p=>({p,d:p.d}));
 crossing.update(.05,10,1);
 for(const mark of marks)assert.equal(mark.p.d,mark.d,'pedestrians wait on red');
 assert.ok(marks[0].p.mesh.children.every(child=>child.rotation.x===0),'a stopped pedestrian stands still');
-for(let i=0;i<10;i++)crossing.update(.05,40,1);
-assert.ok(marks.some(mark=>mark.p.d!==mark.d||mark.p.s!==north),'pedestrians cross on green');
+for(let i=0;i<10;i++)crossing.update(.05,greenAt,1);
+assert.ok(marks.some(mark=>mark.p.d!==mark.d||mark.p.s!==redLeg),'pedestrians cross on green');
 assert.ok(crossing.pedestrians.some(p=>p.moving&&p.mesh.children.some(child=>Math.abs(child.rotation.x)>0.05)));
 
-function control(){const listeners={};return {value:'17',checked:false,textContent:'',listeners,addEventListener(name,fn){listeners[name]=fn;},setAttribute(){}};}
+function control(){const listeners={};const attrs={};return {value:'17',checked:false,textContent:'',listeners,attrs,addEventListener(name,fn){listeners[name]=fn;},setAttribute(name,value){attrs[name]=String(value);},getAttribute(name){return attrs[name];}};}
 const clock=control(),slider=control(),play=control(),weatherCycle=control();
 globalThis.document={getElementById(id){return { 'city-clock':clock,'time-slider':slider,'cycle-play':play,'weather-cycle':weatherCycle}[id];},activeElement:null,querySelectorAll:()=>[],body:{classList:{add(){},remove(){}}}};
 const dayScene=new THREE.Scene();
@@ -126,6 +160,12 @@ const renderer={toneMappingExposure:1,setClearColor(){}};
 let weather='sunny';
 const cycle=createDayCycle({scene:dayScene,sky,sun,hemi,fill,renderer,waterUniforms,sunDir,materials:{families:{},roadMat}},()=>weather,(next)=>{weather=next;});
 cycle.update(.016);
+assert.equal(play.getAttribute('aria-pressed'),undefined);
+play.listeners.click();
+assert.equal(play.textContent,'Resume day');
+assert.equal(play.getAttribute('aria-pressed'),'true','paused day marks the toggle pressed');
+play.listeners.click();
+assert.equal(play.getAttribute('aria-pressed'),'false');
 assert.ok(sunDir.x<0,'late-afternoon sun is in the west');
 assert.ok(fill.position.x>0,'fill light stays opposite the sun');
 const sunnyEnv=dayScene.environmentIntensity;
@@ -180,9 +220,11 @@ const transitScene=new THREE.Scene();
 createTransit({
   routes:[{id:'1',name:'FREEPORT ROAD',type:'bus',color:'#3300cc',paths:[[[0,0],[120,0]]]}],
   stops:[{name:'Market',p:[0,0],routes:['1']}],
+  feed:[{feed_end_date:'20261014'}],
 },transitScene,()=>0,()=>{});
 assert.equal(routeSelect.value,'none');
 assert.match(transitInfo.textContent,/off the map/);
+assert.match(transitInfo.textContent,/ended 20261014/);
 assert.equal(focusRoute.disabled,true);
 assert.equal(stopsDetails.hidden,true);
 const routeGroups=transitScene.children[0].children;

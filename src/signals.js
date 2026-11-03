@@ -5,15 +5,37 @@ export function signalPhase(time,axis,offset=0){
  const local=(t-axis*35+70)%70;
  return local<28?'green':local<32?'yellow':'red';
 }
+/** Smallest angle between two headings, in [0, π]. */
+export function headingDelta(a,b){
+ let d=Math.abs(a-b)%(Math.PI*2);
+ if(d>Math.PI)d=Math.PI*2-d;
+ return d;
+}
+/** Map an approach heading onto a junction's two-phase corridor. */
+export function corridorAxis(heading,reference){
+ const d=headingDelta(heading,reference);
+ return d<=Math.PI/4||d>=(3*Math.PI)/4?0:1;
+}
+/** Assign signalAxis on every approach so perpendicular corridors alternate. */
+export function assignSignalAxes(approaches){
+ if(!approaches.length)return;
+ const headings=approaches.map((s)=>Math.atan2(s.b[0]-s.a[0],s.b[1]-s.a[1]));
+ let ref=0;
+ for(let i=1;i<headings.length;i++)if(Math.abs(headings[i])<Math.abs(headings[ref]))ref=i;
+ const reference=headings[ref];
+ for(let i=0;i<approaches.length;i++)approaches[i].signalAxis=corridorAxis(headings[i],reference);
+}
 export function createSignals(mapped,segments,yFn,scene){
  const junctions=[];
  // Multiple OSM heads at an intersection share a controller.
  for(const node of mapped||[]){if(!junctions.some(j=>Math.hypot(j.x-node.p[0],j.z-node.p[1])<32))junctions.push({x:node.p[0],z:node.p[1],offset:(node.id%17)*3,approaches:[]});}
  for(const s of segments){let best=null,distance=28;for(const j of junctions){const d=Math.hypot(s.b[0]-j.x,s.b[1]-j.z);if(d<distance){best=j;distance=d;}}
-  if(best){s.signal=best;s.signalAxis=Math.abs(s.b[0]-s.a[0])>Math.abs(s.b[1]-s.a[1])?0:1;best.approaches.push(s);}
+  if(best){s.signal=best;best.approaches.push(s);}
  }
  for(const s of segments)if(s.signal?.approaches.length<2)delete s.signal;
- const active=junctions.filter(j=>j.approaches.length>1),root=new THREE.Group();root.name='traffic-signals';scene.add(root);
+ const active=junctions.filter(j=>j.approaches.length>1);
+ for(const j of active)assignSignalAxes(j.approaches);
+ const root=new THREE.Group();root.name='traffic-signals';scene.add(root);
  const heads=[];for(const j of active){const directions=new Set();for(const s of j.approaches){const dx=(s.b[0]-s.a[0])/s.length,dz=(s.b[1]-s.a[1])/s.length,key=Math.round(Math.atan2(dx,dz)/(.5*Math.PI));if(directions.has(key))continue;directions.add(key);heads.push({j,axis:s.signalAxis,x:s.b[0]-dx*8+dz*4.5,z:s.b[1]-dz*8-dx*4.5,heading:Math.atan2(dx,dz)+Math.PI});}}
  const box=new THREE.BoxGeometry(1,1,1),dummy=new THREE.Object3D();
  const poles=new THREE.InstancedMesh(box,new THREE.MeshStandardMaterial({color:0x444b4b,metalness:.6,roughness:.6}),heads.length);
